@@ -16,7 +16,7 @@ processController.fsSync.readdir('/');
 try {
 	const result = processController.spawnSync({
 		argv: ['hello-child'],
-		debug: true,
+		// debug: true,
 	});
 	console.log('Result:', result);
 } catch (error) {
@@ -28,6 +28,7 @@ console.log('Hello, world after!');
 
 kernel.writeFileSync(`/bin/hello-child`, `
 console.log('Hello from the child!');
+processController.exit(0);
 `, { mode: 0o755 })
 
 function mockShell(argv: string[]) {
@@ -36,7 +37,7 @@ function mockShell(argv: string[]) {
 		env: {},
 		cwd: '/',
 		name: 'shell',
-		debug: true,
+		// debug: true,
 	});
 
 	return new Promise((resolve) => {
