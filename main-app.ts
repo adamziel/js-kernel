@@ -10,6 +10,25 @@ kernel.mkdirSync('/bin', { mode: 0o755 })
 for (const [name, source] of Object.entries(busyboxPrograms)) {
 	kernel.writeFileSync(`/bin/${name}`, `${source}\n`, { mode: 0o755 })
 }
+kernel.writeFileSync(`/bin/hello`, `
+console.log('Hello, world!');
+processController.fsSync.readdir('/');
+try {
+	const result = processController.spawnSync({
+		argv: ['hello-child'],
+		debug: true,
+	});
+	console.log('Result:', result);
+} catch (error) {
+	console.error('Error:', error);
+}
+console.log('Hello, world after!');
+
+`, { mode: 0o755 })
+
+kernel.writeFileSync(`/bin/hello-child`, `
+console.log('Hello from the child!');
+`, { mode: 0o755 })
 
 function mockShell(argv: string[]) {
 	const worker = kernel.spawn({
@@ -17,6 +36,7 @@ function mockShell(argv: string[]) {
 		env: {},
 		cwd: '/',
 		name: 'shell',
+		debug: true,
 	});
 
 	return new Promise((resolve) => {
@@ -27,13 +47,13 @@ function mockShell(argv: string[]) {
 	})
 }
 
-await mockShell(['ls', '/']);
-await mockShell(['mkdir', '/test']);
-await mockShell(['touch', '/test/file.txt']);
-await mockShell(['ls', '/test']);
-await mockShell(['mv', '/test', '/test2']);
-await mockShell(['ls', '/test2']);
-await mockShell(['rm', '-R', '/test2']);
+await mockShell(['hello']);
+// await mockShell(['mkdir', '/test']);
+// await mockShell(['touch', '/test/file.txt']);
+// await mockShell(['ls', '/test']);
+// await mockShell(['mv', '/test', '/test2']);
+// await mockShell(['ls', '/test2']);
+// await mockShell(['rm', '-R', '/test2']);
 // await mockShell(['ls', '/']);
 
 

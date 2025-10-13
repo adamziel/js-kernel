@@ -24,6 +24,10 @@ import {
 	createKernelFsClient,
 	type KernelFsClient,
 } from './child-fs-client.ts'
+import {
+	createSpawnSyncClient,
+	type SpawnSyncClient,
+} from './spawn-sync-client.ts'
 
 export type { StdioMode } from './spawn-options.ts'
 
@@ -74,6 +78,7 @@ interface ChildProcessInitOptions {
 	programSource: string
 	controlPort: MessagePort
 	fsPort: MessagePort
+	spawnSyncPort: MessagePort
 }
 
 interface ProcessControllerSpawnOptions {
@@ -101,6 +106,7 @@ interface SpawnPlanMessage {
 	}>
 	controlPort: MessagePort
 	fsPort: MessagePort
+	spawnSyncPort: MessagePort
 }
 
 type ExitListener = (code: number) => void
@@ -319,6 +325,7 @@ let childProcessState: ChildProcessInitOptions | null = null
 let stdioStreams: ChildStdioStreams | null = null
 let controlPort: MessagePort | null = null
 let fsClient: KernelFsClient | null = null
+let spawnSyncClient: SpawnSyncClient | null = null
 let bootstrapComplete = false
 let programStarted = false
 let nextSpawnRequestId = 1
@@ -335,6 +342,18 @@ const disposeFsClient = () => {
 		// Ignore failures during filesystem bridge cleanup.
 	}
 	fsClient = null
+}
+
+const disposeSpawnSyncClient = () => {
+	if (!spawnSyncClient) {
+		return
+	}
+	try {
+		spawnSyncClient.dispose()
+	} catch {
+		// Ignore failures during spawnSync bridge cleanup.
+	}
+	spawnSyncClient = null
 }
 
 const failAllPendingSpawnRequests = (reason: string) => {
@@ -360,6 +379,7 @@ const cleanupControlPort = (reason?: string) => {
 	}
 	controlPort = null
 	disposeFsClient()
+	disposeSpawnSyncClient()
 	failAllPendingSpawnRequests(
 		reason ?? 'Control channel closed before spawn response'
 	)
@@ -461,6 +481,8 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 
 	disposeFsClient()
 	fsClient = createKernelFsClient(options.fsPort)
+	disposeSpawnSyncClient()
+	spawnSyncClient = createSpawnSyncClient(options.spawnSyncPort)
 
 	const processController = {
 		argv() {
@@ -497,6 +519,28 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 				throw new Error('Invalid spawn options')
 			}
 			return requestSpawnFromKernel(normalized)
+		},
+		spawnSync(spawnOptions: ProcessControllerSpawnOptions) {
+			if (!spawnSyncClient) {
+				throw new Error('spawnSync bridge is not initialized')
+			}
+			const normalized = normalizeSpawnOptions(spawnOptions, {
+				env: childProcessState?.env,
+				cwd: childProcessState?.cwd,
+				debug: childProcessState?.debug,
+			})
+			if (!normalized) {
+				throw new Error('Invalid spawn options')
+			}
+			const adjusted: NormalizedSpawnOptions = {
+				...normalized,
+				stdio: {
+					stdin: normalized.stdio?.stdin ?? 'ignore',
+					stdout: 'pipe',
+					stderr: 'pipe',
+				},
+			}
+			return spawnSyncClient.run(adjusted)
 		},
 		stdin: stdioStreams.stdin,
 		stdout: stdioStreams.stdout,
@@ -714,7 +758,11 @@ function createChildProcessHandle(
 	plan: SpawnPlanMessage,
 	options: NormalizedSpawnOptions
 ): ChildProcessHandle {
-	const transferList: MessagePort[] = [plan.controlPort, plan.fsPort]
+	const transferList: MessagePort[] = [
+		plan.controlPort,
+		plan.fsPort,
+		plan.spawnSyncPort,
+	]
 	let parentStdin: MessagePortWritableStream | undefined
 	let parentStdout: MessagePortReadableStream | undefined
 	let parentStderr: MessagePortReadableStream | undefined
@@ -847,6 +895,7 @@ function createChildProcessHandle(
 			programSource: plan.programSource,
 			controlPort: plan.controlPort,
 			fsPort: plan.fsPort,
+			spawnSyncPort: plan.spawnSyncPort,
 		},
 	}
 

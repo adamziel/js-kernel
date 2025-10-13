@@ -18,9 +18,12 @@ import {
 	CONTROL_MESSAGE_SPAWN_RESULT,
 	CONTROL_MESSAGE_FS_REQUEST,
 	CONTROL_MESSAGE_FS_RESPONSE,
+	CONTROL_MESSAGE_SPAWN_SYNC_REQUEST,
+	CONTROL_MESSAGE_SPAWN_SYNC_RESPONSE,
 } from './process-constants.ts'
 import {
 	normalizeSpawnOptions,
+	type NormalizedSpawnOptions,
 	type SpawnStdioOptions,
 	type StdioMode,
 } from './spawn-options.ts'
@@ -83,6 +86,10 @@ interface PreparedSpawnResources {
 		kernelPort: MessagePort
 		processPort: MessagePort
 	}
+	spawnSync: {
+		kernelPort: MessagePort
+		processPort: MessagePort
+	}
 }
 
 interface KernelProcessRecord {
@@ -91,6 +98,7 @@ interface KernelProcessRecord {
 	name: string
 	controlPort: MessagePort
 	fsPort: MessagePort
+	spawnSyncPort: MessagePort
 	children: Set<number>
 	hostType: 'kernel' | 'process'
 	hostPid: number | null
@@ -104,6 +112,7 @@ interface KernelProcessRecord {
 	}
 	controlCleanup: () => void
 	fsCleanup: () => void
+	spawnSyncCleanup: () => void
 	setExitCode?: (code: number) => void
 }
 
@@ -256,6 +265,7 @@ class Kernel {
 
 		const controlChannel = new MessageChannel()
 		const fsChannel = new MessageChannel()
+		const spawnSyncChannel = new MessageChannel()
 
 		return {
 			pid,
@@ -269,6 +279,10 @@ class Kernel {
 			fs: {
 				kernelPort: fsChannel.port1,
 				processPort: fsChannel.port2,
+			},
+			spawnSync: {
+				kernelPort: spawnSyncChannel.port1,
+				processPort: spawnSyncChannel.port2,
 			},
 		}
 	}
@@ -285,6 +299,7 @@ class Kernel {
 		const transferList: MessagePort[] = [
 			resources.control.processPort,
 			resources.fs.processPort,
+			resources.spawnSync.processPort,
 		]
 
 		for (const descriptor of resources.stdio) {
@@ -348,6 +363,7 @@ class Kernel {
 			name: options.name,
 			controlPort: resources.control.kernelPort,
 			fsPort: resources.fs.kernelPort,
+			spawnSyncPort: resources.spawnSync.kernelPort,
 			children: new Set<number>(),
 			hostType: 'kernel',
 			hostPid: null,
@@ -361,6 +377,7 @@ class Kernel {
 			},
 			controlCleanup: () => undefined,
 			fsCleanup: () => undefined,
+			spawnSyncCleanup: () => undefined,
 			setExitCode: (code: number) => {
 				exitCode = code
 			},
@@ -369,6 +386,7 @@ class Kernel {
 		this.processes.set(resources.pid, record)
 		record.controlCleanup = this.installProcessControl(record)
 		record.fsCleanup = this.installProcessFs(record)
+		record.spawnSyncCleanup = this.installProcessSpawnSync(record)
 
 		const initMessage = {
 			type: '__kernel_internal__/initChildProcess',
@@ -387,6 +405,7 @@ class Kernel {
 			programSource: resources.programSource,
 			controlPort: resources.control.processPort,
 			fsPort: resources.fs.processPort,
+			spawnSyncPort: resources.spawnSync.processPort,
 		},
 	}
 
@@ -445,6 +464,42 @@ class Kernel {
 		}
 	}
 
+	private installProcessSpawnSync(record: KernelProcessRecord) {
+		const handleSpawnSyncMessage = (event: MessageEvent) => {
+			const payload = event.data
+			if (!payload || typeof payload !== 'object') {
+				return
+			}
+			if (payload.type !== CONTROL_MESSAGE_SPAWN_SYNC_REQUEST) {
+				return
+			}
+			const requestId = payload.requestId
+			const options = payload.options
+			if (typeof requestId !== 'number') {
+				return
+			}
+			this.handleSpawnSyncRequest(record, requestId, options)
+		}
+
+		record.spawnSyncPort.addEventListener(
+			'message',
+			handleSpawnSyncMessage
+		)
+		record.spawnSyncPort.start()
+
+		return () => {
+			record.spawnSyncPort.removeEventListener(
+				'message',
+				handleSpawnSyncMessage
+			)
+			try {
+				record.spawnSyncPort.close()
+			} catch {
+				// ignore
+			}
+		}
+	}
+
 	private async invokeFsMethod(
 		method: string,
 		args: unknown[]
@@ -459,6 +514,261 @@ class Kernel {
 			return await result
 		}
 		return result
+	}
+
+	private handleSpawnSyncRequest(
+		parentRecord: KernelProcessRecord,
+		requestId: number,
+		rawOptions: unknown
+	) {
+		const sendResponse = (response: {
+			ok: boolean
+			result?: {
+				status: number | null
+				stdout?: string
+				stderr?: string
+				error?: string
+			}
+			error?: { message: string }
+		}) => {
+			try {
+				parentRecord.spawnSyncPort.postMessage({
+					type: CONTROL_MESSAGE_SPAWN_SYNC_RESPONSE,
+					requestId,
+					response,
+				})
+			} catch {
+				// ignore
+			}
+		}
+
+		const options = rawOptions as NormalizedSpawnOptions | undefined
+		if (
+			!options ||
+			!Array.isArray(options.argv) ||
+			options.argv.length === 0
+		) {
+			sendResponse({
+				ok: false,
+				error: { message: 'Invalid spawn options' },
+			})
+			return
+		}
+
+		this.runSpawnSyncProcess(parentRecord, options)
+			.then((result) => {
+				sendResponse({ ok: true, result })
+			})
+			.catch((error) => {
+				const message =
+					error instanceof Error
+						? error.message
+						: String(error ?? 'spawnSync failed')
+				sendResponse({ ok: false, error: { message } })
+			})
+	}
+
+	private async runSpawnSyncProcess(
+		parentRecord: KernelProcessRecord,
+		options: NormalizedSpawnOptions
+	): Promise<{
+		status: number | null
+		stdout?: string
+		stderr?: string
+		error?: string
+	}> {
+		const program = this.loadProgram(options.argv[0])
+		if (!program) {
+			throw new Error(`Command not found: ${options.argv[0]}`)
+		}
+
+		const stdio: SpawnStdioOptions = {
+			stdin: options.stdio?.stdin ?? 'ignore',
+			stdout: options.stdio?.stdout ?? 'pipe',
+			stderr: options.stdio?.stderr ?? 'pipe',
+		}
+
+		const adjustedOptions: NormalizedSpawnOptions = {
+			...options,
+			stdio,
+		}
+
+		const resources = this.prepareSpawnResources(
+			adjustedOptions,
+			program,
+			parentRecord.pid
+		)
+
+		const record: KernelProcessRecord = {
+			pid: resources.pid,
+			parentPid: parentRecord.pid,
+			name: adjustedOptions.name,
+			controlPort: resources.control.kernelPort,
+			fsPort: resources.fs.kernelPort,
+			spawnSyncPort: resources.spawnSync.kernelPort,
+			children: new Set<number>(),
+			hostType: 'process',
+			hostPid: parentRecord.pid,
+			exitCode: null,
+			controlCleanup: () => undefined,
+			fsCleanup: () => undefined,
+			spawnSyncCleanup: () => undefined,
+			stdio: undefined,
+		}
+
+		this.processes.set(resources.pid, record)
+		parentRecord.children.add(resources.pid)
+		record.controlCleanup = this.installProcessControl(record)
+		record.fsCleanup = this.installProcessFs(record)
+		record.spawnSyncCleanup = this.installProcessSpawnSync(record)
+
+		const transferList: MessagePort[] = [
+			resources.control.processPort,
+			resources.fs.processPort,
+			resources.spawnSync.processPort,
+		]
+
+		const textDecoder = new TextDecoder()
+		const stdoutChunks: string[] = []
+		const stderrChunks: string[] = []
+
+		let stdoutStream: MessagePortReadableStream | null = null
+		let stderrStream: MessagePortReadableStream | null = null
+
+		for (const descriptor of resources.stdio) {
+			if (descriptor.workerPort) {
+				transferList.push(descriptor.workerPort)
+			}
+			if (descriptor.mode === 'pipe' && descriptor.hostPort) {
+				if (descriptor.fd === 1) {
+					const stream = new MessagePortReadableStream(
+						descriptor.hostPort
+					)
+					stream.on('data', (chunk) => {
+						const text =
+							typeof chunk === 'string'
+								? chunk
+								: textDecoder.decode(chunk)
+						stdoutChunks.push(text)
+					})
+					stdoutStream = stream
+				} else if (descriptor.fd === 2) {
+					const stream = new MessagePortReadableStream(
+						descriptor.hostPort
+					)
+					stream.on('data', (chunk) => {
+						const text =
+							typeof chunk === 'string'
+								? chunk
+								: textDecoder.decode(chunk)
+						stderrChunks.push(text)
+					})
+					stderrStream = stream
+				} else {
+					descriptor.hostPort.close()
+				}
+			} else if (descriptor.hostPort) {
+				descriptor.hostPort.close()
+			}
+		}
+
+		const worker = createProcessWorker()
+		record.worker = worker
+
+		record.setExitCode = (code: number) => {
+			finalize(code)
+		}
+
+		let resultResolve: (value: {
+			status: number | null
+			stdout?: string
+			stderr?: string
+			error?: string
+		}) => void
+		const resultPromise = new Promise<{
+			status: number | null
+			stdout?: string
+			stderr?: string
+			error?: string
+		}>((resolve) => {
+			resultResolve = resolve
+		})
+
+		let resolved = false
+
+		const finalize = (
+			status: number | null,
+			error?: string
+		): void => {
+			if (resolved) {
+				return
+			}
+			resolved = true
+			stdoutStream?.destroy()
+			stderrStream?.destroy()
+			resultResolve({
+				status,
+				stdout:
+					stdoutChunks.length > 0 ? stdoutChunks.join('') : undefined,
+				stderr:
+					stderrChunks.length > 0 ? stderrChunks.join('') : undefined,
+				error,
+			})
+		}
+
+		worker.addEventListener('message', (event: MessageEvent) => {
+			const payload = event.data
+			if (
+				payload &&
+				typeof payload === 'object' &&
+				payload.type === 'exit'
+			) {
+				const code =
+					typeof payload.data === 'number' ? payload.data : null
+				finalize(code)
+			}
+		})
+
+		worker.addEventListener('error', () => {
+			finalize(null, 'Process worker crashed')
+			this.handleProcessExit(resources.pid, ExitCode.ERROR)
+		})
+
+		const initMessage = {
+			type: '__kernel_internal__/initChildProcess',
+			payload: {
+				pid: resources.pid,
+				argv: [...adjustedOptions.argv],
+				env: { ...adjustedOptions.env },
+				cwd: adjustedOptions.cwd,
+				debug: Boolean(adjustedOptions.debug),
+				stdio: resources.stdio.map((descriptor) => ({
+					fd: descriptor.fd,
+					mode: descriptor.mode,
+					port: descriptor.workerPort,
+				})),
+				programPath: resources.programPath,
+				programSource: resources.programSource,
+				controlPort: resources.control.processPort,
+				fsPort: resources.fs.processPort,
+				spawnSyncPort: resources.spawnSync.processPort,
+			},
+		}
+
+		try {
+			worker.postMessage(initMessage, transferList)
+		} catch (error) {
+			finalize(
+				null,
+				error instanceof Error
+					? error.message
+					: String(error ?? 'Failed to initialize process')
+			)
+			this.handleProcessExit(resources.pid, ExitCode.ERROR)
+			return resultPromise
+		}
+
+		return resultPromise
 	}
 
 	private installProcessControl(record: KernelProcessRecord) {
@@ -569,18 +879,21 @@ class Kernel {
 			name: options.name,
 			controlPort: resources.control.kernelPort,
 			fsPort: resources.fs.kernelPort,
+			spawnSyncPort: resources.spawnSync.kernelPort,
 			children: new Set<number>(),
 			hostType: 'process',
 			hostPid: parentRecord.pid,
 			exitCode: null,
 			controlCleanup: () => undefined,
 			fsCleanup: () => undefined,
+			spawnSyncCleanup: () => undefined,
 		}
 
 		this.processes.set(resources.pid, record)
 		parentRecord.children.add(resources.pid)
 		record.controlCleanup = this.installProcessControl(record)
 		record.fsCleanup = this.installProcessFs(record)
+		record.spawnSyncCleanup = this.installProcessSpawnSync(record)
 
 		const response = {
 			type: CONTROL_MESSAGE_SPAWN_RESULT,
@@ -600,12 +913,14 @@ class Kernel {
 				})),
 				controlPort: resources.control.processPort,
 				fsPort: resources.fs.processPort,
+				spawnSyncPort: resources.spawnSync.processPort,
 			},
 		}
 
 		const transferList: MessagePort[] = [
 			resources.control.processPort,
 			resources.fs.processPort,
+			resources.spawnSync.processPort,
 		]
 		for (const descriptor of resources.stdio) {
 			if (descriptor.workerPort) {
@@ -665,6 +980,7 @@ class Kernel {
 
 	record.controlCleanup()
 	record.fsCleanup()
+	record.spawnSyncCleanup()
 
 		this.processes.delete(pid)
 

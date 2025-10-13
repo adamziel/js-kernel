@@ -18,3 +18,7 @@ export const CONTROL_MESSAGE_FS_REQUEST =
 	'__kernel_internal__/fsRequest'
 export const CONTROL_MESSAGE_FS_RESPONSE =
 	'__kernel_internal__/fsResponse'
+export const CONTROL_MESSAGE_SPAWN_SYNC_REQUEST =
+	'__kernel_internal__/spawnSyncRequest'
+export const CONTROL_MESSAGE_SPAWN_SYNC_RESPONSE =
+	'__kernel_internal__/spawnSyncResponse'
