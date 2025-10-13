@@ -9,7 +9,10 @@ console.log("Hello, world!");
 console.error(new Error("Hello, error!"));
 console.log(new Uint8Array([1, 2, 3]));
 
+console.log(processController.fsSync.readdir('/'));
+
 async function main() {
+	console.log(await processController.fs.readdir('/'));
 	const spawned = await processController.spawn({
 		argv: ['hello-2'],
 		stdio: {
@@ -47,7 +50,7 @@ const helloWorker = kernel.spawn({
 		stdout: 'pipe',
 		stderr: 'pipe',
 	},
-	// debug: true,
+	debug: true,
 })
 
 if (typeof helloWorker === 'number') {

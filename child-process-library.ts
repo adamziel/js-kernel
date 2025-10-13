@@ -20,6 +20,10 @@ import {
 	type NormalizedSpawnOptions,
 	type StdioMode,
 } from './spawn-options.ts'
+import {
+	createKernelFsClient,
+	type KernelFsClient,
+} from './child-fs-client.ts'
 
 export type { StdioMode } from './spawn-options.ts'
 
@@ -69,6 +73,7 @@ interface ChildProcessInitOptions {
 	programPath: string
 	programSource: string
 	controlPort: MessagePort
+	fsPort: MessagePort
 }
 
 interface ProcessControllerSpawnOptions {
@@ -95,6 +100,7 @@ interface SpawnPlanMessage {
 		parentPort: MessagePort | null
 	}>
 	controlPort: MessagePort
+	fsPort: MessagePort
 }
 
 type ExitListener = (code: number) => void
@@ -312,11 +318,24 @@ const appendTrailingNewlineIfText = (
 let childProcessState: ChildProcessInitOptions | null = null
 let stdioStreams: ChildStdioStreams | null = null
 let controlPort: MessagePort | null = null
+let fsClient: KernelFsClient | null = null
 let bootstrapComplete = false
 let programStarted = false
 let nextSpawnRequestId = 1
 const pendingSpawnRequests = new Map<number, PendingSpawnRequest>()
 const localChildProcesses = new Map<number, LocalChildProcessRecord>()
+
+const disposeFsClient = () => {
+	if (!fsClient) {
+		return
+	}
+	try {
+		fsClient.dispose()
+	} catch {
+		// Ignore failures during filesystem bridge cleanup.
+	}
+	fsClient = null
+}
 
 const failAllPendingSpawnRequests = (reason: string) => {
 	const error =
@@ -340,6 +359,7 @@ const cleanupControlPort = (reason?: string) => {
 		// Ignore failures during control port cleanup.
 	}
 	controlPort = null
+	disposeFsClient()
 	failAllPendingSpawnRequests(
 		reason ?? 'Control channel closed before spawn response'
 	)
@@ -439,6 +459,9 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 	controlPort.addEventListener('message', handleControlResponse)
 	controlPort.start()
 
+	disposeFsClient()
+	fsClient = createKernelFsClient(options.fsPort)
+
 	const processController = {
 		argv() {
 			return [...childProcessState!.argv]
@@ -478,6 +501,8 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 		stdin: stdioStreams.stdin,
 		stdout: stdioStreams.stdout,
 		stderr: stdioStreams.stderr,
+		fs: fsClient!.async,
+		fsSync: fsClient!.sync,
 		exit(code: number) {
 			if (controlPort) {
 				try {
@@ -684,7 +709,7 @@ function createChildProcessHandle(
 	plan: SpawnPlanMessage,
 	options: NormalizedSpawnOptions
 ): ChildProcessHandle {
-	const transferList: MessagePort[] = [plan.controlPort]
+	const transferList: MessagePort[] = [plan.controlPort, plan.fsPort]
 	let parentStdin: MessagePortWritableStream | undefined
 	let parentStdout: MessagePortReadableStream | undefined
 	let parentStderr: MessagePortReadableStream | undefined
@@ -816,6 +841,7 @@ function createChildProcessHandle(
 			programPath: plan.programPath,
 			programSource: plan.programSource,
 			controlPort: plan.controlPort,
+			fsPort: plan.fsPort,
 		},
 	}
 

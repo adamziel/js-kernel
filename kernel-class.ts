@@ -16,12 +16,18 @@ import {
 	CONTROL_MESSAGE_REPORT_CHILD_EXIT,
 	CONTROL_MESSAGE_SPAWN_REQUEST,
 	CONTROL_MESSAGE_SPAWN_RESULT,
+	CONTROL_MESSAGE_FS_REQUEST,
+	CONTROL_MESSAGE_FS_RESPONSE,
 } from './process-constants.ts'
 import {
 	normalizeSpawnOptions,
 	type SpawnStdioOptions,
 	type StdioMode,
 } from './spawn-options.ts'
+import {
+	serializeFsResponse,
+	serializeFsError,
+} from './fs-serialization.ts'
 
 export type { StdioMode, SpawnStdioOptions } from './spawn-options.ts'
 
@@ -73,6 +79,10 @@ interface PreparedSpawnResources {
 		kernelPort: MessagePort
 		processPort: MessagePort
 	}
+	fs: {
+		kernelPort: MessagePort
+		processPort: MessagePort
+	}
 }
 
 interface KernelProcessRecord {
@@ -80,6 +90,7 @@ interface KernelProcessRecord {
 	parentPid: number | null
 	name: string
 	controlPort: MessagePort
+	fsPort: MessagePort
 	children: Set<number>
 	hostType: 'kernel' | 'process'
 	hostPid: number | null
@@ -92,6 +103,7 @@ interface KernelProcessRecord {
 		stderr?: MessagePortReadableStream
 	}
 	controlCleanup: () => void
+	fsCleanup: () => void
 	setExitCode?: (code: number) => void
 }
 
@@ -243,6 +255,7 @@ class Kernel {
 		})
 
 		const controlChannel = new MessageChannel()
+		const fsChannel = new MessageChannel()
 
 		return {
 			pid,
@@ -252,6 +265,10 @@ class Kernel {
 			control: {
 				kernelPort: controlChannel.port1,
 				processPort: controlChannel.port2,
+			},
+			fs: {
+				kernelPort: fsChannel.port1,
+				processPort: fsChannel.port2,
 			},
 		}
 	}
@@ -267,6 +284,7 @@ class Kernel {
 
 		const transferList: MessagePort[] = [
 			resources.control.processPort,
+			resources.fs.processPort,
 		]
 
 		for (const descriptor of resources.stdio) {
@@ -329,6 +347,7 @@ class Kernel {
 			parentPid: null,
 			name: options.name,
 			controlPort: resources.control.kernelPort,
+			fsPort: resources.fs.kernelPort,
 			children: new Set<number>(),
 			hostType: 'kernel',
 			hostPid: null,
@@ -341,6 +360,7 @@ class Kernel {
 				stderr: parentStderr,
 			},
 			controlCleanup: () => undefined,
+			fsCleanup: () => undefined,
 			setExitCode: (code: number) => {
 				exitCode = code
 			},
@@ -348,6 +368,7 @@ class Kernel {
 
 		this.processes.set(resources.pid, record)
 		record.controlCleanup = this.installProcessControl(record)
+		record.fsCleanup = this.installProcessFs(record)
 
 		const initMessage = {
 			type: '__kernel_internal__/initChildProcess',
@@ -357,20 +378,87 @@ class Kernel {
 				env: { ...options.env },
 				cwd: options.cwd,
 				debug: Boolean(options.debug),
-				stdio: resources.stdio.map((descriptor) => ({
-					fd: descriptor.fd,
-					mode: descriptor.mode,
-					port: descriptor.workerPort,
-				})),
-				programPath: resources.programPath,
-				programSource: resources.programSource,
-				controlPort: resources.control.processPort,
-			},
-		}
+			stdio: resources.stdio.map((descriptor) => ({
+				fd: descriptor.fd,
+				mode: descriptor.mode,
+				port: descriptor.workerPort,
+			})),
+			programPath: resources.programPath,
+			programSource: resources.programSource,
+			controlPort: resources.control.processPort,
+			fsPort: resources.fs.processPort,
+		},
+	}
 
 		worker.postMessage(initMessage, transferList)
 
 		return subprocess
+	}
+
+	private installProcessFs(record: KernelProcessRecord) {
+		const handleFsMessage = async (event: MessageEvent) => {
+			const payload = event.data
+			if (!payload || typeof payload !== 'object') {
+				return
+			}
+			if (payload.type !== CONTROL_MESSAGE_FS_REQUEST) {
+				return
+			}
+			const requestId = payload.requestId
+			const method = payload.method
+			const args = payload.args
+			if (
+				typeof requestId !== 'number' ||
+				typeof method !== 'string' ||
+				!Array.isArray(args)
+			) {
+				return
+			}
+			let response
+			try {
+				const result = await this.invokeFsMethod(method, args)
+				response = serializeFsResponse(result)
+			} catch (error) {
+				response = serializeFsError(error)
+			}
+			try {
+				record.fsPort.postMessage({
+					type: CONTROL_MESSAGE_FS_RESPONSE,
+					requestId,
+					response,
+				})
+			} catch {
+				// Ignore failures sending responses on a closed port.
+			}
+		}
+
+		record.fsPort.addEventListener('message', handleFsMessage)
+		record.fsPort.start()
+
+		return () => {
+			record.fsPort.removeEventListener('message', handleFsMessage)
+			try {
+				record.fsPort.close()
+			} catch {
+				// Ignore failures closing an already closed port.
+			}
+		}
+	}
+
+	private async invokeFsMethod(
+		method: string,
+		args: unknown[]
+	): Promise<unknown> {
+		const fsInstance: Record<string, unknown> = this.fs as any
+		const target = fsInstance[method]
+		if (typeof target !== 'function') {
+			throw new Error(`Unsupported filesystem method '${method}'`)
+		}
+		const result = target.apply(this.fs, args)
+		if (result instanceof Promise) {
+			return await result
+		}
+		return result
 	}
 
 	private installProcessControl(record: KernelProcessRecord) {
@@ -480,16 +568,19 @@ class Kernel {
 			parentPid: parentRecord.pid,
 			name: options.name,
 			controlPort: resources.control.kernelPort,
+			fsPort: resources.fs.kernelPort,
 			children: new Set<number>(),
 			hostType: 'process',
 			hostPid: parentRecord.pid,
 			exitCode: null,
 			controlCleanup: () => undefined,
+			fsCleanup: () => undefined,
 		}
 
 		this.processes.set(resources.pid, record)
 		parentRecord.children.add(resources.pid)
 		record.controlCleanup = this.installProcessControl(record)
+		record.fsCleanup = this.installProcessFs(record)
 
 		const response = {
 			type: CONTROL_MESSAGE_SPAWN_RESULT,
@@ -508,10 +599,14 @@ class Kernel {
 							: null,
 				})),
 				controlPort: resources.control.processPort,
+				fsPort: resources.fs.processPort,
 			},
 		}
 
-		const transferList: MessagePort[] = [resources.control.processPort]
+		const transferList: MessagePort[] = [
+			resources.control.processPort,
+			resources.fs.processPort,
+		]
 		for (const descriptor of resources.stdio) {
 			if (descriptor.workerPort) {
 				transferList.push(descriptor.workerPort)
@@ -569,6 +664,7 @@ class Kernel {
 	record.setExitCode?.(code)
 
 	record.controlCleanup()
+	record.fsCleanup()
 
 		this.processes.delete(pid)
 
