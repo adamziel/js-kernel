@@ -1,3 +1,5 @@
+import { parseShellCode } from './shell/sh.ts'
+
 export {
 	Kernel,
 	KernelClass,

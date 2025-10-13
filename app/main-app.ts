@@ -1,39 +1,14 @@
-import {
-	ExitCode,
-	Kernel,
-	type KernelStdioChunk,
-} from '../runtime/index.ts'
-import { busyboxPrograms } from './programs/busybox/index.ts'
+import { installBusybox } from '../runtime/busybox/index.ts'
+import { Kernel } from '../runtime/index.ts'
 
 const kernel = new Kernel()
+installBusybox(kernel);
 
-// Initiate busybox programs
-
-kernel.mkdirSync('/bin', { mode: 0o755 })
-for (const [name, source] of Object.entries(busyboxPrograms)) {
-	kernel.writeFileSync(`/bin/${name}`, `${source}\n`, { mode: 0o755 })
-}
-kernel.writeFileSync(`/bin/hello`, `
-console.log('Hello, world!');
-processController.fsSync.readdir('/');
-console.log('Hello, world 2!');
-try {
-	const result = processController.spawnSync({
-		argv: ['hello-child'],
-		// debug: true,
-	});
-	console.log('Result:', result);
-} catch (error) {
-	console.error('Error:', error);
-}
-console.log('Hello, world after!');
-
-`, { mode: 0o755 })
-
-kernel.writeFileSync(`/bin/hello-child`, `
-console.log('Hello from the child!');
-processController.exit(0);
-`, { mode: 0o755 })
+kernel.writeFileSync(
+	`/my-script.sh`,
+	`echo "Hello, world from a script!"`,
+	{ mode: 0o755 }
+)
 
 function mockShell(argv: string[]) {
 	const worker = kernel.spawn({
@@ -42,7 +17,7 @@ function mockShell(argv: string[]) {
 		cwd: '/',
 		name: 'shell',
 		// debug: true,
-	});
+	})
 
 	return new Promise((resolve) => {
 		worker.onExit((code) => {
@@ -52,7 +27,38 @@ function mockShell(argv: string[]) {
 	})
 }
 
-await mockShell(['hello']);
+await mockShell(['sh', '/my-script.sh'])
+
+// kernel.writeFileSync(
+// 	`/bin/hello`,
+// 	`
+// console.log('Hello, world!');
+// processController.fsSync.readdir('/');
+// console.log('Hello, world 2!');
+// try {
+// 	const result = processController.spawnSync({
+// 		argv: ['hello-child'],
+// 		// debug: true,
+// 	});
+// 	console.log('Result:', result);
+// } catch (error) {
+// 	console.error('Error:', error);
+// }
+// console.log('Hello, world after!');
+
+// `,
+// 	{ mode: 0o755 }
+// )
+
+// kernel.writeFileSync(
+// 	`/bin/hello-child`,
+// 	`
+// console.log('Hello from the child!');
+// processController.exit(0);
+// `,
+// 	{ mode: 0o755 }
+// )
+
 // await mockShell(['mkdir', '/test']);
 // await mockShell(['touch', '/test/file.txt']);
 // await mockShell(['ls', '/test']);
@@ -60,7 +66,6 @@ await mockShell(['hello']);
 // await mockShell(['ls', '/test2']);
 // await mockShell(['rm', '-R', '/test2']);
 // await mockShell(['ls', '/']);
-
 
 // const lsWorker = kernel.spawn({
 // 	argv: ['ls', '/'],
