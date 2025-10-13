@@ -13,6 +13,7 @@ for (const [name, source] of Object.entries(busyboxPrograms)) {
 kernel.writeFileSync(`/bin/hello`, `
 console.log('Hello, world!');
 processController.fsSync.readdir('/');
+console.log('Hello, world 2!');
 try {
 	const result = processController.spawnSync({
 		argv: ['hello-child'],

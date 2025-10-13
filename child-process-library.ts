@@ -20,10 +20,7 @@ import {
 	type NormalizedSpawnOptions,
 	type StdioMode,
 } from './spawn-options.ts'
-import {
-	createKernelFsClient,
-	type KernelFsClient,
-} from './child-fs-client.ts'
+import { createKernelFsClient, type KernelFsClient } from './child-fs-client.ts'
 import {
 	createSpawnSyncClient,
 	type SpawnSyncClient,
@@ -681,13 +678,12 @@ const reportProgramError = (error: unknown) => {
 	}
 }
 
-
-const startProgram = (options: ChildProcessInitOptions) => {
+const startProgram = async (options: ChildProcessInitOptions) => {
 	if (programStarted) {
 		return
 	}
 	programStarted = true
-	
+
 	if (!childProcessState || !stdioStreams) {
 		throw new Error('executeProgram called before initialization')
 	}
@@ -696,19 +692,30 @@ const startProgram = (options: ChildProcessInitOptions) => {
 	const originalDirname = (globalThis as any).__dirname
 
 	try {
+		// Somehow this makes all the sync calls work in the imported module.
+		// Without it, they hang indefinitely.
+		// @TODO: Look into initialization flows, most likely,
+		// there's a missing await between something is initialized and
+		// Atomics.wait() is called.
+		await (globalThis as any).processController.fs.readdir('/')
+
 		;(globalThis as any).__filename = options.programPath
 		;(globalThis as any).__dirname = dirnameFromPath(options.programPath)
 
 		const programBody = stripShebang(options.programSource)
-		const globalEval = (0, eval) as (code: string) => unknown
-		globalEval(`"use strict";\n(async function() { 
-			// Somehow this makes all the sync calls pass.
-			// @TODO: Look into initialization flows, most likely,
-			// there's a missing await between something is initialized and
-			// Atomics.wait() is called.
-			await processController.fs.readdir('/');
-			${programBody}
-		})()`)
+		const dataUrl =
+			'data:text/javascript;charset=utf-8,' +
+			encodeURIComponent(programBody)
+		/**
+		 * We can choose here if we want CJS or ESM.
+		 * 
+		 * * Regular eval() works for CJS, but not for ESM – it's not recognized as
+		 *   a module and we can't use top-level imports or awaits.
+		 * * ESM import() works for both.
+		 * 
+		 * Let's go with import() and re-evaluate this decision later if needed
+		 */
+		await import(dataUrl)
 	} catch (error) {
 		reportProgramError(error)
 	} finally {
