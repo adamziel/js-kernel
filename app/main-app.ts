@@ -1,8 +1,11 @@
-import { ExitCode, KernelClass } from './kernel-class.ts'
-import type { KernelStdioChunk } from './kernel-class.ts'
-import { busyboxPrograms } from './busybox-programs/index.ts'
+import {
+	ExitCode,
+	Kernel,
+	type KernelStdioChunk,
+} from '../runtime/index.ts'
+import { busyboxPrograms } from './programs/busybox/index.ts'
 
-const kernel = new KernelClass()
+const kernel = new Kernel()
 
 // Initiate busybox programs
 

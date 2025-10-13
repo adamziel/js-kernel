@@ -3,7 +3,7 @@ import {
 	KernelStdioChunk,
 	MessagePortReadableStream,
 	MessagePortWritableStream,
-} from './message-port-streams.ts'
+} from '../../ipc/message-port.ts'
 import {
 	CONTROL_MESSAGE_CHILD_EXIT,
 	CONTROL_MESSAGE_HOST_KILL_CHILD,
@@ -13,20 +13,20 @@ import {
 	CONTROL_MESSAGE_REPORT_CHILD_EXIT,
 	CONTROL_MESSAGE_SPAWN_REQUEST,
 	CONTROL_MESSAGE_SPAWN_RESULT,
-} from './process-constants.ts'
-import { createProcessWorker } from './process-worker-factory.ts'
+} from '../constants.ts'
+import { createProcessWorker } from '../worker-factory.ts'
 import {
 	normalizeSpawnOptions,
 	type NormalizedSpawnOptions,
 	type StdioMode,
-} from './spawn-options.ts'
-import { createKernelFsClient, type KernelFsClient } from './child-fs-client.ts'
+} from '../spawn-options.ts'
+import { createKernelFsClient, type KernelFsClient } from './fs-client.ts'
 import {
 	createSpawnSyncClient,
 	type SpawnSyncClient,
-} from './spawn-sync-client.ts'
+} from '../spawn-sync/client.ts'
 
-export type { StdioMode } from './spawn-options.ts'
+export type { StdioMode } from '../spawn-options.ts'
 
 // Request kernel message ports from parent
 export const requestKernelPorts = (): Promise<[MessagePort, MessagePort]> => {
@@ -139,50 +139,13 @@ interface ChildReadableEvents {
 	close: void
 }
 
-class ChildReadableStream extends BasicEventEmitter<ChildReadableEvents> {
-	private readonly mode: StdioMode
-	private readonly port?: MessagePort
-	private readonly handleMessage = (event: MessageEvent) => {
-		const payload = event.data
-		if (!payload || typeof payload !== 'object') {
-			return
-		}
-		if (payload.type === 'data') {
-			this.emit('data', payload.payload)
-		} else if (payload.type === 'end') {
-			this.emit('end', undefined as unknown as void)
-			this.close()
-		} else if (payload.type === 'close') {
-			this.close()
-		}
-	}
-	private closed = false
-
-	constructor(descriptor: ChildStdioDescriptor) {
-		super()
-		this.mode = descriptor.mode
-		this.port = descriptor.port
-
-		if (this.mode === 'ignore' || !this.port) {
-			this.closed = true
-			return
-		}
-
-		this.port.addEventListener('message', this.handleMessage)
-		this.port.start()
-	}
-
+class NullReadableStream extends BasicEventEmitter<ChildReadableEvents> {
 	close() {
-		if (this.closed) return
-		this.closed = true
-		this.port?.removeEventListener('message', this.handleMessage)
-		this.port?.close()
-		this.emit('close', undefined as unknown as void)
 		this.clearAll()
 	}
 
 	destroy() {
-		this.close()
+		this.clearAll()
 	}
 }
 
@@ -190,64 +153,32 @@ interface ChildWritableEvents {
 	close: void
 }
 
-class ChildWritableStream extends BasicEventEmitter<ChildWritableEvents> {
-	private readonly mode: StdioMode
-	private readonly port?: MessagePort
-	private closed = false
-
-	constructor(descriptor: ChildStdioDescriptor) {
-		super()
-		this.mode = descriptor.mode
-		this.port = descriptor.port
-		this.port?.start()
+class NullWritableStream extends BasicEventEmitter<ChildWritableEvents> {
+	write(_chunk: KernelStdioChunk) {
+		return false
 	}
 
-	write(chunk: KernelStdioChunk) {
-		if (this.closed || this.mode === 'ignore' || !this.port) {
-			return false
-		}
-		try {
-			this.port.postMessage({ type: 'data', payload: chunk })
-			return true
-		} catch {
-			this.destroy()
-			return false
-		}
-	}
-
-	end(chunk?: KernelStdioChunk) {
-		if (this.closed) return false
-		if (typeof chunk !== 'undefined') {
-			this.write(chunk)
-		}
-		this.signalAndClose('end')
-		return true
+	end(_chunk?: KernelStdioChunk) {
+		this.destroy()
+		return false
 	}
 
 	close() {
-		if (this.closed) return false
-		this.signalAndClose('close')
-		return true
+		this.destroy()
+		return false
 	}
 
 	destroy() {
-		if (this.closed) return
-		this.closed = true
-		this.port?.close()
-		this.emit('close', undefined as unknown as void)
 		this.clearAll()
 	}
-
-	private signalAndClose(type: 'end' | 'close') {
-		try {
-			this.port?.postMessage({ type })
-		} catch {
-			// Ignore failures while closing the port.
-		} finally {
-			this.destroy()
-		}
-	}
 }
+
+type ChildReadableStream =
+	| MessagePortReadableStream
+	| NullReadableStream
+type ChildWritableStream =
+	| MessagePortWritableStream
+	| NullWritableStream
 
 interface ChildStdioStreams {
 	stdin: ChildReadableStream
@@ -255,27 +186,43 @@ interface ChildStdioStreams {
 	stderr: ChildWritableStream
 }
 
-const getDescriptorByFd = (
-	descriptors: ChildStdioDescriptor[],
-	fd: 0 | 1 | 2
-) =>
-	descriptors.find((descriptor) => descriptor.fd === fd) ?? {
-		fd,
-		mode: 'ignore' as StdioMode,
-	}
-
 const createChildStdio = (
 	descriptors: ChildStdioDescriptor[]
 ): ChildStdioStreams => {
-	const stdinDescriptor = getDescriptorByFd(descriptors, 0)
-	const stdoutDescriptor = getDescriptorByFd(descriptors, 1)
-	const stderrDescriptor = getDescriptorByFd(descriptors, 2)
+	const descriptorFor = (fd: 0 | 1 | 2): ChildStdioDescriptor =>
+		descriptors.find((descriptor) => descriptor.fd === fd) ?? {
+			fd,
+			mode: 'ignore' as StdioMode,
+			port: undefined,
+		}
+
+	const stdinDescriptor = descriptorFor(0)
+	const stdoutDescriptor = descriptorFor(1)
+	const stderrDescriptor = descriptorFor(2)
 
 	return {
-		stdin: new ChildReadableStream(stdinDescriptor),
-		stdout: new ChildWritableStream(stdoutDescriptor),
-		stderr: new ChildWritableStream(stderrDescriptor),
+		stdin: createReadableStream(stdinDescriptor),
+		stdout: createWritableStream(stdoutDescriptor),
+		stderr: createWritableStream(stderrDescriptor),
 	}
+}
+
+const createReadableStream = (
+	descriptor: ChildStdioDescriptor
+): ChildReadableStream => {
+	if (descriptor.mode === 'ignore' || !descriptor.port) {
+		return new NullReadableStream()
+	}
+	return new MessagePortReadableStream(descriptor.port)
+}
+
+const createWritableStream = (
+	descriptor: ChildStdioDescriptor
+): ChildWritableStream => {
+	if (descriptor.mode === 'ignore' || !descriptor.port) {
+		return new NullWritableStream()
+	}
+	return new MessagePortWritableStream(descriptor.port)
 }
 
 const toKernelChunk = (value: unknown): KernelStdioChunk => {

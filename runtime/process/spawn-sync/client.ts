@@ -7,8 +7,8 @@ import {
 	SYNC_STATUS_PENDING,
 	SYNC_STATUS_READY,
 	SYNC_TOTAL_BYTES,
-} from './fs-sync-shared.ts'
-import { decodeSpawnSyncResponse } from './spawn-sync-serialization.ts'
+} from '../../ipc/sync/shared-buffer.ts'
+import { decodeSpawnSyncResponse } from './serialization.ts'
 
 export interface SpawnSyncOutcome {
 	status: number | null
@@ -26,14 +26,14 @@ export const createSpawnSyncClient = (
 	port: MessagePort
 ): SpawnSyncClient => {
 	const worker = new Worker(
-		new URL('./spawn-sync-pump-worker.ts', import.meta.url),
-		{ type: 'module', name: 'spawn-sync-pump' }
+		new URL('../../ipc/sync/pump-worker.ts', import.meta.url),
+		{ type: 'module', name: 'sync-pump(spawn)' }
 	)
 
 	let disposed = false
 	let nextRequestId = 1
 
-	worker.postMessage({ type: 'init', port }, [port])
+	worker.postMessage({ type: 'init', channel: 'spawnSync', port }, [port])
 
 	const run = (
 		options: unknown,

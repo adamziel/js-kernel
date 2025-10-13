@@ -1,12 +1,12 @@
-import { InMemoryFileSystem } from './mixins/in-memory-fs.ts'
-import { joinPaths } from './paths-utils.ts'
+import { InMemoryFileSystem } from '../fs/in-memory/filesystem.ts'
+import { joinPaths } from '../util/paths.ts'
 import {
 	BasicEventEmitter,
 	KernelStdioChunk,
 	MessagePortReadableStream,
 	MessagePortWritableStream,
-} from './message-port-streams.ts'
-import { createProcessWorker } from './process-worker-factory.ts'
+} from '../ipc/message-port.ts'
+import { createProcessWorker } from '../process/worker-factory.ts'
 import {
 	CONTROL_MESSAGE_CHILD_EXIT,
 	CONTROL_MESSAGE_HOST_KILL_CHILD,
@@ -20,31 +20,17 @@ import {
 	CONTROL_MESSAGE_FS_RESPONSE,
 	CONTROL_MESSAGE_SPAWN_SYNC_REQUEST,
 	CONTROL_MESSAGE_SPAWN_SYNC_RESPONSE,
-} from './process-constants.ts'
+} from '../process/constants.ts'
 import {
 	normalizeSpawnOptions,
 	type NormalizedSpawnOptions,
 	type SpawnStdioOptions,
 	type StdioMode,
-} from './spawn-options.ts'
-import { serializeFsResponse, serializeFsError } from './fs-serialization.ts'
+} from '../process/spawn-options.ts'
+import { serializeFsResponse, serializeFsError } from '../fs/serialization.ts'
 
-export type { StdioMode, SpawnStdioOptions } from './spawn-options.ts'
-
-function applyMixins(derivedCtor: any, baseCtors: any[]) {
-	for (const baseCtor of baseCtors) {
-		for (const name of Object.getOwnPropertyNames(baseCtor.prototype)) {
-			if (name === 'constructor') continue
-			const descriptor = Object.getOwnPropertyDescriptor(
-				baseCtor.prototype,
-				name
-			)
-			if (descriptor) {
-				Object.defineProperty(derivedCtor.prototype, name, descriptor)
-			}
-		}
-	}
-}
+export type { StdioMode, SpawnStdioOptions } from '../process/spawn-options.ts'
+export type { KernelStdioChunk } from '../ipc/message-port.ts'
 
 export interface SpawnOptions {
 	argv: string[]
@@ -126,7 +112,7 @@ export interface KernelSubprocessExtras {
 
 export type KernelSubprocess = Worker & KernelSubprocessExtras
 
-class Kernel {
+export class Kernel extends InMemoryFileSystem {
 	private env: Record<string, string> = {
 		PATH: '/bin',
 	}
@@ -136,12 +122,7 @@ class Kernel {
 	private readonly textDecoder = new TextDecoder()
 
 	constructor() {
-		const fs = new InMemoryFileSystem()
-		Object.assign(this, fs)
-	}
-
-	private get fs(): InMemoryFileSystem {
-		return this as any
+		super()
 	}
 
 	setEnv(key: string, value: string) {
@@ -156,7 +137,7 @@ class Kernel {
 		const paths = this.getEnv('PATH').split(':')
 		for (const path of paths) {
 			const executable = joinPaths(path, name)
-			if (this.fs.existsSync(executable)) {
+			if (this.existsSync(executable)) {
 				return executable
 			}
 		}
@@ -168,7 +149,7 @@ class Kernel {
 		if (!executablePath) {
 			return null
 		}
-		const programSource = this.fs.readFileSync(executablePath, 'utf8')
+		const programSource = this.readFileSync(executablePath, 'utf8')
 		return { executablePath, programSource }
 	}
 
@@ -493,12 +474,15 @@ class Kernel {
 		method: string,
 		args: unknown[]
 	): Promise<unknown> {
-		const fsInstance: Record<string, unknown> = this.fs as any
+		const fsInstance = this as unknown as Record<string, unknown>
 		const target = fsInstance[method]
 		if (typeof target !== 'function') {
 			throw new Error(`Unsupported filesystem method '${method}'`)
 		}
-		const result = target.apply(this.fs, args)
+		const result = (target as (...args: unknown[]) => unknown).apply(
+			this,
+			args
+		)
 		if (result instanceof Promise) {
 			return await result
 		}
@@ -1065,10 +1049,4 @@ class Kernel {
 	}
 }
 
-interface Kernel extends InMemoryFileSystem {}
-
-applyMixins(Kernel, [InMemoryFileSystem])
-
-export const KernelClass = Kernel as typeof Kernel & {
-	prototype: typeof Kernel.prototype & InMemoryFileSystem
-}
+export const KernelClass = Kernel

@@ -7,7 +7,7 @@ import {
 	type FileNode,
 	type SymlinkNode,
 	type FSNode,
-} from './in-memory-fs-classes.ts'
+} from './nodes.ts'
 
 // Helper function to create filesystem errors with proper code property
 function createFsError(code, message) {

@@ -1,7 +1,13 @@
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 
+const workspaceRoot = fileURLToPath(new URL('.', import.meta.url))
+const appRoot = path.resolve(workspaceRoot, 'app')
+const runtimeRoot = path.resolve(workspaceRoot, 'runtime')
+
 export default defineConfig({
-	root: __dirname,
+	root: appRoot,
 	server: {
 		open: 'index.html',
 		headers: {
@@ -16,6 +22,9 @@ export default defineConfig({
 		},
 	},
 	resolve: {
+		alias: {
+			'@runtime': runtimeRoot,
+		},
 		extensions: ['.ts', '.js'],
 	},
 	worker: {
@@ -29,5 +38,4 @@ export default defineConfig({
 		sourcemap: true,
 	},
 })
-
 

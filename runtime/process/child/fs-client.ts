@@ -2,7 +2,7 @@ import {
 	decodeSerializedResponse,
 	deserializeFsResponse,
 	type SerializedFsResponse,
-} from './fs-serialization.ts'
+} from '../../fs/serialization.ts'
 import {
 	SYNC_HEADER_BYTES,
 	SYNC_HEADER_INT_COUNT,
@@ -12,7 +12,7 @@ import {
 	SYNC_STATUS_PENDING,
 	SYNC_STATUS_READY,
 	SYNC_TOTAL_BYTES,
-} from './fs-sync-shared.ts'
+} from '../../ipc/sync/shared-buffer.ts'
 
 type AsyncResolver = {
 	resolve(value: unknown): void
@@ -29,8 +29,8 @@ export const createKernelFsClient = (
 	fsPort: MessagePort
 ): KernelFsClient => {
 	const pumpWorker = new Worker(
-		new URL('./fs-sync-pump-worker.ts', import.meta.url),
-		{ type: 'module', name: 'fs-sync-pump' }
+		new URL('../../ipc/sync/pump-worker.ts', import.meta.url),
+		{ type: 'module', name: 'sync-pump(fs)' }
 	)
 
 	let disposed = false
@@ -76,6 +76,7 @@ export const createKernelFsClient = (
 	pumpWorker.postMessage(
 		{
 			type: 'init',
+			channel: 'fs',
 			port: fsPort,
 		},
 		[fsPort]

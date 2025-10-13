@@ -1,4 +1,4 @@
-import { Dirent, Stats } from './mixins/in-memory-fs-classes.ts'
+import { Dirent, Stats } from './in-memory/nodes.ts'
 
 export type SerializedFsValue =
 	| { type: 'undefined' }
