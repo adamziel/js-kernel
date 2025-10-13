@@ -7,9 +7,8 @@ installBusybox(kernel);
 kernel.writeFileSync(
 	`/my-script.sh`,
 	`
-echo "Hello, world from a script!";
-touch /yo.sh
-ls /
+echo "Hello, world from a script!" | cat > yo.sh
+
 	`,
 	{ mode: 0o755 }
 )

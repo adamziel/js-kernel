@@ -38,6 +38,7 @@ interface ProcessControllerLike {
 	}): Promise<ChildProcessHandle>
 	getAllEnv(): Record<string, string>
 	cwd(): string
+	stdout?: MessagePortWritableStream
 	fsSync: {
 		readFileSync(path: string, encoding?: string): Uint8Array | string
 		writeFileSync(path: string, data: Uint8Array | string): void
@@ -197,7 +198,7 @@ async function runPipeline(
 			name: stagePayload.name,
 			stdio: {
 				stdin: index === 0 ? undefined : 'pipe',
-				stdout: isLast ? (wantsFileRedirect ? 'pipe' : undefined) : 'pipe',
+				stdout: 'pipe',
 			},
 		})
 		handles.push(handle)
@@ -222,22 +223,66 @@ async function runPipeline(
 		const outputRedirect = firstRedirect(lastPayload.redirects, 'Output')
 		const appendRedirect = firstRedirect(lastPayload.redirects, 'Append')
 		const wantsFileRedirect = Boolean(outputRedirect || appendRedirect)
-		if (wantsFileRedirect) {
-			const lastHandle = handles[handles.length - 1]
-			if (lastHandle.stdout) {
+		const lastHandle = handles[handles.length - 1]
+		if (lastHandle.stdout) {
+			if (wantsFileRedirect) {
 				const target = (outputRedirect ?? appendRedirect)!.file
 				if (outputRedirect) {
 					pc.fsSync.writeFileSync(target, new Uint8Array(0))
 				}
 				pumps.push(
 					new Promise<void>((resolve) => {
-						lastHandle.stdout!.on('data' as any, (chunk: Uint8Array | string) => {
-							pc.fsSync.appendFileSync(target, toUint8(chunk as any))
-						})
-						lastHandle.stdout!.once('end' as any, () => resolve())
-						lastHandle.stdout!.once('close' as any, () => resolve())
+						lastHandle.stdout!.on(
+							'data' as any,
+							(chunk: Uint8Array | string) => {
+								pc.fsSync.appendFileSync(
+									target,
+									toUint8(chunk as any)
+								)
+							}
+						)
+						lastHandle.stdout!.once(
+							'end' as any,
+							() => resolve()
+						)
+						lastHandle.stdout!.once(
+							'close' as any,
+							() => resolve()
+						)
 					})
 				)
+			} else {
+				const parentStdout = pc.stdout
+				if (parentStdout) {
+					pumps.push(pump(lastHandle.stdout, parentStdout))
+				} else {
+					const consoleDecoder = new TextDecoder()
+					pumps.push(
+						new Promise<void>((resolve) => {
+							lastHandle.stdout!.on(
+								'data' as any,
+								(chunk: Uint8Array | string) => {
+									const text =
+										typeof chunk === 'string'
+											? chunk
+											: consoleDecoder.decode(
+													chunk as Uint8Array
+											  )
+									console.log(text)
+								}
+							)
+							const finish = () => resolve()
+							lastHandle.stdout!.once(
+								'end' as any,
+								finish
+							)
+							lastHandle.stdout!.once(
+								'close' as any,
+								finish
+							)
+						})
+					)
+				}
 			}
 		}
 	}
@@ -260,8 +305,10 @@ async function runList(
 			last = await runPipeline(pc, stmt)
 		} else if (isCommandLike(stmt)) {
 			last = await runCommand(pc, stmt)
+		} else if (hasKind(stmt, 'Comment')) {
+			continue
 		} else {
-			throw new Error('Unsupported node in simple runner')
+			throw new Error(`Unsupported node in simple runner: ${getNodeKind(stmt)}`);
 		}
 	}
 	return last
@@ -286,4 +333,3 @@ export async function runShellScript(
 		)}`
 	)
 }
-

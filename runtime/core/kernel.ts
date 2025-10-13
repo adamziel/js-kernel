@@ -134,6 +134,15 @@ export class Kernel extends InMemoryFileSystem {
 	}
 
 	resolveExecutable(name: string) {
+		if (name.includes('/')) {
+			if (!name.startsWith('/')) {
+				throw new Error('Relative paths are not supported in kernel.resolveExecutable()');
+			}
+			if (!this.existsSync(name)) {
+				throw new Error(`Executable not found: ${name}`);
+			}
+			return name
+		}
 		const paths = this.getEnv('PATH').split(':')
 		for (const path of paths) {
 			const executable = joinPaths(path, name)
