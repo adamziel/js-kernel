@@ -27,10 +27,7 @@ import {
 	type SpawnStdioOptions,
 	type StdioMode,
 } from './spawn-options.ts'
-import {
-	serializeFsResponse,
-	serializeFsError,
-} from './fs-serialization.ts'
+import { serializeFsResponse, serializeFsError } from './fs-serialization.ts'
 
 export type { StdioMode, SpawnStdioOptions } from './spawn-options.ts'
 
@@ -214,9 +211,7 @@ class Kernel {
 		}
 
 		const hostRecord =
-			record.hostPid !== null
-				? this.processes.get(record.hostPid)
-				: null
+			record.hostPid !== null ? this.processes.get(record.hostPid) : null
 		if (!hostRecord) {
 			return false
 		}
@@ -320,10 +315,7 @@ class Kernel {
 						descriptor.hostPort
 					)
 				}
-			} else if (
-				descriptor.mode === 'inherit' &&
-				descriptor.hostPort
-			) {
+			} else if (descriptor.mode === 'inherit' && descriptor.hostPort) {
 				this.attachInheritedStream(
 					descriptor.fd,
 					descriptor.hostPort,
@@ -396,18 +388,18 @@ class Kernel {
 				env: { ...options.env },
 				cwd: options.cwd,
 				debug: Boolean(options.debug),
-			stdio: resources.stdio.map((descriptor) => ({
-				fd: descriptor.fd,
-				mode: descriptor.mode,
-				port: descriptor.workerPort,
-			})),
-			programPath: resources.programPath,
-			programSource: resources.programSource,
-			controlPort: resources.control.processPort,
-			fsPort: resources.fs.processPort,
-			spawnSyncPort: resources.spawnSync.processPort,
-		},
-	}
+				stdio: resources.stdio.map((descriptor) => ({
+					fd: descriptor.fd,
+					mode: descriptor.mode,
+					port: descriptor.workerPort,
+				})),
+				programPath: resources.programPath,
+				programSource: resources.programSource,
+				controlPort: resources.control.processPort,
+				fsPort: resources.fs.processPort,
+				spawnSyncPort: resources.spawnSync.processPort,
+			},
+		}
 
 		worker.postMessage(initMessage, transferList)
 
@@ -481,10 +473,7 @@ class Kernel {
 			this.handleSpawnSyncRequest(record, requestId, options)
 		}
 
-		record.spawnSyncPort.addEventListener(
-			'message',
-			handleSpawnSyncMessage
-		)
+		record.spawnSyncPort.addEventListener('message', handleSpawnSyncMessage)
 		record.spawnSyncPort.start()
 
 		return () => {
@@ -555,7 +544,14 @@ class Kernel {
 			return
 		}
 
-		this.runSpawnSyncProcess(parentRecord, options)
+		const timeoutMs =
+			typeof options.timeout === 'number' &&
+			Number.isFinite(options.timeout) &&
+			options.timeout >= 0
+				? options.timeout
+				: 5000
+
+		this.runSpawnSyncProcess(parentRecord, options, timeoutMs)
 			.then((result) => {
 				sendResponse({ ok: true, result })
 			})
@@ -570,7 +566,8 @@ class Kernel {
 
 	private async runSpawnSyncProcess(
 		parentRecord: KernelProcessRecord,
-		options: NormalizedSpawnOptions
+		options: NormalizedSpawnOptions,
+		timeoutMs: number
 	): Promise<{
 		status: number | null
 		stdout?: string
@@ -695,15 +692,17 @@ class Kernel {
 		})
 
 		let resolved = false
+		let timeoutHandle: ReturnType<typeof setTimeout> | null = null
 
-		const finalize = (
-			status: number | null,
-			error?: string
-		): void => {
+		const finalize = (status: number | null, error?: string): void => {
 			if (resolved) {
 				return
 			}
 			resolved = true
+			if (timeoutHandle) {
+				clearTimeout(timeoutHandle)
+				timeoutHandle = null
+			}
 			stdoutStream?.destroy()
 			stderrStream?.destroy()
 			resultResolve({
@@ -768,6 +767,19 @@ class Kernel {
 			return resultPromise
 		}
 
+		timeoutHandle = setTimeout(() => {
+			finalize(
+				null,
+				`Process timed out after ${timeoutMs}ms`
+			)
+			try {
+				worker.terminate()
+			} catch {
+				// ignore
+			}
+			this.handleProcessExit(resources.pid, ExitCode.ERROR)
+		}, timeoutMs)
+
 		return resultPromise
 	}
 
@@ -788,9 +800,7 @@ class Kernel {
 				const targetPid = payload.pid
 				const requestId = payload.requestId
 				const success =
-					typeof targetPid === 'number'
-						? this.kill(targetPid)
-						: false
+					typeof targetPid === 'number' ? this.kill(targetPid) : false
 				try {
 					record.controlPort.postMessage({
 						type: CONTROL_MESSAGE_KILL_RESULT,
@@ -823,10 +833,7 @@ class Kernel {
 			}
 		}
 
-		record.controlPort.addEventListener(
-			'message',
-			handleControlMessage
-		)
+		record.controlPort.addEventListener('message', handleControlMessage)
 		record.controlPort.start()
 
 		return () => {
@@ -928,10 +935,7 @@ class Kernel {
 			}
 			if (descriptor.mode === 'pipe' && descriptor.hostPort) {
 				transferList.push(descriptor.hostPort)
-			} else if (
-				descriptor.mode === 'inherit' &&
-				descriptor.hostPort
-			) {
+			} else if (descriptor.mode === 'inherit' && descriptor.hostPort) {
 				// Child output should still reach the kernel console.
 				this.attachInheritedStream(
 					descriptor.fd,
@@ -943,10 +947,7 @@ class Kernel {
 		}
 
 		try {
-			parentRecord.controlPort.postMessage(
-				response,
-				transferList
-			)
+			parentRecord.controlPort.postMessage(response, transferList)
 		} catch {
 			// If the parent can no longer receive messages, tear down the child.
 			this.handleProcessExit(resources.pid, ExitCode.ERROR)
@@ -970,17 +971,17 @@ class Kernel {
 	}
 
 	private handleProcessExit(pid: number, code: number) {
-	const record = this.processes.get(pid)
-	if (!record || record.exitCode !== null) {
-		return
-	}
+		const record = this.processes.get(pid)
+		if (!record || record.exitCode !== null) {
+			return
+		}
 
-	record.exitCode = code
-	record.setExitCode?.(code)
+		record.exitCode = code
+		record.setExitCode?.(code)
 
-	record.controlCleanup()
-	record.fsCleanup()
-	record.spawnSyncCleanup()
+		record.controlCleanup()
+		record.fsCleanup()
+		record.spawnSyncCleanup()
 
 		this.processes.delete(pid)
 
@@ -1041,9 +1042,7 @@ class Kernel {
 		}
 
 		const logger = fd === 1 ? console.log : console.error
-		const prefix = processName
-			? `[${processName}:${pid}]`
-			: `[pid ${pid}]`
+		const prefix = processName ? `[${processName}:${pid}]` : `[pid ${pid}]`
 
 		const handleMessage = (event: MessageEvent) => {
 			const payload = event.data
@@ -1053,9 +1052,7 @@ class Kernel {
 			if (payload.type === 'data') {
 				const raw = payload.payload as KernelStdioChunk
 				const text =
-					typeof raw === 'string'
-						? raw
-						: this.textDecoder.decode(raw)
+					typeof raw === 'string' ? raw : this.textDecoder.decode(raw)
 				logger(`${prefix} ${text}`)
 			} else if (payload.type === 'end' || payload.type === 'close') {
 				port.removeEventListener('message', handleMessage)

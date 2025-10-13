@@ -19,6 +19,7 @@ export interface NormalizedSpawnOptions {
 	name: string
 	debug: boolean
 	stdio?: SpawnStdioOptions
+	timeout?: number
 }
 
 const cloneEnvRecord = (
@@ -103,6 +104,20 @@ export function normalizeSpawnOptions(
 			? Boolean(value.debug)
 			: Boolean(defaults.debug)
 
+	const timeoutRaw = (value as Record<string, unknown>).timeout
+	let timeout: number | undefined
+	if (typeof timeoutRaw === 'number' && Number.isFinite(timeoutRaw)) {
+		timeout = timeoutRaw >= 0 ? timeoutRaw : 0
+	} else if (
+		typeof timeoutRaw === 'string' &&
+		timeoutRaw.trim().length > 0
+	) {
+		const parsed = Number(timeoutRaw)
+		if (Number.isFinite(parsed)) {
+			timeout = parsed >= 0 ? parsed : 0
+		}
+	}
+
 	return {
 		argv,
 		env,
@@ -110,5 +125,6 @@ export function normalizeSpawnOptions(
 		name,
 		debug,
 		stdio,
+		timeout,
 	}
 }

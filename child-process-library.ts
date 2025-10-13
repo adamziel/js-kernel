@@ -92,6 +92,7 @@ interface ProcessControllerSpawnOptions {
 		stdout?: StdioMode
 		stderr?: StdioMode
 	}
+	timeout?: number
 }
 
 interface SpawnPlanMessage {
@@ -540,7 +541,8 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 					stderr: 'pipe',
 				},
 			}
-			return spawnSyncClient.run(adjusted)
+			adjusted.timeout = normalized.timeout
+			return spawnSyncClient.run(adjusted, normalized.timeout)
 		},
 		stdin: stdioStreams.stdin,
 		stdout: stdioStreams.stdout,

@@ -18,7 +18,7 @@ export interface SpawnSyncOutcome {
 }
 
 export interface SpawnSyncClient {
-	run(options: unknown): SpawnSyncOutcome
+	run(options: unknown, timeoutMs?: number): SpawnSyncOutcome
 	dispose(): void
 }
 
@@ -35,7 +35,10 @@ export const createSpawnSyncClient = (
 
 	worker.postMessage({ type: 'init', port }, [port])
 
-	const run = (options: unknown): SpawnSyncOutcome => {
+	const run = (
+		options: unknown,
+		timeoutMs = 5000
+	): SpawnSyncOutcome => {
 		if (disposed) {
 			throw new Error('spawnSync bridge has been disposed')
 		}
@@ -43,6 +46,9 @@ export const createSpawnSyncClient = (
 		let bufferSize = SYNC_TOTAL_BYTES
 		const MAX_BUFFER_BYTES = 16 * 1024 * 1024
 		const requestId = nextRequestId++
+		const effectiveTimeout =
+			Number.isFinite(timeoutMs) && timeoutMs >= 0 ? timeoutMs : 5000
+		const overallStart = Date.now()
 
 		for (let attempt = 0; attempt < 6; attempt += 1) {
 			const buffer = new SharedArrayBuffer(bufferSize)
@@ -61,7 +67,18 @@ export const createSpawnSyncClient = (
 					: new Error(String(error ?? 'spawnSync request failed'))
 			}
 
-			waitForSyncResult(header)
+			const elapsed = Date.now() - overallStart
+			const remaining = Math.max(effectiveTimeout - elapsed, 0)
+			if (
+				remaining === 0 &&
+				Atomics.load(header, SYNC_STATUS_INDEX) === SYNC_STATUS_PENDING
+			) {
+				throw new Error(
+					`spawnSync timed out after ${effectiveTimeout}ms waiting for kernel response`
+				)
+			}
+
+			waitForSyncResult(header, remaining)
 			const status = Atomics.load(header, SYNC_STATUS_INDEX)
 			if (status === SYNC_STATUS_OVERFLOW) {
 				const required = Atomics.load(header, SYNC_LENGTH_INDEX)
@@ -120,10 +137,40 @@ export const createSpawnSyncClient = (
 	}
 }
 
-const waitForSyncResult = (header: Int32Array) => {
-	let status = Atomics.load(header, SYNC_STATUS_INDEX)
-	while (status === SYNC_STATUS_PENDING) {
-		Atomics.wait(header, SYNC_STATUS_INDEX, SYNC_STATUS_PENDING)
-		status = Atomics.load(header, SYNC_STATUS_INDEX)
+const waitForSyncResult = (header: Int32Array, timeoutMs: number) => {
+	const start = Date.now()
+
+	for (;;) {
+		const status = Atomics.load(header, SYNC_STATUS_INDEX)
+		if (status !== SYNC_STATUS_PENDING) {
+			return
+		}
+		const elapsed = Date.now() - start
+		if (elapsed >= timeoutMs) {
+			throw new Error(
+				`spawnSync timed out after ${timeoutMs}ms waiting for kernel response`
+			)
+		}
+		const remaining = Math.max(timeoutMs - elapsed, 0)
+		const waitDuration = Math.min(remaining, 100)
+		if (typeof Atomics.wait === 'function') {
+			const result = Atomics.wait(
+				header,
+				SYNC_STATUS_INDEX,
+				SYNC_STATUS_PENDING,
+				waitDuration
+			)
+			if (result === 'not-equal' || result === 'ok') {
+				continue
+			}
+		} else {
+			const end = Date.now() + waitDuration
+			while (
+				Date.now() < end &&
+				Atomics.load(header, SYNC_STATUS_INDEX) === SYNC_STATUS_PENDING
+			) {
+				// Busy wait for environments without Atomics.wait.
+			}
+		}
 	}
 }
