@@ -46,6 +46,7 @@ interface ChildProcessInitOptions {
 	stdio: ChildStdioDescriptor[]
 	programPath: string
 	programSource: string
+	controlPort: MessagePort
 }
 
 type Listener<Arg> = (value: Arg) => void
@@ -90,6 +91,23 @@ class BasicEventEmitter<Events extends Record<string, unknown>> {
 
 	protected clearAll() {
 		this.listeners = {}
+	}
+}
+
+const CONTROL_MESSAGE_SPAWN_REQUEST = '__kernel_internal__/spawnRequest'
+const CONTROL_MESSAGE_SPAWN_RESULT = '__kernel_internal__/spawnResult'
+const CONTROL_MESSAGE_KILL_RESULT = '__kernel_internal__/killResult'
+
+interface ProcessControllerSpawnOptions {
+	argv: string[]
+	env?: Record<string, string>
+	cwd?: string
+	name?: string
+	debug?: boolean
+	stdio?: {
+		stdin?: StdioMode
+		stdout?: StdioMode
+		stderr?: StdioMode
 	}
 }
 
@@ -262,11 +280,7 @@ const toKernelChunk = (value: unknown): KernelStdioChunk => {
 	try {
 		if (typeof value === 'object') {
 			const json = JSON.stringify(value)
-			return (
-				typeof value +
-				' ' +
-				(typeof json === 'string' ? json : String(value))
-			)
+			return typeof json === 'string' ? json : String(value)
 		}
 		return String(value)
 	} catch {
@@ -283,18 +297,158 @@ const appendTrailingNewlineIfText = (
 	return chunk
 }
 
-const originalConsole = {
-	log: globalThis.console.log.bind(globalThis.console),
-	info: globalThis.console.info.bind(globalThis.console),
-	debug: globalThis.console.debug.bind(globalThis.console),
-	warn: globalThis.console.warn.bind(globalThis.console),
-	error: globalThis.console.error.bind(globalThis.console),
-}
-
 let childProcessState: ChildProcessInitOptions | null = null
 let stdioStreams: ChildStdioStreams | null = null
+let controlPort: MessagePort | null = null
 let bootstrapComplete = false
 let programStarted = false
+let nextSpawnRequestId = 1
+const pendingSpawnRequests = new Map<
+	number,
+	{
+		resolve: (pid: number) => void
+		reject: (error: Error) => void
+	}
+>()
+
+const failAllPendingSpawnRequests = (reason: string) => {
+	const error =
+		reason instanceof Error
+			? reason
+			: new Error(reason || 'Spawn request cancelled')
+	for (const { reject } of pendingSpawnRequests.values()) {
+		reject(error)
+	}
+	pendingSpawnRequests.clear()
+}
+
+const cleanupControlPort = (reason?: string) => {
+	if (!controlPort) {
+		return
+	}
+	controlPort.removeEventListener('message', handleControlResponse)
+	try {
+		controlPort.close()
+	} catch {
+		// Ignore failures during control port cleanup.
+	}
+	controlPort = null
+	failAllPendingSpawnRequests(
+		reason ?? 'Control channel closed before spawn response'
+	)
+}
+
+function handleControlResponse(event: MessageEvent) {
+	const payload = event.data
+	if (!payload || typeof payload !== 'object') {
+		return
+	}
+
+	if (payload.type === CONTROL_MESSAGE_SPAWN_RESULT) {
+		const requestId = payload.requestId
+		if (typeof requestId !== 'number') {
+			return
+		}
+		const pending = pendingSpawnRequests.get(requestId)
+		if (!pending) {
+			return
+		}
+		pendingSpawnRequests.delete(requestId)
+
+		if (payload.error && typeof payload.error.code === 'number') {
+			pending.reject(
+				new Error(
+					`Spawn failed with exit code ${payload.error.code}`
+				)
+			)
+		} else if (
+			payload.result &&
+			typeof payload.result.pid === 'number'
+		) {
+			pending.resolve(payload.result.pid)
+		} else {
+			pending.reject(new Error('Spawn result missing pid'))
+		}
+	} else if (payload.type === CONTROL_MESSAGE_KILL_RESULT) {
+		// Kill acknowledgements are not tracked yet.
+	}
+}
+
+const cloneEnvRecord = (
+	env?: Record<string, string>
+): Record<string, string> => {
+	if (!env) {
+		return {}
+	}
+	const cloned: Record<string, string> = {}
+	for (const [key, value] of Object.entries(env)) {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+const requestSpawnFromKernel = (
+	options: ProcessControllerSpawnOptions
+): Promise<number> => {
+	if (!childProcessState) {
+		return Promise.reject(
+			new Error('processController.spawn is unavailable before init')
+		)
+	}
+	if (!controlPort) {
+		return Promise.reject(
+			new Error('processController.spawn is not available')
+		)
+	}
+	if (!options || !Array.isArray(options.argv) || options.argv.length === 0) {
+		return Promise.reject(new Error('spawn requires a non-empty argv array'))
+	}
+
+	const argv = options.argv.map((arg) =>
+		typeof arg === 'string' ? arg : String(arg)
+	)
+	const env = cloneEnvRecord(childProcessState.env)
+	if (options.env && typeof options.env === 'object') {
+		for (const [key, value] of Object.entries(options.env)) {
+			env[key] = value
+		}
+	}
+	const cwd =
+		typeof options.cwd === 'string' && options.cwd.length > 0
+			? options.cwd
+			: childProcessState.cwd
+
+	const requestId = nextSpawnRequestId++
+
+	return new Promise((resolve, reject) => {
+		pendingSpawnRequests.set(requestId, { resolve, reject })
+
+		try {
+			controlPort.postMessage({
+				type: CONTROL_MESSAGE_SPAWN_REQUEST,
+				requestId,
+				options: {
+					argv,
+					env,
+					cwd,
+					name: options.name,
+					debug:
+						typeof options.debug === 'boolean'
+							? options.debug
+							: childProcessState?.debug ?? false,
+					stdio: options.stdio,
+				},
+			})
+		} catch (error) {
+			pendingSpawnRequests.delete(requestId)
+			reject(
+				error instanceof Error
+					? error
+					: new Error(String(error ?? 'Failed to request spawn'))
+			)
+		}
+	})
+}
 
 export function initChildProcess(options: ChildProcessInitOptions) {
 	const clonedOptions: ChildProcessInitOptions = {
@@ -309,6 +463,14 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 
 	stdioStreams = createChildStdio(clonedOptions.stdio)
 	childProcessState = clonedOptions
+
+	cleanupControlPort('reinitializing control channel')
+	controlPort = options.controlPort
+	if (!controlPort) {
+		throw new Error('Missing control port from kernel payload')
+	}
+	controlPort.addEventListener('message', handleControlResponse)
+	controlPort.start()
 
 	const processController = {
 		argv() {
@@ -335,10 +497,14 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 		executablePath() {
 			return childProcessState!.programPath
 		},
+		spawn(spawnOptions: ProcessControllerSpawnOptions) {
+			return requestSpawnFromKernel(spawnOptions)
+		},
 		stdin: stdioStreams.stdin,
 		stdout: stdioStreams.stdout,
 		stderr: stdioStreams.stderr,
 		exit(code: number) {
+			cleanupControlPort('process exiting')
 			stdioStreams?.stdout.end()
 			stdioStreams?.stderr.end()
 			self.postMessage({ type: 'exit', data: code })
@@ -352,25 +518,6 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 export function installStdIo(isDebug: boolean) {
 	if (!stdioStreams) {
 		throw new Error('installStdIo called before initChildProcess')
-	}
-
-	// Detect Bun runtime and warn about potential stdout flushing issues
-	if (typeof Bun !== 'undefined') {
-		const errorMessage = `
-╔════════════════════════════════════════════════════════════════════════════════════════╗
-║                                 BUN RUNTIME WARNING                                    ║
-╠════════════════════════════════════════════════════════════════════════════════════════╣
-║                                                                                        ║
-║  Workers in Bun often terminate before they can flush stdout/stderr buffers!           ║
-║  This can cause output to be lost, making debugging extremely difficult.               ║
-║                                                                                        ║
-║  If you experience missing console output or incomplete logs, this is likely           ║
-║  the cause. Consider using Node.js for more reliable worker output handling.           ║
-║                                                                                        ║
-╚════════════════════════════════════════════════════════════════════════════════════════╝
-		`.trim()
-		
-		console.error(errorMessage);
 	}
 
 	const originalConsole = globalThis.console
@@ -387,51 +534,33 @@ export function installStdIo(isDebug: boolean) {
 			})
 			.join(' ')
 
-	const writeStdout = (value: unknown) => {
-		const chunk = appendTrailingNewlineIfText(toKernelChunk(value))
-		stdioStreams!.stdout.write(chunk)
+	const writeStdout = (...args: unknown[]) => {
+		if (isDebug) {
+			originalConsole.log(...args)
+		} else {
+			const value = joinArgs(args)
+			const chunk = appendTrailingNewlineIfText(toKernelChunk(value))
+			stdioStreams!.stdout.write(chunk)
+		}
 	}
 
-	const writeStderr = (value: unknown) => {
-		// const chunk = appendTrailingNewlineIfText(toKernelChunk(value))
-		stdioStreams!.stderr.write('a') //chunk)
+	const writeStderr = (...args: unknown[]) => {
+		if (isDebug) {
+			originalConsole.error(...args)
+		} else {
+			const value = joinArgs(args)
+			const chunk = appendTrailingNewlineIfText(toKernelChunk(value))
+			stdioStreams!.stderr.write(chunk)
+		}
 	}
 
 	globalThis.console = {
 		...originalConsole,
-		log: (...args: unknown[]) => {
-			if (isDebug && typeof originalConsole?.log === 'function') {
-				originalConsole.log(...(args as any))
-			}
-			writeStdout(joinArgs(args))
-		},
-		info: (...args: unknown[]) => {
-			if (isDebug && typeof originalConsole?.info === 'function') {
-				originalConsole.info(...(args as any))
-			}
-			writeStdout(joinArgs(args))
-		},
-		debug: (...args: unknown[]) => {
-			if (isDebug && typeof originalConsole?.debug === 'function') {
-				originalConsole.debug(...(args as any))
-			}
-			writeStdout(joinArgs(args))
-		},
-		warn: (...args: unknown[]) => {
-			if (isDebug && typeof originalConsole?.warn === 'function') {
-				originalConsole.warn(...(args as any))
-			}
-			writeStderr(joinArgs(args))
-		},
-		error: (...args: unknown[]) => {
-			if (isDebug && typeof originalConsole?.error === 'function') {
-				originalConsole.error(...(args as any))
-			}
-			originalConsole.log(args.length)
-
-			// writeStderr(joinArgs(args))
-			writeStderr(args.length)
-		},
+		log: writeStdout,
+		info: writeStdout,
+		debug: writeStdout,
+		warn: writeStderr,
+		error: writeStderr,
 	}
 }
 

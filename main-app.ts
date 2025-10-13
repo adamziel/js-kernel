@@ -9,16 +9,25 @@ console.log("Hello, world!");
 console.error(new Error("Hello, error!"));
 console.log(new Uint8Array([1, 2, 3]));
 
-processController.spawn(['hello-2'], {
-	stdio: {
-		stdout: 'pipe',
-		stderr: 'pipe',
-	},
-})
+async function main() {
+	const spawned = await processController.spawn({
+		argv: ['hello-2'],
+		stdio: {
+			stdout: 'inherit',
+			stderr: 'inherit',
+		},
+		debug: true,
+	});
+	console.log('Spawned process', spawned);
+	console.log({spawned});
+	await new Promise(resolve => setTimeout(resolve, 8000));
+}
+main();
 `, {
 	mode: 0o755,
 })
 kernel.writeFileSync('/bin/hello-2', `
+	throw new Error("Nested hello, error!");
 console.log("Nested hello, world!");
 `, {
 	mode: 0o755,
@@ -33,7 +42,7 @@ const helloWorker = kernel.spawn({
 		stdout: 'pipe',
 		stderr: 'pipe',
 	},
-	// debug: true,
+	debug: true,
 })
 
 if (typeof helloWorker === 'number') {
