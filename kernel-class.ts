@@ -17,6 +17,13 @@ import {
 	CONTROL_MESSAGE_SPAWN_REQUEST,
 	CONTROL_MESSAGE_SPAWN_RESULT,
 } from './process-constants.ts'
+import {
+	normalizeSpawnOptions,
+	type SpawnStdioOptions,
+	type StdioMode,
+} from './spawn-options.ts'
+
+export type { StdioMode, SpawnStdioOptions } from './spawn-options.ts'
 
 function applyMixins(derivedCtor: any, baseCtors: any[]) {
 	for (const baseCtor of baseCtors) {
@@ -31,14 +38,6 @@ function applyMixins(derivedCtor: any, baseCtors: any[]) {
 			}
 		}
 	}
-}
-
-export type StdioMode = 'inherit' | 'ignore' | 'pipe'
-
-export interface SpawnStdioOptions {
-	stdin?: StdioMode
-	stdout?: StdioMode
-	stderr?: StdioMode
 }
 
 export interface SpawnOptions {
@@ -454,7 +453,7 @@ class Kernel {
 			return
 		}
 
-		const options = this.normalizeSpawnOptions(rawOptions)
+		const options = normalizeSpawnOptions(rawOptions)
 		if (!options) {
 			this.sendSpawnFailure(parentRecord.controlPort, requestId)
 			return
@@ -542,67 +541,6 @@ class Kernel {
 			// If the parent can no longer receive messages, tear down the child.
 			this.handleProcessExit(resources.pid, ExitCode.ERROR)
 		}
-	}
-
-	private normalizeSpawnOptions(rawOptions: unknown): SpawnOptions | null {
-		if (!rawOptions || typeof rawOptions !== 'object') {
-			return null
-		}
-		const value = rawOptions as Record<string, unknown>
-		if (!Array.isArray(value.argv) || value.argv.length === 0) {
-			return null
-		}
-		const argv = value.argv.map((arg) =>
-			typeof arg === 'string' ? arg : String(arg)
-		)
-		const env: Record<string, string> = {}
-		if (value.env && typeof value.env === 'object') {
-			for (const [key, envValue] of Object.entries(
-				value.env as Record<string, unknown>
-			)) {
-				env[key] =
-					typeof envValue === 'string'
-						? envValue
-						: String(envValue ?? '')
-			}
-		}
-		const cwd =
-			typeof value.cwd === 'string' && value.cwd.length > 0
-				? value.cwd
-				: '/'
-		const name =
-			typeof value.name === 'string'
-				? value.name
-				: argv[0] ?? 'process'
-		const stdio = value.stdio && typeof value.stdio === 'object'
-			? {
-					stdin: this.normalizeStdioMode(
-						(value.stdio as SpawnStdioOptions).stdin
-					),
-					stdout: this.normalizeStdioMode(
-						(value.stdio as SpawnStdioOptions).stdout
-					),
-					stderr: this.normalizeStdioMode(
-						(value.stdio as SpawnStdioOptions).stderr
-					),
-			  }
-			: undefined
-
-		return {
-			argv,
-			env,
-			cwd,
-			name,
-			debug: Boolean(value.debug),
-			stdio,
-		}
-	}
-
-	private normalizeStdioMode(mode: unknown): StdioMode | undefined {
-		if (mode === 'inherit' || mode === 'ignore' || mode === 'pipe') {
-			return mode
-		}
-		return undefined
 	}
 
 	private sendSpawnFailure(

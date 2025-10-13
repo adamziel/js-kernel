@@ -15,6 +15,13 @@ import {
 	CONTROL_MESSAGE_SPAWN_RESULT,
 } from './process-constants.ts'
 import { createProcessWorker } from './process-worker-factory.ts'
+import {
+	normalizeSpawnOptions,
+	type NormalizedSpawnOptions,
+	type StdioMode,
+} from './spawn-options.ts'
+
+export type { StdioMode } from './spawn-options.ts'
 
 // Request kernel message ports from parent
 export const requestKernelPorts = (): Promise<[MessagePort, MessagePort]> => {
@@ -46,8 +53,6 @@ export const requestKernelPorts = (): Promise<[MessagePort, MessagePort]> => {
 	})
 }
 
-export type StdioMode = 'inherit' | 'ignore' | 'pipe'
-
 interface ChildStdioDescriptor {
 	fd: 0 | 1 | 2
 	mode: StdioMode
@@ -72,19 +77,6 @@ interface ProcessControllerSpawnOptions {
 	cwd?: string
 	name?: string
 	debug?: boolean
-	stdio?: {
-		stdin?: StdioMode
-		stdout?: StdioMode
-		stderr?: StdioMode
-	}
-}
-
-interface NormalizedSpawnOptions {
-	argv: string[]
-	env: Record<string, string>
-	cwd: string
-	name: string
-	debug: boolean
 	stdio?: {
 		stdin?: StdioMode
 		stdout?: StdioMode
@@ -317,19 +309,6 @@ const appendTrailingNewlineIfText = (
 	return chunk
 }
 
-const cloneEnvRecord = (
-	env?: Record<string, string>
-): Record<string, string> => {
-	if (!env) {
-		return {}
-	}
-	const cloned: Record<string, string> = {}
-	for (const [key, value] of Object.entries(env)) {
-		cloned[key] = value
-	}
-	return cloned
-}
-
 let childProcessState: ChildProcessInitOptions | null = null
 let stdioStreams: ChildStdioStreams | null = null
 let controlPort: MessagePort | null = null
@@ -486,7 +465,11 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 			return childProcessState!.programPath
 		},
 		spawn(spawnOptions: ProcessControllerSpawnOptions) {
-			const normalized = normalizeSpawnOptions(spawnOptions)
+			const normalized = normalizeSpawnOptions(spawnOptions, {
+				env: childProcessState?.env,
+				cwd: childProcessState?.cwd,
+				debug: childProcessState?.debug,
+			})
 			if (!normalized) {
 				throw new Error('Invalid spawn options')
 			}
@@ -664,56 +647,6 @@ const startProgram = (options: ChildProcessInitOptions) => {
 	}
 	programStarted = true
 	executeProgram(options)
-}
-
-function normalizeSpawnOptions(
-	input: ProcessControllerSpawnOptions
-): NormalizedSpawnOptions | null {
-	if (!input || !Array.isArray(input.argv) || input.argv.length === 0) {
-		return null
-	}
-
-	const argv = input.argv.map((arg) =>
-		typeof arg === 'string' ? arg : String(arg)
-	)
-	const env = cloneEnvRecord(childProcessState?.env)
-	if (input.env && typeof input.env === 'object') {
-		for (const [key, value] of Object.entries(input.env)) {
-			env[key] = typeof value === 'string' ? value : String(value ?? '')
-		}
-	}
-
-	const cwd =
-		typeof input.cwd === 'string' && input.cwd.length > 0
-			? input.cwd
-			: childProcessState?.cwd ?? '/'
-	const name =
-		typeof input.name === 'string' ? input.name : argv[0] ?? 'process'
-
-	const stdio =
-		input.stdio && typeof input.stdio === 'object'
-			? {
-					stdin: normalizeStdioMode(input.stdio.stdin),
-					stdout: normalizeStdioMode(input.stdio.stdout),
-					stderr: normalizeStdioMode(input.stdio.stderr),
-			  }
-			: undefined
-
-	return {
-		argv,
-		env,
-		cwd,
-		name,
-		debug: Boolean(input.debug ?? childProcessState?.debug ?? false),
-		stdio,
-	}
-}
-
-function normalizeStdioMode(mode: unknown): StdioMode | undefined {
-	if (mode === 'inherit' || mode === 'ignore' || mode === 'pipe') {
-		return mode
-	}
-	return undefined
 }
 
 function requestSpawnFromKernel(
