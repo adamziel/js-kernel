@@ -1,5 +1,22 @@
 import { InMemoryFileSystem } from './mixins/in-memory-fs.ts'
 import { joinPaths } from './paths-utils.ts'
+import {
+	BasicEventEmitter,
+	KernelStdioChunk,
+	MessagePortReadableStream,
+	MessagePortWritableStream,
+} from './message-port-streams.ts'
+import { createProcessWorker } from './process-worker-factory.ts'
+import {
+	CONTROL_MESSAGE_CHILD_EXIT,
+	CONTROL_MESSAGE_HOST_KILL_CHILD,
+	CONTROL_MESSAGE_KILL_REQUEST,
+	CONTROL_MESSAGE_KILL_RESULT,
+	CONTROL_MESSAGE_PROCESS_EXIT,
+	CONTROL_MESSAGE_REPORT_CHILD_EXIT,
+	CONTROL_MESSAGE_SPAWN_REQUEST,
+	CONTROL_MESSAGE_SPAWN_RESULT,
+} from './process-constants.ts'
 
 function applyMixins(derivedCtor: any, baseCtors: any[]) {
 	for (const baseCtor of baseCtors) {
@@ -24,14 +41,13 @@ export interface SpawnStdioOptions {
 	stderr?: StdioMode
 }
 
-interface SpawnOptions {
+export interface SpawnOptions {
 	argv: string[]
 	env: Record<string, string>
 	cwd: string
 	name: string
 	debug?: boolean
 	stdio?: SpawnStdioOptions
-	parentPid?: number
 }
 
 export const enum ExitCode {
@@ -40,174 +56,55 @@ export const enum ExitCode {
 	NOT_FOUND = 127,
 }
 
-type Listener<Arg> = (input: Arg) => void
-
-class BasicEventEmitter<Events extends Record<string, unknown>> {
-	private listeners: {
-		[K in keyof Events]?: Set<Listener<Events[K]>>
-	} = {}
-
-	on<K extends keyof Events>(event: K, listener: Listener<Events[K]>) {
-		if (!this.listeners[event]) {
-			this.listeners[event] = new Set()
-		}
-		this.listeners[event]!.add(listener)
-		return () => this.off(event, listener)
-	}
-
-	once<K extends keyof Events>(event: K, listener: Listener<Events[K]>) {
-		const wrapper: Listener<Events[K]> = (value) => {
-			this.off(event, wrapper)
-			listener(value)
-		}
-		return this.on(event, wrapper)
-	}
-
-	off<K extends keyof Events>(event: K, listener: Listener<Events[K]>) {
-		const listeners = this.listeners[event]
-		if (!listeners) return
-		listeners.delete(listener)
-		if (listeners.size === 0) {
-			delete this.listeners[event]
-		}
-	}
-
-	protected emit<K extends keyof Events>(event: K, value: Events[K]) {
-		const listeners = this.listeners[event]
-		if (!listeners) return
-		for (const listener of Array.from(listeners)) {
-			listener(value)
-		}
-	}
-
-	protected clearAll() {
-		this.listeners = {}
-	}
-}
-
-export type KernelStdioChunk = string | Uint8Array
-
-interface KernelReadableEvents {
-	data: KernelStdioChunk
-	end: void
-	close: void
-}
-
-interface KernelWritableEvents {
-	close: void
-}
-
-export class KernelReadableStream extends BasicEventEmitter<KernelReadableEvents> {
-	private readonly handleMessage = (event: MessageEvent) => {
-		const payload = event.data
-		if (!payload || typeof payload !== 'object') {
-			return
-		}
-		if (payload.type === 'data') {
-			this.emit('data', payload.payload)
-		} else if (payload.type === 'end') {
-			this.emit('end', undefined as unknown as void)
-			this.close()
-		} else if (payload.type === 'close') {
-			this.close()
-		}
-	}
-
-	private closed = false
-
-	constructor(private readonly port: MessagePort) {
-		super()
-		port.addEventListener('message', this.handleMessage)
-		port.start()
-	}
-
-	close() {
-		if (this.closed) return
-		this.closed = true
-		this.port.removeEventListener('message', this.handleMessage)
-		this.port.close()
-		this.emit('close', undefined as unknown as void)
-		this.clearAll()
-	}
-
-	destroy() {
-		this.close()
-	}
-}
-
-export class KernelWritableStream extends BasicEventEmitter<KernelWritableEvents> {
-	private closed = false
-
-	constructor(private readonly port: MessagePort) {
-		super()
-		port.start()
-	}
-
-	write(chunk: KernelStdioChunk) {
-		if (this.closed) return false
-		try {
-			this.port.postMessage({ type: 'data', payload: chunk })
-			return true
-		} catch {
-			this.close()
-			return false
-		}
-	}
-
-	end(chunk?: KernelStdioChunk) {
-		if (this.closed) return false
-		if (typeof chunk !== 'undefined') {
-			this.write(chunk)
-		}
-		this.signalAndClose('end')
-		return true
-	}
-
-	close() {
-		if (this.closed) return false
-		this.signalAndClose('close')
-		return true
-	}
-
-	destroy() {
-		if (this.closed) return
-		this.closed = true
-		this.port.close()
-		this.emit('close', undefined as unknown as void)
-		this.clearAll()
-	}
-
-	private signalAndClose(type: 'end' | 'close') {
-		try {
-			this.port.postMessage({ type })
-		} finally {
-			this.destroy()
-		}
-	}
-}
-
-interface KernelStdioDescriptor {
-	fd: 0 | 1 | 2
-	mode: StdioMode
-	port?: MessagePort
-}
-
 type ExitListener = (code: number) => void
 
-const CONTROL_MESSAGE_SPAWN_REQUEST = '__kernel_internal__/spawnRequest'
-const CONTROL_MESSAGE_SPAWN_RESULT = '__kernel_internal__/spawnResult'
-const CONTROL_MESSAGE_KILL_REQUEST = '__kernel_internal__/killRequest'
-const CONTROL_MESSAGE_KILL_RESULT = '__kernel_internal__/killResult'
+interface PreparedStdioResource {
+	fd: 0 | 1 | 2
+	mode: StdioMode
+	workerPort?: MessagePort
+	hostPort?: MessagePort
+}
 
-interface KernelSubprocessExtras {
+interface PreparedSpawnResources {
 	pid: number
-	stdin?: KernelWritableStream
-	stdout?: KernelReadableStream
-	stderr?: KernelReadableStream
+	programPath: string
+	programSource: string
+	stdio: PreparedStdioResource[]
+	control: {
+		kernelPort: MessagePort
+		processPort: MessagePort
+	}
+}
+
+interface KernelProcessRecord {
+	pid: number
+	parentPid: number | null
+	name: string
+	controlPort: MessagePort
+	children: Set<number>
+	hostType: 'kernel' | 'process'
+	hostPid: number | null
+	worker?: Worker
+	exitCode: number | null
+	exitListeners?: Set<ExitListener>
+	stdio?: {
+		stdin?: MessagePortWritableStream
+		stdout?: MessagePortReadableStream
+		stderr?: MessagePortReadableStream
+	}
+	controlCleanup: () => void
+	setExitCode?: (code: number) => void
+}
+
+export interface KernelSubprocessExtras {
+	pid: number
+	stdin?: MessagePortWritableStream
+	stdout?: MessagePortReadableStream
+	stderr?: MessagePortReadableStream
 	onExit(listener: ExitListener): void
 	offExit(listener: ExitListener): void
 	kill(): void
-	exitCode: number | null
+	readonly exitCode: number | null
 }
 
 export type KernelSubprocess = Worker & KernelSubprocessExtras
@@ -218,14 +115,7 @@ class Kernel {
 	}
 
 	private pidCounter = 1
-	private readonly processes = new Map<
-		number,
-		{
-			subprocess: KernelSubprocess
-			parentPid: number | null
-			children: Set<number>
-		}
-	>()
+	private readonly processes = new Map<number, KernelProcessRecord>()
 	private readonly textDecoder = new TextDecoder()
 
 	constructor() {
@@ -256,215 +146,168 @@ class Kernel {
 		return null
 	}
 
-	spawn(options: SpawnOptions): KernelSubprocess | ExitCode {
-		const executablePath = this.resolveExecutable(options.argv[0])
+	private loadProgram(command: string) {
+		const executablePath = this.resolveExecutable(command)
 		if (!executablePath) {
+			return null
+		}
+		const programSource = this.fs.readFileSync(executablePath, 'utf8')
+		return { executablePath, programSource }
+	}
+
+	spawn(options: SpawnOptions): KernelSubprocess | ExitCode {
+		const program = this.loadProgram(options.argv[0])
+		if (!program) {
 			return ExitCode.NOT_FOUND
 		}
 
-		const programSource = this.fs.readFileSync(executablePath, 'utf8')
+		const resources = this.prepareSpawnResources(
+			options,
+			program,
+			null /* parentPid */
+		)
 
-		let worker: Worker
-		try {
-			worker = new Worker(
-				new URL('./child-process-library.ts', import.meta.url),
-				{
-					type: 'module',
-				}
-			)
-		} catch (e) {
-			console.error(e)
-			return ExitCode.ERROR
+		return this.createKernelHostedProcess(options, program, resources)
+	}
+
+	getProcess(pid: number) {
+		const entry = this.processes.get(pid)
+		return entry && entry.worker ? (entry.worker as KernelSubprocess) : null
+	}
+
+	listProcesses() {
+		return Array.from(this.processes.values())
+			.filter((record) => record.worker)
+			.map((record) => record.worker as KernelSubprocess)
+	}
+
+	kill(pid: number) {
+		const record = this.processes.get(pid)
+		if (!record || record.exitCode !== null) {
+			return false
 		}
 
+		if (record.hostType === 'kernel') {
+			record.worker?.terminate()
+			this.handleProcessExit(pid, ExitCode.ERROR)
+			return true
+		}
+
+		const hostRecord =
+			record.hostPid !== null
+				? this.processes.get(record.hostPid)
+				: null
+		if (!hostRecord) {
+			return false
+		}
+
+		try {
+			hostRecord.controlPort.postMessage({
+				type: CONTROL_MESSAGE_HOST_KILL_CHILD,
+				pid,
+			})
+		} catch {
+			return false
+		}
+		return true
+	}
+
+	private prepareSpawnResources(
+		options: SpawnOptions,
+		program: { executablePath: string; programSource: string },
+		parentPid: number | null
+	): PreparedSpawnResources {
 		const pid = this.pidCounter++
-		const parentPid = options.parentPid ?? null
 		const stdioModes: [StdioMode, StdioMode, StdioMode] = [
 			options.stdio?.stdin ?? 'inherit',
 			options.stdio?.stdout ?? 'inherit',
 			options.stdio?.stderr ?? 'inherit',
 		]
 
-		const transferList: MessagePort[] = []
-		const childDescriptors: KernelStdioDescriptor[] = []
-		const controlChannel = new MessageChannel()
-		transferList.push(controlChannel.port1)
-		const controlPort = controlChannel.port2
-
-		let parentStdin: KernelWritableStream | undefined
-		let parentStdout: KernelReadableStream | undefined
-		let parentStderr: KernelReadableStream | undefined
+		const stdio: PreparedStdioResource[] = []
 
 		stdioModes.forEach((mode, fdIndex) => {
 			const fd = fdIndex as 0 | 1 | 2
 			if (mode === 'ignore') {
-				childDescriptors.push({ fd, mode })
+				stdio.push({ fd, mode })
 				return
 			}
 
 			const channel = new MessageChannel()
-			childDescriptors.push({
+
+			stdio.push({
 				fd,
 				mode,
-				port: channel.port1,
+				workerPort: channel.port1,
+				hostPort: channel.port2,
 			})
-			transferList.push(channel.port1)
-
-			if (mode === 'pipe') {
-				if (fd === 0) {
-					parentStdin = new KernelWritableStream(channel.port2)
-				} else if (fd === 1) {
-					parentStdout = new KernelReadableStream(channel.port2)
-				} else {
-					parentStderr = new KernelReadableStream(channel.port2)
-				}
-			} else {
-				this.attachInheritedStream(
-					fd,
-					channel.port2,
-					options.name,
-					pid
-				)
-			}
 		})
 
-		const respondOnControlPort = (message: unknown) => {
-			try {
-				controlPort.postMessage(message)
-			} catch {
-				// Ignore failures when the child process has already exited.
-			}
+		const controlChannel = new MessageChannel()
+
+		return {
+			pid,
+			programPath: program.executablePath,
+			programSource: program.programSource,
+			stdio,
+			control: {
+				kernelPort: controlChannel.port1,
+				processPort: controlChannel.port2,
+			},
 		}
+	}
 
-		const handleControlMessage = (event: MessageEvent) => {
-			const payload = event.data
-			if (!payload || typeof payload !== 'object') {
-				return
+	private createKernelHostedProcess(
+		options: SpawnOptions,
+		program: { executablePath: string; programSource: string },
+		resources: PreparedSpawnResources
+	): KernelSubprocess {
+		let parentStdin: MessagePortWritableStream | undefined
+		let parentStdout: MessagePortReadableStream | undefined
+		let parentStderr: MessagePortReadableStream | undefined
+
+		const transferList: MessagePort[] = [
+			resources.control.processPort,
+		]
+
+		for (const descriptor of resources.stdio) {
+			if (descriptor.workerPort) {
+				transferList.push(descriptor.workerPort)
 			}
-
-			if (payload.type === CONTROL_MESSAGE_SPAWN_REQUEST) {
-				const requestId = payload.requestId
-				const childOptions = payload.options
-				if (
-					typeof requestId !== 'number' ||
-					!childOptions ||
-					!Array.isArray(childOptions.argv)
-				) {
-					respondOnControlPort({
-						type: CONTROL_MESSAGE_SPAWN_RESULT,
-						requestId,
-						error: { code: ExitCode.ERROR },
-					})
-					return
-				}
-
-				const normalizedEnv: Record<string, string> = {}
-				if (childOptions.env && typeof childOptions.env === 'object') {
-					for (const [key, value] of Object.entries(childOptions.env)) {
-						if (typeof value === 'string') {
-							normalizedEnv[key] = value
-						} else if (value != null) {
-							normalizedEnv[key] = String(value)
-						}
-					}
-				}
-
-				const spawnResult = this.spawn({
-					argv: childOptions.argv.map((arg: unknown) =>
-						typeof arg === 'string' ? arg : String(arg)
-					),
-					env: normalizedEnv,
-					cwd:
-						typeof childOptions.cwd === 'string'
-							? childOptions.cwd
-							: '/',
-					name:
-						typeof childOptions.name === 'string'
-							? childOptions.name
-							: `${options.name ?? 'process'}:${pid}`,
-					debug: Boolean(childOptions.debug ?? options.debug),
-					stdio: childOptions.stdio,
-					parentPid: pid,
-				})
-
-				if (typeof spawnResult === 'number') {
-					respondOnControlPort({
-						type: CONTROL_MESSAGE_SPAWN_RESULT,
-						requestId,
-						error: { code: spawnResult },
-					})
+			if (descriptor.mode === 'pipe' && descriptor.hostPort) {
+				if (descriptor.fd === 0) {
+					parentStdin = new MessagePortWritableStream(
+						descriptor.hostPort
+					)
+				} else if (descriptor.fd === 1) {
+					parentStdout = new MessagePortReadableStream(
+						descriptor.hostPort
+					)
 				} else {
-					respondOnControlPort({
-						type: CONTROL_MESSAGE_SPAWN_RESULT,
-						requestId,
-						result: { pid: spawnResult.pid },
-					})
+					parentStderr = new MessagePortReadableStream(
+						descriptor.hostPort
+					)
 				}
-			} else if (payload.type === CONTROL_MESSAGE_KILL_REQUEST) {
-				const requestId = payload.requestId
-				const targetPid = payload.pid
-				const success =
-					typeof targetPid === 'number' ? this.kill(targetPid) : false
-
-				if (typeof requestId === 'number') {
-					respondOnControlPort({
-						type: CONTROL_MESSAGE_KILL_RESULT,
-						requestId,
-						success,
-					})
-				}
+			} else if (
+				descriptor.mode === 'inherit' &&
+				descriptor.hostPort
+			) {
+				this.attachInheritedStream(
+					descriptor.fd,
+					descriptor.hostPort,
+					options.name,
+					resources.pid
+				)
 			}
 		}
 
-		controlPort.addEventListener('message', handleControlMessage)
-		controlPort.start()
+		const worker = createProcessWorker()
 
 		let exitCode: number | null = null
-		let exited = false
 		const exitListeners = new Set<ExitListener>()
 
-		const cleanup = (code: number) => {
-			if (exited) {
-				return
-			}
-			exited = true
-			exitCode = code
-			parentStdin?.destroy()
-			parentStdout?.destroy()
-			parentStderr?.destroy()
-			this.releaseProcessResources(pid, controlPort, handleControlMessage)
-			for (const listener of Array.from(exitListeners)) {
-				listener(code)
-			}
-			exitListeners.clear()
-		}
-
-		const handleMessage = (event: MessageEvent) => {
-			const payload = event.data
-			if (payload && typeof payload === 'object') {
-				if (payload.type === 'exit') {
-					worker.removeEventListener('message', handleMessage)
-					worker.removeEventListener('error', handleError)
-					const code =
-						typeof payload.data === 'number'
-							? payload.data
-							: ExitCode.ERROR
-					cleanup(code)
-				}
-			}
-		}
-
-		const handleError = () => {
-			worker.removeEventListener('message', handleMessage)
-			worker.removeEventListener('error', handleError)
-			cleanup(ExitCode.ERROR)
-		}
-
-		worker.addEventListener('message', handleMessage)
-		worker.addEventListener('error', handleError)
-
 		const subprocess = Object.assign(worker, {
-			pid,
+			pid: resources.pid,
 			stdin: parentStdin,
 			stdout: parentStdout,
 			stderr: parentStderr,
@@ -475,37 +318,54 @@ class Kernel {
 				exitListeners.delete(listener)
 			},
 			kill: () => {
-				worker.terminate()
-				handleError()
+				this.kill(resources.pid)
 			},
 			get exitCode() {
 				return exitCode
 			},
 		}) as KernelSubprocess
 
-		this.processes.set(pid, {
-			subprocess,
-			parentPid,
+		const record: KernelProcessRecord = {
+			pid: resources.pid,
+			parentPid: null,
+			name: options.name,
+			controlPort: resources.control.kernelPort,
 			children: new Set<number>(),
-		})
-
-		if (parentPid !== null) {
-			const parentEntry = this.processes.get(parentPid)
-			parentEntry?.children.add(pid)
+			hostType: 'kernel',
+			hostPid: null,
+			worker,
+			exitCode: null,
+			exitListeners,
+			stdio: {
+				stdin: parentStdin,
+				stdout: parentStdout,
+				stderr: parentStderr,
+			},
+			controlCleanup: () => undefined,
+			setExitCode: (code: number) => {
+				exitCode = code
+			},
 		}
+
+		this.processes.set(resources.pid, record)
+		record.controlCleanup = this.installProcessControl(record)
 
 		const initMessage = {
 			type: '__kernel_internal__/initChildProcess',
 			payload: {
-				pid,
+				pid: resources.pid,
 				argv: [...options.argv],
 				env: { ...options.env },
 				cwd: options.cwd,
 				debug: Boolean(options.debug),
-				stdio: childDescriptors,
-				programPath: executablePath,
-				programSource,
-				controlPort: controlChannel.port1,
+				stdio: resources.stdio.map((descriptor) => ({
+					fd: descriptor.fd,
+					mode: descriptor.mode,
+					port: descriptor.workerPort,
+				})),
+				programPath: resources.programPath,
+				programSource: resources.programSource,
+				controlPort: resources.control.processPort,
 			},
 		}
 
@@ -514,22 +374,303 @@ class Kernel {
 		return subprocess
 	}
 
-	getProcess(pid: number) {
-		const entry = this.processes.get(pid)
-		return entry ? entry.subprocess : null
-	}
+	private installProcessControl(record: KernelProcessRecord) {
+		const handleControlMessage = (event: MessageEvent) => {
+			const payload = event.data
+			if (!payload || typeof payload !== 'object') {
+				return
+			}
 
-	listProcesses() {
-		return Array.from(this.processes.values(), (entry) => entry.subprocess)
-	}
-
-	kill(pid: number) {
-		const entry = this.processes.get(pid)
-		if (!entry) {
-			return false
+			if (payload.type === CONTROL_MESSAGE_SPAWN_REQUEST) {
+				this.handleSpawnRequestFromProcess(
+					record,
+					payload.requestId,
+					payload.options
+				)
+			} else if (payload.type === CONTROL_MESSAGE_KILL_REQUEST) {
+				const targetPid = payload.pid
+				const requestId = payload.requestId
+				const success =
+					typeof targetPid === 'number'
+						? this.kill(targetPid)
+						: false
+				try {
+					record.controlPort.postMessage({
+						type: CONTROL_MESSAGE_KILL_RESULT,
+						requestId,
+						success,
+					})
+				} catch {
+					// Ignore postMessage failures if the port is closed.
+				}
+			} else if (
+				payload.type === CONTROL_MESSAGE_PROCESS_EXIT &&
+				typeof payload.pid === 'number'
+			) {
+				this.handleProcessExit(
+					payload.pid,
+					typeof payload.code === 'number'
+						? payload.code
+						: ExitCode.ERROR
+				)
+			} else if (
+				payload.type === CONTROL_MESSAGE_REPORT_CHILD_EXIT &&
+				typeof payload.pid === 'number'
+			) {
+				this.handleProcessExit(
+					payload.pid,
+					typeof payload.code === 'number'
+						? payload.code
+						: ExitCode.ERROR
+				)
+			}
 		}
-		entry.subprocess.kill()
-		return true
+
+		record.controlPort.addEventListener(
+			'message',
+			handleControlMessage
+		)
+		record.controlPort.start()
+
+		return () => {
+			record.controlPort.removeEventListener(
+				'message',
+				handleControlMessage
+			)
+			try {
+				record.controlPort.close()
+			} catch {
+				// Ignore failures closing an already closed port.
+			}
+		}
+	}
+
+	private handleSpawnRequestFromProcess(
+		parentRecord: KernelProcessRecord,
+		requestId: unknown,
+		rawOptions: unknown
+	) {
+		if (typeof requestId !== 'number') {
+			return
+		}
+
+		const options = this.normalizeSpawnOptions(rawOptions)
+		if (!options) {
+			this.sendSpawnFailure(parentRecord.controlPort, requestId)
+			return
+		}
+
+		const program = this.loadProgram(options.argv[0])
+		if (!program) {
+			this.sendSpawnFailure(
+				parentRecord.controlPort,
+				requestId,
+				ExitCode.NOT_FOUND
+			)
+			return
+		}
+
+		const resources = this.prepareSpawnResources(
+			options,
+			program,
+			parentRecord.pid
+		)
+
+		const record: KernelProcessRecord = {
+			pid: resources.pid,
+			parentPid: parentRecord.pid,
+			name: options.name,
+			controlPort: resources.control.kernelPort,
+			children: new Set<number>(),
+			hostType: 'process',
+			hostPid: parentRecord.pid,
+			exitCode: null,
+			controlCleanup: () => undefined,
+		}
+
+		this.processes.set(resources.pid, record)
+		parentRecord.children.add(resources.pid)
+		record.controlCleanup = this.installProcessControl(record)
+
+		const response = {
+			type: CONTROL_MESSAGE_SPAWN_RESULT,
+			requestId,
+			result: {
+				pid: resources.pid,
+				programPath: resources.programPath,
+				programSource: resources.programSource,
+				stdio: resources.stdio.map((descriptor) => ({
+					fd: descriptor.fd,
+					mode: descriptor.mode,
+					workerPort: descriptor.workerPort ?? null,
+					parentPort:
+						descriptor.mode === 'pipe'
+							? descriptor.hostPort ?? null
+							: null,
+				})),
+				controlPort: resources.control.processPort,
+			},
+		}
+
+		const transferList: MessagePort[] = [resources.control.processPort]
+		for (const descriptor of resources.stdio) {
+			if (descriptor.workerPort) {
+				transferList.push(descriptor.workerPort)
+			}
+			if (descriptor.mode === 'pipe' && descriptor.hostPort) {
+				transferList.push(descriptor.hostPort)
+			} else if (
+				descriptor.mode === 'inherit' &&
+				descriptor.hostPort
+			) {
+				// Child output should still reach the kernel console.
+				this.attachInheritedStream(
+					descriptor.fd,
+					descriptor.hostPort,
+					options.name,
+					resources.pid
+				)
+			}
+		}
+
+		try {
+			parentRecord.controlPort.postMessage(
+				response,
+				transferList
+			)
+		} catch {
+			// If the parent can no longer receive messages, tear down the child.
+			this.handleProcessExit(resources.pid, ExitCode.ERROR)
+		}
+	}
+
+	private normalizeSpawnOptions(rawOptions: unknown): SpawnOptions | null {
+		if (!rawOptions || typeof rawOptions !== 'object') {
+			return null
+		}
+		const value = rawOptions as Record<string, unknown>
+		if (!Array.isArray(value.argv) || value.argv.length === 0) {
+			return null
+		}
+		const argv = value.argv.map((arg) =>
+			typeof arg === 'string' ? arg : String(arg)
+		)
+		const env: Record<string, string> = {}
+		if (value.env && typeof value.env === 'object') {
+			for (const [key, envValue] of Object.entries(
+				value.env as Record<string, unknown>
+			)) {
+				env[key] =
+					typeof envValue === 'string'
+						? envValue
+						: String(envValue ?? '')
+			}
+		}
+		const cwd =
+			typeof value.cwd === 'string' && value.cwd.length > 0
+				? value.cwd
+				: '/'
+		const name =
+			typeof value.name === 'string'
+				? value.name
+				: argv[0] ?? 'process'
+		const stdio = value.stdio && typeof value.stdio === 'object'
+			? {
+					stdin: this.normalizeStdioMode(
+						(value.stdio as SpawnStdioOptions).stdin
+					),
+					stdout: this.normalizeStdioMode(
+						(value.stdio as SpawnStdioOptions).stdout
+					),
+					stderr: this.normalizeStdioMode(
+						(value.stdio as SpawnStdioOptions).stderr
+					),
+			  }
+			: undefined
+
+		return {
+			argv,
+			env,
+			cwd,
+			name,
+			debug: Boolean(value.debug),
+			stdio,
+		}
+	}
+
+	private normalizeStdioMode(mode: unknown): StdioMode | undefined {
+		if (mode === 'inherit' || mode === 'ignore' || mode === 'pipe') {
+			return mode
+		}
+		return undefined
+	}
+
+	private sendSpawnFailure(
+		controlPort: MessagePort,
+		requestId: number,
+		code: ExitCode = ExitCode.ERROR
+	) {
+		try {
+			controlPort.postMessage({
+				type: CONTROL_MESSAGE_SPAWN_RESULT,
+				requestId,
+				error: { code },
+			})
+		} catch {
+			// Ignore failures caused by a closed port.
+		}
+	}
+
+	private handleProcessExit(pid: number, code: number) {
+	const record = this.processes.get(pid)
+	if (!record || record.exitCode !== null) {
+		return
+	}
+
+	record.exitCode = code
+	record.setExitCode?.(code)
+
+	record.controlCleanup()
+
+		this.processes.delete(pid)
+
+		if (record.parentPid !== null) {
+			const parentRecord = this.processes.get(record.parentPid)
+			parentRecord?.children.delete(pid)
+			if (parentRecord) {
+				try {
+					parentRecord.controlPort.postMessage({
+						type: CONTROL_MESSAGE_CHILD_EXIT,
+						pid,
+						code,
+					})
+				} catch {
+					// Ignore failures dispatching child exit notifications.
+				}
+			}
+		}
+
+		const childPids = Array.from(record.children)
+		for (const childPid of childPids) {
+			this.kill(childPid)
+		}
+
+		if (record.hostType === 'kernel') {
+			record.stdio?.stdin?.destroy()
+			record.stdio?.stdout?.destroy()
+			record.stdio?.stderr?.destroy()
+
+			if (record.exitListeners) {
+				for (const listener of Array.from(record.exitListeners)) {
+					try {
+						listener(code)
+					} catch {
+						// Ignore listener failures to avoid disrupting cleanup.
+					}
+				}
+				record.exitListeners.clear()
+			}
+		}
 	}
 
 	private attachInheritedStream(
@@ -542,7 +683,7 @@ class Kernel {
 			try {
 				port.postMessage({ type: 'end' })
 			} catch {
-				// Ignore fail to notify child of stdin end.
+				// Ignore failures notifying stdin closure.
 			} finally {
 				port.close()
 			}
@@ -574,38 +715,6 @@ class Kernel {
 
 		port.addEventListener('message', handleMessage)
 		port.start()
-	}
-
-	private releaseProcessResources(
-		pid: number,
-		controlPort: MessagePort,
-		controlMessageHandler: (event: MessageEvent) => void
-	) {
-		controlPort.removeEventListener('message', controlMessageHandler)
-		try {
-			controlPort.close()
-		} catch {
-			// Ignore failures when closing an already-closed port.
-		}
-
-		const entry = this.processes.get(pid)
-		if (!entry) {
-			return
-		}
-
-		this.processes.delete(pid)
-
-		if (entry.parentPid !== null) {
-			const parentEntry = this.processes.get(entry.parentPid)
-			parentEntry?.children.delete(pid)
-		}
-
-		const childPids = Array.from(entry.children)
-		entry.children.clear()
-
-		for (const childPid of childPids) {
-			this.kill(childPid)
-		}
 	}
 }
 

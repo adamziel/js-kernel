@@ -1,3 +1,21 @@
+import {
+	BasicEventEmitter,
+	KernelStdioChunk,
+	MessagePortReadableStream,
+	MessagePortWritableStream,
+} from './message-port-streams.ts'
+import {
+	CONTROL_MESSAGE_CHILD_EXIT,
+	CONTROL_MESSAGE_HOST_KILL_CHILD,
+	CONTROL_MESSAGE_KILL_REQUEST,
+	CONTROL_MESSAGE_KILL_RESULT,
+	CONTROL_MESSAGE_PROCESS_EXIT,
+	CONTROL_MESSAGE_REPORT_CHILD_EXIT,
+	CONTROL_MESSAGE_SPAWN_REQUEST,
+	CONTROL_MESSAGE_SPAWN_RESULT,
+} from './process-constants.ts'
+import { createProcessWorker } from './process-worker-factory.ts'
+
 // Request kernel message ports from parent
 export const requestKernelPorts = (): Promise<[MessagePort, MessagePort]> => {
 	return new Promise((resolve, reject) => {
@@ -29,7 +47,6 @@ export const requestKernelPorts = (): Promise<[MessagePort, MessagePort]> => {
 }
 
 export type StdioMode = 'inherit' | 'ignore' | 'pipe'
-export type KernelStdioChunk = string | Uint8Array
 
 interface ChildStdioDescriptor {
 	fd: 0 | 1 | 2
@@ -49,55 +66,6 @@ interface ChildProcessInitOptions {
 	controlPort: MessagePort
 }
 
-type Listener<Arg> = (value: Arg) => void
-
-class BasicEventEmitter<Events extends Record<string, unknown>> {
-	private listeners: {
-		[K in keyof Events]?: Set<Listener<Events[K]>>
-	} = {}
-
-	on<K extends keyof Events>(event: K, listener: Listener<Events[K]>) {
-		if (!this.listeners[event]) {
-			this.listeners[event] = new Set()
-		}
-		this.listeners[event]!.add(listener)
-		return () => this.off(event, listener)
-	}
-
-	once<K extends keyof Events>(event: K, listener: Listener<Events[K]>) {
-		const wrapper: Listener<Events[K]> = (value) => {
-			this.off(event, wrapper)
-			listener(value)
-		}
-		return this.on(event, wrapper)
-	}
-
-	off<K extends keyof Events>(event: K, listener: Listener<Events[K]>) {
-		const listeners = this.listeners[event]
-		if (!listeners) return
-		listeners.delete(listener)
-		if (listeners.size === 0) {
-			delete this.listeners[event]
-		}
-	}
-
-	protected emit<K extends keyof Events>(event: K, value: Events[K]) {
-		const listeners = this.listeners[event]
-		if (!listeners) return
-		for (const listener of Array.from(listeners)) {
-			listener(value)
-		}
-	}
-
-	protected clearAll() {
-		this.listeners = {}
-	}
-}
-
-const CONTROL_MESSAGE_SPAWN_REQUEST = '__kernel_internal__/spawnRequest'
-const CONTROL_MESSAGE_SPAWN_RESULT = '__kernel_internal__/spawnResult'
-const CONTROL_MESSAGE_KILL_RESULT = '__kernel_internal__/killResult'
-
 interface ProcessControllerSpawnOptions {
 	argv: string[]
 	env?: Record<string, string>
@@ -109,6 +77,58 @@ interface ProcessControllerSpawnOptions {
 		stdout?: StdioMode
 		stderr?: StdioMode
 	}
+}
+
+interface NormalizedSpawnOptions {
+	argv: string[]
+	env: Record<string, string>
+	cwd: string
+	name: string
+	debug: boolean
+	stdio?: {
+		stdin?: StdioMode
+		stdout?: StdioMode
+		stderr?: StdioMode
+	}
+}
+
+interface SpawnPlanMessage {
+	pid: number
+	programPath: string
+	programSource: string
+	stdio: Array<{
+		fd: 0 | 1 | 2
+		mode: StdioMode
+		workerPort: MessagePort | null
+		parentPort: MessagePort | null
+	}>
+	controlPort: MessagePort
+}
+
+type ExitListener = (code: number) => void
+
+interface ChildProcessHandle {
+	pid: number
+	stdin?: MessagePortWritableStream
+	stdout?: MessagePortReadableStream
+	stderr?: MessagePortReadableStream
+	onExit(listener: ExitListener): void
+	offExit(listener: ExitListener): void
+	kill(): void
+	readonly exitCode: number | null
+}
+
+interface PendingSpawnRequest {
+	options: NormalizedSpawnOptions
+	resolve: (handle: ChildProcessHandle) => void
+	reject: (error: Error) => void
+}
+
+interface LocalChildProcessRecord {
+	handle: ChildProcessHandle
+	worker: Worker
+	exitListeners: Set<ExitListener>
+	setExitCode: (code: number) => void
 }
 
 interface ChildReadableEvents {
@@ -297,19 +317,27 @@ const appendTrailingNewlineIfText = (
 	return chunk
 }
 
+const cloneEnvRecord = (
+	env?: Record<string, string>
+): Record<string, string> => {
+	if (!env) {
+		return {}
+	}
+	const cloned: Record<string, string> = {}
+	for (const [key, value] of Object.entries(env)) {
+		cloned[key] = value
+	}
+	return cloned
+}
+
 let childProcessState: ChildProcessInitOptions | null = null
 let stdioStreams: ChildStdioStreams | null = null
 let controlPort: MessagePort | null = null
 let bootstrapComplete = false
 let programStarted = false
 let nextSpawnRequestId = 1
-const pendingSpawnRequests = new Map<
-	number,
-	{
-		resolve: (pid: number) => void
-		reject: (error: Error) => void
-	}
->()
+const pendingSpawnRequests = new Map<number, PendingSpawnRequest>()
+const localChildProcesses = new Map<number, LocalChildProcessRecord>()
 
 const failAllPendingSpawnRequests = (reason: string) => {
 	const error =
@@ -357,97 +385,60 @@ function handleControlResponse(event: MessageEvent) {
 
 		if (payload.error && typeof payload.error.code === 'number') {
 			pending.reject(
-				new Error(
-					`Spawn failed with exit code ${payload.error.code}`
-				)
+				new Error(`Spawn failed with exit code ${payload.error.code}`)
 			)
-		} else if (
-			payload.result &&
-			typeof payload.result.pid === 'number'
-		) {
-			pending.resolve(payload.result.pid)
-		} else {
-			pending.reject(new Error('Spawn result missing pid'))
+			return
 		}
-	} else if (payload.type === CONTROL_MESSAGE_KILL_RESULT) {
-		// Kill acknowledgements are not tracked yet.
-	}
-}
 
-const cloneEnvRecord = (
-	env?: Record<string, string>
-): Record<string, string> => {
-	if (!env) {
-		return {}
-	}
-	const cloned: Record<string, string> = {}
-	for (const [key, value] of Object.entries(env)) {
-		cloned[key] = value
-	}
-	return cloned
-}
-
-const requestSpawnFromKernel = (
-	options: ProcessControllerSpawnOptions
-): Promise<number> => {
-	if (!childProcessState) {
-		return Promise.reject(
-			new Error('processController.spawn is unavailable before init')
-		)
-	}
-	if (!controlPort) {
-		return Promise.reject(
-			new Error('processController.spawn is not available')
-		)
-	}
-	if (!options || !Array.isArray(options.argv) || options.argv.length === 0) {
-		return Promise.reject(new Error('spawn requires a non-empty argv array'))
-	}
-
-	const argv = options.argv.map((arg) =>
-		typeof arg === 'string' ? arg : String(arg)
-	)
-	const env = cloneEnvRecord(childProcessState.env)
-	if (options.env && typeof options.env === 'object') {
-		for (const [key, value] of Object.entries(options.env)) {
-			env[key] = value
+		const result = payload.result as SpawnPlanMessage | undefined
+		if (!result) {
+			pending.reject(new Error('Spawn result missing payload'))
+			return
 		}
-	}
-	const cwd =
-		typeof options.cwd === 'string' && options.cwd.length > 0
-			? options.cwd
-			: childProcessState.cwd
-
-	const requestId = nextSpawnRequestId++
-
-	return new Promise((resolve, reject) => {
-		pendingSpawnRequests.set(requestId, { resolve, reject })
 
 		try {
-			controlPort.postMessage({
-				type: CONTROL_MESSAGE_SPAWN_REQUEST,
-				requestId,
-				options: {
-					argv,
-					env,
-					cwd,
-					name: options.name,
-					debug:
-						typeof options.debug === 'boolean'
-							? options.debug
-							: childProcessState?.debug ?? false,
-					stdio: options.stdio,
-				},
-			})
+			const handle = createChildProcessHandle(result, pending.options)
+			pending.resolve(handle)
 		} catch (error) {
-			pendingSpawnRequests.delete(requestId)
-			reject(
+			pending.reject(
 				error instanceof Error
 					? error
-					: new Error(String(error ?? 'Failed to request spawn'))
+					: new Error(
+							String(error ?? 'Failed to create child process')
+					  )
 			)
 		}
-	})
+	} else if (payload.type === CONTROL_MESSAGE_KILL_RESULT) {
+		// Kill acknowledgements are handled implicitly by exit notifications.
+	} else if (payload.type === CONTROL_MESSAGE_CHILD_EXIT) {
+		const pid = payload.pid
+		if (typeof pid !== 'number') {
+			return
+		}
+		const record = localChildProcesses.get(pid)
+		if (!record) {
+			return
+		}
+		const code =
+			typeof payload.code === 'number'
+				? payload.code
+				: record.handle.exitCode ?? 0
+		record.setExitCode(code)
+		localChildProcesses.delete(pid)
+	} else if (payload.type === CONTROL_MESSAGE_HOST_KILL_CHILD) {
+		const pid = payload.pid
+		if (typeof pid !== 'number') {
+			return
+		}
+		const record = localChildProcesses.get(pid)
+		if (!record) {
+			return
+		}
+		record.worker.terminate()
+		record.setExitCode(1)
+		localChildProcesses.delete(pid)
+		reportChildExitToKernel(pid, 1)
+	}
 }
 
 export function initChildProcess(options: ChildProcessInitOptions) {
@@ -466,9 +457,6 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 
 	cleanupControlPort('reinitializing control channel')
 	controlPort = options.controlPort
-	if (!controlPort) {
-		throw new Error('Missing control port from kernel payload')
-	}
 	controlPort.addEventListener('message', handleControlResponse)
 	controlPort.start()
 
@@ -498,12 +486,28 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 			return childProcessState!.programPath
 		},
 		spawn(spawnOptions: ProcessControllerSpawnOptions) {
-			return requestSpawnFromKernel(spawnOptions)
+			const normalized = normalizeSpawnOptions(spawnOptions)
+			if (!normalized) {
+				throw new Error('Invalid spawn options')
+			}
+			return requestSpawnFromKernel(normalized)
 		},
 		stdin: stdioStreams.stdin,
 		stdout: stdioStreams.stdout,
 		stderr: stdioStreams.stderr,
 		exit(code: number) {
+			if (controlPort) {
+				try {
+					controlPort.postMessage({
+						type: CONTROL_MESSAGE_PROCESS_EXIT,
+						pid: childProcessState?.pid ?? 0,
+						code,
+					})
+				} catch {
+					// Ignore failures when notifying kernel about exit.
+				}
+			}
+
 			cleanupControlPort('process exiting')
 			stdioStreams?.stdout.end()
 			stdioStreams?.stderr.end()
@@ -607,16 +611,13 @@ const dirnameFromPath = (path: string): string => {
 }
 
 const reportProgramError = (error: unknown) => {
+	const message =
+		error instanceof Error ? error.stack ?? error.message : String(error)
 	try {
-		const message =
-			error instanceof Error
-				? error.stack ?? error.message
-				: String(error)
 		stdioStreams?.stderr.write(
 			message.endsWith('\n') ? message : message + '\n'
 		)
-	} catch (e) {
-		originalConsole.error(e)
+	} catch {
 		// Ignore errors while reporting program error.
 	}
 	try {
@@ -626,7 +627,7 @@ const reportProgramError = (error: unknown) => {
 	}
 }
 
-const executeProgram = async (options: ChildProcessInitOptions) => {
+const executeProgram = (options: ChildProcessInitOptions) => {
 	if (!childProcessState || !stdioStreams) {
 		throw new Error('executeProgram called before initialization')
 	}
@@ -639,8 +640,8 @@ const executeProgram = async (options: ChildProcessInitOptions) => {
 		;(globalThis as any).__dirname = dirnameFromPath(options.programPath)
 
 		const programBody = stripShebang(options.programSource)
-		const globalEval = (eval as any) as (code: string) => unknown
-		await globalEval(`"use strict";\n${programBody}`)
+		const globalEval = (0, eval) as (code: string) => unknown
+		globalEval(`"use strict";\n${programBody}`)
 	} catch (error) {
 		reportProgramError(error)
 	} finally {
@@ -663,4 +664,244 @@ const startProgram = (options: ChildProcessInitOptions) => {
 	}
 	programStarted = true
 	executeProgram(options)
+}
+
+function normalizeSpawnOptions(
+	input: ProcessControllerSpawnOptions
+): NormalizedSpawnOptions | null {
+	if (!input || !Array.isArray(input.argv) || input.argv.length === 0) {
+		return null
+	}
+
+	const argv = input.argv.map((arg) =>
+		typeof arg === 'string' ? arg : String(arg)
+	)
+	const env = cloneEnvRecord(childProcessState?.env)
+	if (input.env && typeof input.env === 'object') {
+		for (const [key, value] of Object.entries(input.env)) {
+			env[key] = typeof value === 'string' ? value : String(value ?? '')
+		}
+	}
+
+	const cwd =
+		typeof input.cwd === 'string' && input.cwd.length > 0
+			? input.cwd
+			: childProcessState?.cwd ?? '/'
+	const name =
+		typeof input.name === 'string' ? input.name : argv[0] ?? 'process'
+
+	const stdio =
+		input.stdio && typeof input.stdio === 'object'
+			? {
+					stdin: normalizeStdioMode(input.stdio.stdin),
+					stdout: normalizeStdioMode(input.stdio.stdout),
+					stderr: normalizeStdioMode(input.stdio.stderr),
+			  }
+			: undefined
+
+	return {
+		argv,
+		env,
+		cwd,
+		name,
+		debug: Boolean(input.debug ?? childProcessState?.debug ?? false),
+		stdio,
+	}
+}
+
+function normalizeStdioMode(mode: unknown): StdioMode | undefined {
+	if (mode === 'inherit' || mode === 'ignore' || mode === 'pipe') {
+		return mode
+	}
+	return undefined
+}
+
+function requestSpawnFromKernel(
+	options: NormalizedSpawnOptions
+): Promise<ChildProcessHandle> {
+	if (!controlPort || !childProcessState) {
+		return Promise.reject(
+			new Error('processController.spawn is not available')
+		)
+	}
+
+	const requestId = nextSpawnRequestId++
+
+	return new Promise<ChildProcessHandle>((resolve, reject) => {
+		pendingSpawnRequests.set(requestId, { options, resolve, reject })
+
+		try {
+			controlPort.postMessage({
+				type: CONTROL_MESSAGE_SPAWN_REQUEST,
+				requestId,
+				options,
+			})
+		} catch (error) {
+			pendingSpawnRequests.delete(requestId)
+			reject(
+				error instanceof Error
+					? error
+					: new Error(String(error ?? 'Failed to request spawn'))
+			)
+		}
+	})
+}
+
+function createChildProcessHandle(
+	plan: SpawnPlanMessage,
+	options: NormalizedSpawnOptions
+): ChildProcessHandle {
+	const transferList: MessagePort[] = [plan.controlPort]
+	let parentStdin: MessagePortWritableStream | undefined
+	let parentStdout: MessagePortReadableStream | undefined
+	let parentStderr: MessagePortReadableStream | undefined
+
+	for (const descriptor of plan.stdio) {
+		if (descriptor.workerPort) {
+			transferList.push(descriptor.workerPort)
+		}
+		if (
+			descriptor.mode === 'pipe' &&
+			descriptor.parentPort &&
+			descriptor.fd === 0
+		) {
+			parentStdin = new MessagePortWritableStream(descriptor.parentPort)
+		} else if (
+			descriptor.mode === 'pipe' &&
+			descriptor.parentPort &&
+			descriptor.fd === 1
+		) {
+			parentStdout = new MessagePortReadableStream(descriptor.parentPort)
+		} else if (
+			descriptor.mode === 'pipe' &&
+			descriptor.parentPort &&
+			descriptor.fd === 2
+		) {
+			parentStderr = new MessagePortReadableStream(descriptor.parentPort)
+		}
+	}
+
+	const worker = createProcessWorker()
+
+	const exitListeners = new Set<ExitListener>()
+	let exitCode: number | null = null
+
+	const handle: ChildProcessHandle = {
+		pid: plan.pid,
+		stdin: parentStdin,
+		stdout: parentStdout,
+		stderr: parentStderr,
+		onExit(listener: ExitListener) {
+			exitListeners.add(listener)
+		},
+		offExit(listener: ExitListener) {
+			exitListeners.delete(listener)
+		},
+		kill() {
+			if (!controlPort) {
+				return
+			}
+			try {
+				controlPort.postMessage({
+					type: CONTROL_MESSAGE_KILL_REQUEST,
+					pid: plan.pid,
+					requestId: null,
+				})
+			} catch {
+				// Ignore failures dispatching kill request.
+			}
+		},
+		get exitCode() {
+			return exitCode
+		},
+	}
+
+	const setExitCode = (code: number) => {
+		if (exitCode !== null) {
+			return
+		}
+		exitCode = code
+		try {
+			parentStdin?.destroy()
+		} catch {
+			// Ignore stream cleanup errors.
+		}
+		try {
+			parentStdout?.destroy()
+		} catch {
+			// Ignore stream cleanup errors.
+		}
+		try {
+			parentStderr?.destroy()
+		} catch {
+			// Ignore stream cleanup errors.
+		}
+		for (const listener of Array.from(exitListeners)) {
+			try {
+				listener(code)
+			} catch {
+				// Ignore listener failures.
+			}
+		}
+		exitListeners.clear()
+	}
+
+	localChildProcesses.set(plan.pid, {
+		handle,
+		worker,
+		exitListeners,
+		setExitCode,
+	})
+
+	worker.addEventListener('message', (event: MessageEvent) => {
+		const payload = event.data
+		if (payload && typeof payload === 'object' && payload.type === 'exit') {
+			const code =
+				typeof payload.data === 'number' ? payload.data : exitCode ?? 0
+			setExitCode(code)
+		}
+	})
+
+	worker.addEventListener('error', () => {
+		setExitCode(1)
+		reportChildExitToKernel(plan.pid, 1)
+	})
+
+	const initMessage = {
+		type: '__kernel_internal__/initChildProcess',
+		payload: {
+			pid: plan.pid,
+			argv: [...options.argv],
+			env: { ...options.env },
+			cwd: options.cwd,
+			debug: Boolean(options.debug),
+			stdio: plan.stdio.map((descriptor) => ({
+				fd: descriptor.fd,
+				mode: descriptor.mode,
+				port: descriptor.workerPort ?? undefined,
+			})),
+			programPath: plan.programPath,
+			programSource: plan.programSource,
+			controlPort: plan.controlPort,
+		},
+	}
+
+	worker.postMessage(initMessage, transferList)
+
+	return handle
+}
+
+function reportChildExitToKernel(pid: number, code: number) {
+	if (!controlPort) {
+		return
+	}
+	try {
+		controlPort.postMessage({
+			type: CONTROL_MESSAGE_REPORT_CHILD_EXIT,
+			pid,
+			code,
+		})
+	} catch {
+		// Ignore failures when informing kernel about exit.
+	}
 }

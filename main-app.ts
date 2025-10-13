@@ -13,21 +13,26 @@ async function main() {
 	const spawned = await processController.spawn({
 		argv: ['hello-2'],
 		stdio: {
-			stdout: 'inherit',
-			stderr: 'inherit',
+			stdout: 'pipe',
+			stderr: 'pipe',
 		},
-		debug: true,
+		// debug: true,
 	});
-	console.log('Spawned process', spawned);
-	console.log({spawned});
-	await new Promise(resolve => setTimeout(resolve, 8000));
+	spawned.stdout?.on('data', (chunk) => {
+		console.log('[nested child stdout]', chunk)
+	})
+	spawned.stderr?.on('data', (chunk) => {
+		console.error('[nested child stderr]', chunk)
+	})
+	// console.log('Spawned process', Object.keys(spawned));
+	// console.log({spawned});
+	// await new Promise(resolve => setTimeout(resolve, 8000));
 }
 main();
 `, {
 	mode: 0o755,
 })
 kernel.writeFileSync('/bin/hello-2', `
-	throw new Error("Nested hello, error!");
 console.log("Nested hello, world!");
 `, {
 	mode: 0o755,
@@ -42,7 +47,7 @@ const helloWorker = kernel.spawn({
 		stdout: 'pipe',
 		stderr: 'pipe',
 	},
-	debug: true,
+	// debug: true,
 })
 
 if (typeof helloWorker === 'number') {
