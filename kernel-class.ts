@@ -1,12 +1,25 @@
 import { InMemoryFileSystem } from './mixins/in-memory-fs'
 import { joinPaths } from './paths-utils'
 
+function applyMixins(derivedCtor: any, baseCtors: any[]) {
+	for (const baseCtor of baseCtors) {
+		for (const name of Object.getOwnPropertyNames(baseCtor.prototype)) {
+			if (name === 'constructor') continue
+			const descriptor = Object.getOwnPropertyDescriptor(
+				baseCtor.prototype,
+				name
+			)
+			if (descriptor) {
+				Object.defineProperty(derivedCtor.prototype, name, descriptor)
+			}
+		}
+	}
+}
+
 interface SpawnOptions {
 	argv: string[]
 	env: Record<string, string>
 	cwd: string
-	columns: number
-	rows: number
 	name: string
 }
 
@@ -62,8 +75,19 @@ class Kernel {
 		}
 
 		const programCode = this.fs.readFileSync(executablePath, 'utf8');
-		
+		// Remove shebang line if present
+		const lines = programCode.split('\n');
+		const codeToExecute = lines[0].startsWith('#!') ? lines.slice(1).join('\n') : programCode;
+
+		const worker = new Worker(URL.createObjectURL(new Blob([codeToExecute])));
+		return worker;
 	}
 }
 
-export const KernelClass = Kernel as typeof Kernel & InMemoryFileSystem
+interface Kernel extends InMemoryFileSystem {}
+
+applyMixins(Kernel, [InMemoryFileSystem])
+
+export const KernelClass = Kernel as typeof Kernel & {
+	prototype: typeof Kernel.prototype & InMemoryFileSystem
+}
