@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kernel Demo</title>
+</head>
+<body>
+    <h1>Kernel Demo</h1>
+    <div id="output"></div>
+    
+    <script type="module">
+        const worker = new Worker('./main-app.ts', {
+            type: 'module'
+        });
+        
+        worker.addEventListener('message', (event) => {
+            console.log('Worker message:', event.data);
+        });
+        
+        worker.addEventListener('error', (error) => {
+            console.error('Worker error:', error);
+        });
+        
+        worker.postMessage({ type: 'start' });
+    </script>
+</body>
+</html>

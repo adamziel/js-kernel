@@ -1,5 +1,5 @@
-import { InMemoryFileSystem } from './mixins/in-memory-fs'
-import { joinPaths } from './paths-utils'
+import { InMemoryFileSystem } from './mixins/in-memory-fs.ts'
+import { joinPaths } from './paths-utils.ts'
 
 function applyMixins(derivedCtor: any, baseCtors: any[]) {
 	for (const baseCtor of baseCtors) {
@@ -249,15 +249,20 @@ class Kernel {
 			return ExitCode.NOT_FOUND
 		}
 
-		const programCode = this.fs.readFileSync(executablePath, 'utf8')
-		const lines = programCode.split('\n')
-		const codeToExecute = lines[0].startsWith('#!')
-			? lines.slice(1).join('\n')
-			: programCode
+		const programSource = this.fs.readFileSync(executablePath, 'utf8')
 
-		const worker = new Worker(
-			URL.createObjectURL(new Blob([codeToExecute]))
-		)
+		let worker: Worker
+		try {
+			worker = new Worker(
+				new URL('./child-process-library.ts', import.meta.url),
+				{
+					type: 'module',
+				}
+			)
+		} catch (e) {
+			console.error(e)
+			return ExitCode.ERROR
+		}
 
 		const pid = this.pidCounter++
 		const stdioModes: [StdioMode, StdioMode, StdioMode] = [
@@ -381,6 +386,8 @@ class Kernel {
 				cwd: options.cwd,
 				debug: Boolean(options.debug),
 				stdio: childDescriptors,
+				programPath: executablePath,
+				programSource,
 			},
 		}
 

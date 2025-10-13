@@ -4,9 +4,9 @@ import {
 	Stats,
 	Dirent,
 	type DirectoryNode,
-	FileNode,
-	SymlinkNode,
-	FSNode,
+	type FileNode,
+	type SymlinkNode,
+	type FSNode,
 } from './in-memory-fs-classes.ts'
 
 // Helper function to create filesystem errors with proper code property

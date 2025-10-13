@@ -1,12 +1,25 @@
-import { ExitCode, KernelClass } from './kernel-class'
-import type { KernelStdioChunk } from './kernel-class'
+import { ExitCode, KernelClass } from './kernel-class.ts'
+import type { KernelStdioChunk } from './kernel-class.ts'
 
 const kernel = new KernelClass()
 
 kernel.mkdirSync('/bin', { mode: 0o755 })
 kernel.writeFileSync('/bin/hello', `
 console.log("Hello, world!");
-// console.error(new Error("Hello, error!"));
+console.error(new Error("Hello, error!"));
+console.log(new Uint8Array([1, 2, 3]));
+
+processController.spawn(['hello-2'], {
+	stdio: {
+		stdout: 'pipe',
+		stderr: 'pipe',
+	},
+})
+`, {
+	mode: 0o755,
+})
+kernel.writeFileSync('/bin/hello-2', `
+console.log("Nested hello, world!");
 `, {
 	mode: 0o755,
 })
@@ -20,6 +33,7 @@ const helloWorker = kernel.spawn({
 		stdout: 'pipe',
 		stderr: 'pipe',
 	},
+	// debug: true,
 })
 
 if (typeof helloWorker === 'number') {

@@ -44,6 +44,8 @@ interface ChildProcessInitOptions {
 	cwd: string
 	debug: boolean
 	stdio: ChildStdioDescriptor[]
+	programPath: string
+	programSource: string
 }
 
 type Listener<Arg> = (value: Arg) => void
@@ -236,9 +238,63 @@ const createChildStdio = (
 	}
 }
 
+const toKernelChunk = (value: unknown): KernelStdioChunk => {
+	if (typeof value === 'string') {
+		return value
+	}
+	if (value instanceof Uint8Array) {
+		return value
+	}
+	if (value instanceof ArrayBuffer) {
+		return new Uint8Array(value)
+	}
+	if (ArrayBuffer.isView(value)) {
+		const view = value as ArrayBufferView
+		return new Uint8Array(
+			view.buffer,
+			view.byteOffset,
+			view.byteLength
+		).slice()
+	}
+	if (value === null || typeof value === 'undefined') {
+		return String(value)
+	}
+	try {
+		if (typeof value === 'object') {
+			const json = JSON.stringify(value)
+			return (
+				typeof value +
+				' ' +
+				(typeof json === 'string' ? json : String(value))
+			)
+		}
+		return String(value)
+	} catch {
+		return String(value)
+	}
+}
+
+const appendTrailingNewlineIfText = (
+	chunk: KernelStdioChunk
+): KernelStdioChunk => {
+	if (typeof chunk === 'string') {
+		return chunk.endsWith('\n') ? chunk : `${chunk}\n`
+	}
+	return chunk
+}
+
+const originalConsole = {
+	log: globalThis.console.log.bind(globalThis.console),
+	info: globalThis.console.info.bind(globalThis.console),
+	debug: globalThis.console.debug.bind(globalThis.console),
+	warn: globalThis.console.warn.bind(globalThis.console),
+	error: globalThis.console.error.bind(globalThis.console),
+}
+
 let childProcessState: ChildProcessInitOptions | null = null
 let stdioStreams: ChildStdioStreams | null = null
 let bootstrapComplete = false
+let programStarted = false
 
 export function initChildProcess(options: ChildProcessInitOptions) {
 	const clonedOptions: ChildProcessInitOptions = {
@@ -276,6 +332,9 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 		pid() {
 			return childProcessState!.pid
 		},
+		executablePath() {
+			return childProcessState!.programPath
+		},
 		stdin: stdioStreams.stdin,
 		stdout: stdioStreams.stdout,
 		stderr: stdioStreams.stderr,
@@ -295,20 +354,47 @@ export function installStdIo(isDebug: boolean) {
 		throw new Error('installStdIo called before initChildProcess')
 	}
 
+	// Detect Bun runtime and warn about potential stdout flushing issues
+	if (typeof Bun !== 'undefined') {
+		const errorMessage = `
+╔════════════════════════════════════════════════════════════════════════════════════════╗
+║                                 BUN RUNTIME WARNING                                    ║
+╠════════════════════════════════════════════════════════════════════════════════════════╣
+║                                                                                        ║
+║  Workers in Bun often terminate before they can flush stdout/stderr buffers!           ║
+║  This can cause output to be lost, making debugging extremely difficult.               ║
+║                                                                                        ║
+║  If you experience missing console output or incomplete logs, this is likely           ║
+║  the cause. Consider using Node.js for more reliable worker output handling.           ║
+║                                                                                        ║
+╚════════════════════════════════════════════════════════════════════════════════════════╝
+		`.trim()
+		
+		console.error(errorMessage);
+	}
+
 	const originalConsole = globalThis.console
+
 	;(globalThis as any).__webPolyfillsOriginalConsole = originalConsole
 
 	const joinArgs = (args: unknown[]) =>
 		args
-			.map((arg) => (typeof arg === 'string' ? arg : String(arg)))
+			.map((arg) => {
+				const chunk = toKernelChunk(arg)
+				return typeof chunk === 'string'
+					? chunk
+					: `[Uint8Array(${chunk.byteLength})]`
+			})
 			.join(' ')
 
-	const writeStdout = (text: string) => {
-		stdioStreams!.stdout.write(text.endsWith('\n') ? text : text + '\n')
+	const writeStdout = (value: unknown) => {
+		const chunk = appendTrailingNewlineIfText(toKernelChunk(value))
+		stdioStreams!.stdout.write(chunk)
 	}
 
-	const writeStderr = (text: string) => {
-		stdioStreams!.stderr.write(text.endsWith('\n') ? text : text + '\n')
+	const writeStderr = (value: unknown) => {
+		// const chunk = appendTrailingNewlineIfText(toKernelChunk(value))
+		stdioStreams!.stderr.write('a') //chunk)
 	}
 
 	globalThis.console = {
@@ -341,7 +427,10 @@ export function installStdIo(isDebug: boolean) {
 			if (isDebug && typeof originalConsole?.error === 'function') {
 				originalConsole.error(...(args as any))
 			}
-			writeStderr(joinArgs(args))
+			originalConsole.log(args.length)
+
+			// writeStderr(joinArgs(args))
+			writeStderr(args.length)
 		},
 	}
 }
@@ -362,7 +451,87 @@ const handleKernelInit = (event: MessageEvent) => {
 	const payload = event.data.payload as ChildProcessInitOptions
 	initChildProcess(payload)
 	installStdIo(payload.debug)
-	console.log('Kernel initialized')
+	queueMicrotask(() => startProgram(payload))
 }
 
 self.addEventListener('message', handleKernelInit)
+
+const stripShebang = (source: string): string => {
+	if (source.startsWith('#!')) {
+		const newlineIndex = source.indexOf('\n')
+		if (newlineIndex === -1) {
+			return ''
+		}
+		return source.slice(newlineIndex + 1)
+	}
+	return source
+}
+
+const dirnameFromPath = (path: string): string => {
+	if (!path || path === '/') {
+		return '/'
+	}
+	const segments = path.split('/')
+	segments.pop()
+	const dir = segments.join('/')
+	return dir.length > 0 ? dir : '/'
+}
+
+const reportProgramError = (error: unknown) => {
+	try {
+		const message =
+			error instanceof Error
+				? error.stack ?? error.message
+				: String(error)
+		stdioStreams?.stderr.write(
+			message.endsWith('\n') ? message : message + '\n'
+		)
+	} catch (e) {
+		originalConsole.error(e)
+		// Ignore errors while reporting program error.
+	}
+	try {
+		;(globalThis as any).processController.exit(1)
+	} catch {
+		// Ignore failures during forced exit.
+	}
+}
+
+const executeProgram = async (options: ChildProcessInitOptions) => {
+	if (!childProcessState || !stdioStreams) {
+		throw new Error('executeProgram called before initialization')
+	}
+
+	const originalFilename = (globalThis as any).__filename
+	const originalDirname = (globalThis as any).__dirname
+
+	try {
+		;(globalThis as any).__filename = options.programPath
+		;(globalThis as any).__dirname = dirnameFromPath(options.programPath)
+
+		const programBody = stripShebang(options.programSource)
+		const globalEval = (eval as any) as (code: string) => unknown
+		await globalEval(`"use strict";\n${programBody}`)
+	} catch (error) {
+		reportProgramError(error)
+	} finally {
+		if (typeof originalFilename === 'undefined') {
+			delete (globalThis as any).__filename
+		} else {
+			;(globalThis as any).__filename = originalFilename
+		}
+		if (typeof originalDirname === 'undefined') {
+			delete (globalThis as any).__dirname
+		} else {
+			;(globalThis as any).__dirname = originalDirname
+		}
+	}
+}
+
+const startProgram = (options: ChildProcessInitOptions) => {
+	if (programStarted) {
+		return
+	}
+	programStarted = true
+	executeProgram(options)
+}
