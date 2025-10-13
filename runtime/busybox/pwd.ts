@@ -1,36 +1,34 @@
 declare const processController: any
 
+const utilsModuleUrl = new URL('./lib/utils.ts', import.meta.url).href
+
 const createProgramSource = (): string => {
-	const program = async function main(): Promise<void> {
+	const program = async function main(urls: {
+		utilsModuleUrl: string
+	}): Promise<void> {
+		const {
+			errorToString,
+			exitSafely,
+			writeStdout,
+			writeStderr,
+		} = await import(urls.utilsModuleUrl)
+
 		try {
 			const cwd =
 				typeof processController.cwd === 'function'
 					? processController.cwd()
 					: '/'
-			console.log(String(cwd ?? '/'))
-			try {
-				processController.exit(0)
-			} catch {
-				// ignore
-			}
+			writeStdout(String(cwd ?? '/'))
+			exitSafely(0)
 		} catch (error) {
-			const message =
-				error &&
-				typeof error === 'object' &&
-				'message' in error &&
-				typeof (error as { message?: unknown }).message === 'string'
-					? (error as { message: string }).message
-					: String(error ?? 'Unknown error')
-			console.error(`pwd: ${message}`)
-			try {
-				processController.exit(1)
-			} catch {
-				// ignore
-			}
+			writeStderr(`pwd: ${errorToString(error)}`)
+			exitSafely(1)
 		}
 	}
 
-	return `(${program.toString()})();`
+	return `(${program.toString()})(${JSON.stringify({
+		utilsModuleUrl,
+	})});`
 }
 
 export const pwdProgramSource = createProgramSource()

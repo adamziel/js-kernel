@@ -1,7 +1,18 @@
 declare const processController: any
 
+const utilsModuleUrl = new URL('./lib/utils.ts', import.meta.url).href
+
 const createProgramSource = (): string => {
-	const program = async function main(): Promise<void> {
+	const program = async function main(urls: {
+		utilsModuleUrl: string
+	}): Promise<void> {
+		const {
+			errorToString,
+			exitSafely,
+			writeStdout,
+			writeStderr,
+		} = await import(urls.utilsModuleUrl)
+
 		try {
 			const env =
 				typeof processController.getAllEnv === 'function'
@@ -10,32 +21,21 @@ const createProgramSource = (): string => {
 			const entries = Object.entries(env ?? {}).sort(([a], [b]) =>
 				a < b ? -1 : a > b ? 1 : 0
 			)
+
 			for (const [key, value] of entries) {
-				console.log(`${key}=${String(value)}`)
+				writeStdout(`${key}=${String(value)}`)
 			}
-			try {
-				processController.exit(0)
-			} catch {
-				// ignore
-			}
+
+			exitSafely(0)
 		} catch (error) {
-			const message =
-				error &&
-				typeof error === 'object' &&
-				'message' in error &&
-				typeof (error as { message?: unknown }).message === 'string'
-					? (error as { message: string }).message
-					: String(error ?? 'Unknown error')
-			console.error(`env: ${message}`)
-			try {
-				processController.exit(1)
-			} catch {
-				// ignore
-			}
+			writeStderr(`env: ${errorToString(error)}`)
+			exitSafely(1)
 		}
 	}
 
-	return `(${program.toString()})();`
+	return `(${program.toString()})(${JSON.stringify({
+		utilsModuleUrl,
+	})});`
 }
 
 export const envProgramSource = createProgramSource()

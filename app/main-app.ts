@@ -6,7 +6,11 @@ installBusybox(kernel);
 
 kernel.writeFileSync(
 	`/my-script.sh`,
-	`echo "Hello, world from a script!"`,
+	`
+echo "Hello, world from a script!";
+touch /yo.sh
+ls /
+	`,
 	{ mode: 0o755 }
 )
 
@@ -16,7 +20,7 @@ function mockShell(argv: string[]) {
 		env: {},
 		cwd: '/',
 		name: 'shell',
-		// debug: true,
+		debug: true,
 	})
 
 	return new Promise((resolve) => {

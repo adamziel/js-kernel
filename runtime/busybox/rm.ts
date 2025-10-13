@@ -1,25 +1,20 @@
 declare const processController: any
 
+const utilsModuleUrl = new URL('./lib/utils.ts', import.meta.url).href
+
 const createProgramSource = (): string => {
-	const program = async function main(): Promise<void> {
-		const formatError = (prefix: string, error: unknown) => {
-			const message =
-				error &&
-				typeof error === 'object' &&
-				'message' in error &&
-				typeof (error as { message?: unknown }).message === 'string'
-					? (error as { message: string }).message
-					: String(error ?? 'Unknown error')
-			console.error(`${prefix}: ${message}`)
-		}
+	const program = async function main(urls: {
+		utilsModuleUrl: string
+	}): Promise<void> {
+		const {
+			errorToString,
+			exitSafely,
+			getArgv,
+			writeStderr,
+		} = await import(urls.utilsModuleUrl)
 
 		try {
-			const rawArgv =
-				typeof processController.argv === 'function'
-					? processController.argv()
-					: []
-			const argv = Array.isArray(rawArgv) ? rawArgv.slice(1) : []
-
+			const argv = getArgv()
 			let recursive = false
 			let force = false
 			const targets: string[] = []
@@ -38,14 +33,10 @@ const createProgramSource = (): string => {
 
 			if (targets.length === 0) {
 				if (!force) {
-					console.error('rm: missing operand')
-					console.error('usage: rm [-f] [-r] <path>...')
+					writeStderr('rm: missing operand')
+					writeStderr('usage: rm [-f] [-r] <path>...')
 				}
-				try {
-					processController.exit(force ? 0 : 1)
-				} catch {
-					// ignore
-				}
+				exitSafely(force ? 0 : 1)
 				return
 			}
 
@@ -59,27 +50,21 @@ const createProgramSource = (): string => {
 					if (force) {
 						continue
 					}
-					formatError(`rm: ${target}`, error)
+					writeStderr(`rm: ${target}: ${errorToString(error)}`)
 					hadError = true
 				}
 			}
 
-			try {
-				processController.exit(hadError ? 1 : 0)
-			} catch {
-				// ignore
-			}
+			exitSafely(hadError ? 1 : 0)
 		} catch (error) {
-			formatError('rm', error)
-			try {
-				processController.exit(1)
-			} catch {
-				// ignore
-			}
+			writeStderr(`rm: ${errorToString(error)}`)
+			exitSafely(1)
 		}
 	}
 
-	return `(${program.toString()})();`
+	return `(${program.toString()})(${JSON.stringify({
+		utilsModuleUrl,
+	})});`
 }
 
 export const rmProgramSource = createProgramSource()

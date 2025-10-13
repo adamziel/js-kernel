@@ -645,6 +645,11 @@ const startProgram = async (options: ChildProcessInitOptions) => {
 		// there's a missing await between something is initialized and
 		// Atomics.wait() is called.
 		await (globalThis as any).processController.fs.readdir('/')
+			
+		// Vite is stubborn and wraps dynamic imports with a __vite__injectQuery call.
+		// that adds a query parameter. Vite assumes that function exists in the worker.
+		// In our case, it does not exist, so we need to provide a dummy implementation.
+		;(globalThis as any).__vite__injectQuery = (url: string): string => url
 
 		;(globalThis as any).__filename = options.programPath
 		;(globalThis as any).__dirname = dirnameFromPath(options.programPath)

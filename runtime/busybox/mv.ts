@@ -1,28 +1,29 @@
 declare const processController: any
 
-const createProgramSource = (): string => {
-	const program = async function main(): Promise<void> {
-		const describeError = (prefix: string, error: unknown) => {
-			const message =
-				error &&
-				typeof error === 'object' &&
-				'message' in error &&
-				typeof (error as { message?: unknown }).message === 'string'
-					? (error as { message: string }).message
-					: String(error ?? 'Unknown error')
-			console.error(`${prefix}: ${message}`)
-		}
+const utilsModuleUrl = new URL('./lib/utils.ts', import.meta.url).href
 
-		const isDirectory = (stats: unknown): boolean => {
-			return Boolean(
+const createProgramSource = (): string => {
+	const program = async function main(urls: {
+		utilsModuleUrl: string
+	}): Promise<void> {
+		const {
+			errorToString,
+			exitSafely,
+			getArgv,
+			writeStderr,
+		} = await import(urls.utilsModuleUrl)
+
+		const isDirectory = (stats: unknown): boolean =>
+			Boolean(
 				stats &&
 					typeof stats === 'object' &&
 					'isDirectory' in stats &&
 					typeof (stats as { isDirectory(): unknown }).isDirectory ===
 						'function' &&
-					Boolean((stats as { isDirectory(): boolean }).isDirectory())
+					Boolean(
+						(stats as { isDirectory(): boolean }).isDirectory()
+					)
 			)
-		}
 
 		const basename = (path: string): string => {
 			if (!path || path === '/') {
@@ -42,12 +43,7 @@ const createProgramSource = (): string => {
 		}
 
 		try {
-			const rawArgv =
-				typeof processController.argv === 'function'
-					? processController.argv()
-					: []
-			const argv = Array.isArray(rawArgv) ? rawArgv.slice(1) : []
-
+			const argv = getArgv()
 			let force = false
 			const operands: string[] = []
 
@@ -60,13 +56,9 @@ const createProgramSource = (): string => {
 			}
 
 			if (operands.length < 2) {
-				console.error('mv: missing file operand')
-				console.error('usage: mv [-f] <source>... <destination>')
-				try {
-					processController.exit(1)
-				} catch {
-					// ignore
-				}
+				writeStderr('mv: missing file operand')
+				writeStderr('usage: mv [-f] <source>... <destination>')
+				exitSafely(1)
 				return
 			}
 
@@ -82,14 +74,10 @@ const createProgramSource = (): string => {
 			}
 
 			if (sources.length > 1 && !destinationIsDirectory) {
-				console.error(
+				writeStderr(
 					'mv: target must be a directory when moving multiple files'
 				)
-				try {
-					processController.exit(1)
-				} catch {
-					// ignore
-				}
+				exitSafely(1)
 				return
 			}
 
@@ -105,7 +93,7 @@ const createProgramSource = (): string => {
 						try {
 							const targetStats = fs.statSync(targetPath)
 							if (isDirectory(targetStats)) {
-								console.error(
+								writeStderr(
 									`mv: cannot overwrite directory '${targetPath}'`
 								)
 								hadError = true
@@ -113,7 +101,9 @@ const createProgramSource = (): string => {
 							}
 							fs.unlinkSync(targetPath)
 						} catch (removeError) {
-							describeError(`mv: ${targetPath}`, removeError)
+							writeStderr(
+								`mv: ${targetPath}: ${errorToString(removeError)}`
+							)
 							hadError = true
 							continue
 						}
@@ -121,27 +111,21 @@ const createProgramSource = (): string => {
 
 					fs.renameSync(source, targetPath)
 				} catch (error) {
-					describeError(`mv: ${source}`, error)
+					writeStderr(`mv: ${source}: ${errorToString(error)}`)
 					hadError = true
 				}
 			}
 
-			try {
-				processController.exit(hadError ? 1 : 0)
-			} catch {
-				// ignore
-			}
+			exitSafely(hadError ? 1 : 0)
 		} catch (error) {
-			describeError('mv', error)
-			try {
-				processController.exit(1)
-			} catch {
-				// ignore
-			}
+			writeStderr(`mv: ${errorToString(error)}`)
+			exitSafely(1)
 		}
 	}
 
-	return `(${program.toString()})();`
+	return `(${program.toString()})(${JSON.stringify({
+		utilsModuleUrl,
+	})});`
 }
 
 export const mvProgramSource = createProgramSource()

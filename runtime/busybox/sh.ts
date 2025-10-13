@@ -2,48 +2,27 @@ declare const processController: any
 
 const runnerModuleUrl = new URL('../shell/run.ts', import.meta.url).href
 const parserModuleUrl = new URL('../shell/sh.ts', import.meta.url).href
+const utilsModuleUrl = new URL('./lib/utils.ts', import.meta.url).href
+
 const createProgramSource = (): string => {
-	const program = async function main(
-		runUrl: string,
+	const program = async function main(urls: {
+		runUrl: string
 		parseUrl: string
-	): Promise<void> {
-		// Vite is stubborn and wraps the dynamic imports below with a function that adds a query parameter
-		// __vite__injectQuery(url, 'import') call. Let's provide a dummy implementation that's normally
-		// missing in the program worker.
-		function __vite__injectQuery(url: string): string {
-			return url
-		}
-
-		const safeExit = (code: number) => {
-			try {
-				processController.exit(code)
-			} catch {
-				// ignore
-			}
-		}
-
-		const formatError = (error: unknown): string => {
-			if (
-				error &&
-				typeof error === 'object' &&
-				'message' in error &&
-				typeof (error as { message?: unknown }).message === 'string'
-			) {
-				return (error as { message: string }).message
-			}
-			return String(error ?? 'Unknown error')
-		}
+		utilsUrl: string
+	}): Promise<void> {
+		const {
+			errorToString,
+			exitSafely,
+			getArgv,
+			writeStderr,
+		} = await import(urls.utilsUrl)
 
 		try {
-			const rawArgv =
-				typeof processController.argv === 'function'
-					? processController.argv()
-					: []
-			const argv = Array.isArray(rawArgv) ? rawArgv.slice(1) : []
+			const argv = getArgv()
 
 			if (argv.length !== 1) {
-				console.error('sh: expected exactly one script path')
-				safeExit(1)
+				writeStderr('sh: expected exactly one script path')
+				exitSafely(1)
 				return
 			}
 
@@ -59,8 +38,8 @@ const createProgramSource = (): string => {
 						? data
 						: decoder.decode(data as Uint8Array)
 			} catch (error) {
-				console.error(`sh: ${scriptPath}: ${formatError(error)}`)
-				safeExit(1)
+				writeStderr(`sh: ${scriptPath}: ${errorToString(error)}`)
+				exitSafely(1)
 				return
 			}
 
@@ -68,17 +47,20 @@ const createProgramSource = (): string => {
 				pc: typeof processController,
 				root: unknown
 			) => Promise<number>
-			let parseShellCode: (source: string) => unknown
+			let parseShellCode: (code: string) => unknown
 			try {
 				const [{ runShellScript: run }, { parseShellCode: parse }] =
-					await Promise.all([import(runUrl), import(parseUrl)])
+					await Promise.all([
+						import(urls.runUrl),
+						import(urls.parseUrl),
+					])
 				runShellScript = run!
 				parseShellCode = parse!
 			} catch (error) {
-				console.error(
-					`sh: failed to load shell runtime: ${formatError(error)}`
+				writeStderr(
+					`sh: failed to load shell runtime: ${errorToString(error)}`
 				)
-				safeExit(1)
+				exitSafely(1)
 				return
 			}
 
@@ -86,29 +68,29 @@ const createProgramSource = (): string => {
 			try {
 				ast = parseShellCode(source)
 			} catch (error) {
-				console.error(`sh: ${scriptPath}: ${formatError(error)}`)
-				safeExit(2)
+				writeStderr(`sh: ${scriptPath}: ${errorToString(error)}`)
+				exitSafely(2)
 				return
 			}
 
 			try {
 				const exitCode = await runShellScript(processController, ast)
-				safeExit(exitCode)
+				exitSafely(exitCode)
 			} catch (error) {
-				console.error(`sh: ${formatError(error)}`)
-				safeExit(1)
+				writeStderr(`sh: ${errorToString(error)}`)
+				exitSafely(1)
 			}
 		} catch (error) {
-			console.error(`sh: ${formatError(error)}`)
-			safeExit(1)
+			writeStderr(`sh: ${errorToString(error)}`)
+			exitSafely(1)
 		}
 	}
 
-	console.log('runnerModuleUrl', runnerModuleUrl)
-	console.log('parserModuleUrl', parserModuleUrl)
-	return `(${program.toString()})(${JSON.stringify(
-		runnerModuleUrl
-	)}, ${JSON.stringify(parserModuleUrl)});`
+	return `(${program.toString()})(${JSON.stringify({
+		runUrl: runnerModuleUrl,
+		parseUrl: parserModuleUrl,
+		utilsUrl: utilsModuleUrl,
+	})});`
 }
 
 export const shProgramSource = createProgramSource()

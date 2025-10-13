@@ -1,34 +1,21 @@
 declare const processController: any
 
-const createProgramSource = (): string => {
-	const program = async function main(): Promise<void> {
-		const stdout = processController.stdout
-		const writeLine = (line: string) => {
-			const chunk = `${line}\n`
-			if (stdout && typeof stdout.write === 'function') {
-				stdout.write(chunk)
-			} else {
-				console.log(line)
-			}
-		}
+const utilsModuleUrl = new URL('./lib/utils.ts', import.meta.url).href
 
-		const reportError = (path: string, error: unknown) => {
-			const message =
-				error &&
-				typeof error === 'object' &&
-				'message' in error &&
-				typeof (error as { message?: unknown }).message === 'string'
-					? (error as { message: string }).message
-					: String(error ?? 'Unknown error')
-			console.error(`tail: ${path}: ${message}`)
-		}
+const createProgramSource = (): string => {
+	const program = async function main(urls: {
+		utilsModuleUrl: string
+	}): Promise<void> {
+		const {
+			errorToString,
+			exitSafely,
+			getArgv,
+			writeStdout,
+			writeStderr,
+		} = await import(urls.utilsModuleUrl)
 
 		try {
-			const rawArgv =
-				typeof processController.argv === 'function'
-					? processController.argv()
-					: []
-			const argv = Array.isArray(rawArgv) ? rawArgv.slice(1) : []
+			const argv = getArgv()
 
 			let count = 10
 			const files: string[] = []
@@ -47,12 +34,8 @@ const createProgramSource = (): string => {
 			}
 
 			if (files.length === 0) {
-				console.error('tail: missing file operand')
-				try {
-					processController.exit(1)
-				} catch {
-					// ignore
-				}
+				writeStderr('tail: missing file operand')
+				exitSafely(1)
 				return
 			}
 
@@ -71,37 +54,34 @@ const createProgramSource = (): string => {
 						count === 0
 							? []
 							: lines.slice(-count || lines.length)
+
 					if (files.length > 1) {
-						writeLine(`==> ${file} <==`)
+						writeStdout(`==> ${file} <==`)
 					}
+
 					for (const line of outputLines) {
-						writeLine(line)
+						writeStdout(line)
 					}
+
 					if (files.length > 1 && fileIndex < files.length - 1) {
-						writeLine('')
+						writeStdout('')
 					}
 				} catch (error) {
-					reportError(file, error)
+					writeStderr(`tail: ${file}: ${errorToString(error)}`)
 					hadError = true
 				}
 			}
 
-			try {
-				processController.exit(hadError ? 1 : 0)
-			} catch {
-				// ignore
-			}
+			exitSafely(hadError ? 1 : 0)
 		} catch (error) {
-			reportError('<internal>', error)
-			try {
-				processController.exit(1)
-			} catch {
-				// ignore
-			}
+			writeStderr(`tail: <internal>: ${errorToString(error)}`)
+			exitSafely(1)
 		}
 	}
 
-	return `(${program.toString()})();`
+	return `(${program.toString()})(${JSON.stringify({
+		utilsModuleUrl,
+	})});`
 }
 
 export const tailProgramSource = createProgramSource()

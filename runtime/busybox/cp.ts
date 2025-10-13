@@ -1,17 +1,17 @@
 declare const processController: any
 
+const utilsModuleUrl = new URL('./lib/utils.ts', import.meta.url).href
+
 const createProgramSource = (): string => {
-	const program = async function main(): Promise<void> {
-		const getErrorMessage = (prefix: string, error: unknown) => {
-			const message =
-				error &&
-				typeof error === 'object' &&
-				'message' in error &&
-				typeof (error as { message?: unknown }).message === 'string'
-					? (error as { message: string }).message
-					: String(error ?? 'Unknown error')
-			console.error(`${prefix}: ${message}`)
-		}
+	const program = async function main(urls: {
+		utilsModuleUrl: string
+	}): Promise<void> {
+		const {
+			errorToString,
+			exitSafely,
+			getArgv,
+			writeStderr,
+		} = await import(urls.utilsModuleUrl)
 
 		const basename = (path: string): string => {
 			if (!path || path === '/') {
@@ -30,65 +30,50 @@ const createProgramSource = (): string => {
 			return `${normalized}/${name}`
 		}
 
-	const isDirectory = (stats: unknown): boolean => {
-		return Boolean(
-			stats &&
-				typeof stats === 'object' &&
-				'isDirectory' in stats &&
-				typeof (stats as { isDirectory(): unknown }).isDirectory ===
-					'function' &&
-				Boolean((stats as { isDirectory(): boolean }).isDirectory())
-		)
-	}
+		const isDirectory = (stats: unknown): boolean =>
+			Boolean(
+				stats &&
+					typeof stats === 'object' &&
+					'isDirectory' in stats &&
+					typeof (stats as { isDirectory(): unknown }).isDirectory ===
+						'function' &&
+					Boolean(
+						(stats as { isDirectory(): boolean }).isDirectory()
+					)
+			)
 
 		try {
-			const rawArgv =
-				typeof processController.argv === 'function'
-					? processController.argv()
-					: []
-			const argv = Array.isArray(rawArgv) ? rawArgv.slice(1) : []
+			const argv = getArgv()
 			const operands: string[] = []
 
 			for (const arg of argv) {
-				if (arg === '-f') {
-					continue
-				}
+				if (arg === '-f') continue
 				operands.push(String(arg))
 			}
 
 			if (operands.length < 2) {
-				console.error('cp: missing file operand')
-				console.error('usage: cp [-f] <source>... <destination>')
-				try {
-					processController.exit(1)
-				} catch {
-					// ignore
-				}
+				writeStderr('cp: missing file operand')
+				writeStderr('usage: cp [-f] <source>... <destination>')
+				exitSafely(1)
 				return
 			}
 
-		const destination = operands.pop() as string
-		const sources = operands
-		const fs = processController.fsSync
+			const destination = operands.pop() as string
+			const sources = operands
+			const fs = processController.fsSync
 
-		let destinationIsDirectory = false
-		try {
-			destinationIsDirectory = isDirectory(
-				fs.statSync(destination)
-			)
-		} catch {
-			destinationIsDirectory = false
-		}
+			let destinationIsDirectory = false
+			try {
+				destinationIsDirectory = isDirectory(fs.statSync(destination))
+			} catch {
+				destinationIsDirectory = false
+			}
 
-		if (sources.length > 1 && !destinationIsDirectory) {
-				console.error(
+			if (sources.length > 1 && !destinationIsDirectory) {
+				writeStderr(
 					'cp: target must be a directory when copying multiple files'
 				)
-				try {
-					processController.exit(1)
-				} catch {
-					// ignore
-				}
+				exitSafely(1)
 				return
 			}
 
@@ -98,7 +83,7 @@ const createProgramSource = (): string => {
 				try {
 					const sourceStats = fs.statSync(source)
 					if (isDirectory(sourceStats)) {
-						console.error(
+						writeStderr(
 							`cp: ${source}: directory copy is not supported (use -r)`
 						)
 						hadError = true
@@ -106,34 +91,27 @@ const createProgramSource = (): string => {
 					}
 
 					const data = fs.readFileSync(source)
-					let targetPath = destination
-					if (destinationIsDirectory) {
-						targetPath = joinPath(destination, basename(source))
-					}
+					const targetPath = destinationIsDirectory
+						? joinPath(destination, basename(source))
+						: destination
 
 					fs.writeFileSync(targetPath, data)
 				} catch (error) {
-					getErrorMessage(`cp: ${source}`, error)
+					writeStderr(`cp: ${source}: ${errorToString(error)}`)
 					hadError = true
 				}
 			}
 
-			try {
-				processController.exit(hadError ? 1 : 0)
-			} catch {
-				// ignore
-			}
+			exitSafely(hadError ? 1 : 0)
 		} catch (error) {
-			getErrorMessage('cp', error)
-			try {
-				processController.exit(1)
-			} catch {
-				// ignore
-			}
+			writeStderr(`cp: ${errorToString(error)}`)
+			exitSafely(1)
 		}
 	}
 
-	return `(${program.toString()})();`
+	return `(${program.toString()})(${JSON.stringify({
+		utilsModuleUrl,
+	})});`
 }
 
 export const cpProgramSource = createProgramSource()

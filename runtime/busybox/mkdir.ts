@@ -1,13 +1,20 @@
 declare const processController: any
 
+const utilsModuleUrl = new URL('./lib/utils.ts', import.meta.url).href
+
 const createProgramSource = (): string => {
-	const program = async function main(): Promise<void> {
+	const program = async function main(urls: {
+		utilsModuleUrl: string
+	}): Promise<void> {
+		const {
+			errorToString,
+			exitSafely,
+			getArgv,
+			writeStderr,
+		} = await import(urls.utilsModuleUrl)
+
 		try {
-			const rawArgv =
-				typeof processController.argv === 'function'
-					? processController.argv()
-					: []
-			const argv = Array.isArray(rawArgv) ? rawArgv.slice(1) : []
+			const argv = getArgv()
 			let recursive = false
 			const targets: string[] = []
 
@@ -20,13 +27,9 @@ const createProgramSource = (): string => {
 			}
 
 			if (targets.length === 0) {
-				console.error('mkdir: missing operand')
-				console.error('usage: mkdir [-p] <path>...')
-				try {
-					processController.exit(1)
-				} catch {
-					// ignore
-				}
+				writeStderr('mkdir: missing operand')
+				writeStderr('usage: mkdir [-p] <path>...')
+				exitSafely(1)
 				return
 			}
 
@@ -37,41 +40,21 @@ const createProgramSource = (): string => {
 				try {
 					fs.mkdirSync(target, { recursive, mode: 0o755 })
 				} catch (error) {
-					const message =
-						error &&
-						typeof error === 'object' &&
-						'message' in error &&
-						typeof (error as { message?: unknown }).message === 'string'
-							? (error as { message: string }).message
-							: String(error ?? 'Unknown error')
-					console.error(`mkdir: ${target}: ${message}`)
+					writeStderr(`mkdir: ${target}: ${errorToString(error)}`)
 					hadError = true
 				}
 			}
 
-			try {
-				processController.exit(hadError ? 1 : 0)
-			} catch {
-				// ignore
-			}
+			exitSafely(hadError ? 1 : 0)
 		} catch (error) {
-			const message =
-				error &&
-				typeof error === 'object' &&
-				'message' in error &&
-				typeof (error as { message?: unknown }).message === 'string'
-					? (error as { message: string }).message
-					: String(error ?? 'Unknown error')
-			console.error(`mkdir: ${message}`)
-			try {
-				processController.exit(1)
-			} catch {
-				// ignore
-			}
+			writeStderr(`mkdir: ${errorToString(error)}`)
+			exitSafely(1)
 		}
 	}
 
-	return `(${program.toString()})();`
+	return `(${program.toString()})(${JSON.stringify({
+		utilsModuleUrl,
+	})});`
 }
 
 export const mkdirProgramSource = createProgramSource()
