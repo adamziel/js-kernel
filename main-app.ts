@@ -1,69 +1,44 @@
 import { ExitCode, KernelClass } from './kernel-class.ts'
 import type { KernelStdioChunk } from './kernel-class.ts'
+import { busyboxPrograms } from './busybox-programs/index.ts'
 
 const kernel = new KernelClass()
 
+// Initiate busybox programs
+
 kernel.mkdirSync('/bin', { mode: 0o755 })
-kernel.writeFileSync('/bin/hello', `
-console.log("Hello, world!");
-// console.error(new Error("Hello, error!"));
-console.log(new Uint8Array([1, 2, 3]));
+for (const [name, source] of Object.entries(busyboxPrograms)) {
+	kernel.writeFileSync(`/bin/${name}`, `${source}\n`, { mode: 0o755 })
+}
 
-console.log(processController.fsSync.readdir('/bin'));
-console.log(processController.fsSync.mkdir('/bin/test'));
-console.log(processController.fsSync.readdir('/bin'));
-const spawned = await processController.spawn({
-	argv: ['hello-2'],
-	stdio: {
-		stdout: 'pipe',
-		stderr: 'pipe',
-	},
-	// debug: true,
-});
-spawned.stdout?.on('data', (chunk) => {
-	console.log('[nested child stdout]', chunk)
-})
-spawned.stderr?.on('data', (chunk) => {
-	console.error('[nested child stderr]', chunk)
-})
-// console.log('Spawned process', Object.keys(spawned));
-// console.log({spawned});
-// await new Promise(resolve => setTimeout(resolve, 8000));
-
-`, {
-	mode: 0o755,
-})
-kernel.writeFileSync('/bin/hello-2', `
-console.log("Nested hello, world!");
-`, {
-	mode: 0o755,
-})
-
-const helloWorker = kernel.spawn({
-	argv: ['hello'],
+const lsWorker = kernel.spawn({
+	argv: ['ls', '/bin'],
 	env: {},
 	cwd: '/',
-	name: 'hello',
+	name: 'ls-demo',
 	stdio: {
 		stdout: 'pipe',
 		stderr: 'pipe',
 	},
-	debug: true,
+	debug: false,
 })
 
-if (typeof helloWorker === 'number') {
-	console.error('Failed to spawn hello process', helloWorker === ExitCode.NOT_FOUND ? 'not found' : 'error')
+if (typeof lsWorker === 'number') {
+	console.error(
+		'Failed to spawn ls process',
+		lsWorker === ExitCode.NOT_FOUND ? 'not found' : 'error'
+	)
 } else {
 	const decodeChunk = (chunk: KernelStdioChunk) =>
 		typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk)
 
-	helloWorker.stdout?.on('data', (chunk) => {
-		console.log('[child stdout]', decodeChunk(chunk))
+	lsWorker.stdout?.on('data', (chunk) => {
+		console.log('[ls stdout]', decodeChunk(chunk))
 	})
-	helloWorker.stderr?.on('data', (chunk) => {
-		console.error('[child stderr]', decodeChunk(chunk))
+	lsWorker.stderr?.on('data', (chunk) => {
+		console.error('[ls stderr]', decodeChunk(chunk))
 	})
-	helloWorker.onExit((code) => {
-		console.log('Child exited with code', code)
+	lsWorker.onExit((code) => {
+		console.log('ls exited with code', code)
 	})
 }
