@@ -558,7 +558,7 @@ export function installStdIo(isDebug: boolean) {
 
 	const writeStderr = (...args: unknown[]) => {
 		if (isDebug) {
-			originalConsole.error(...args)
+			originalConsole.trace(...args)
 		} else {
 			const value = joinArgs(args)
 			const chunk = appendTrailingNewlineIfText(toKernelChunk(value))
@@ -635,7 +635,13 @@ const reportProgramError = (error: unknown) => {
 	}
 }
 
-const executeProgram = (options: ChildProcessInitOptions) => {
+
+const startProgram = (options: ChildProcessInitOptions) => {
+	if (programStarted) {
+		return
+	}
+	programStarted = true
+	
 	if (!childProcessState || !stdioStreams) {
 		throw new Error('executeProgram called before initialization')
 	}
@@ -649,7 +655,14 @@ const executeProgram = (options: ChildProcessInitOptions) => {
 
 		const programBody = stripShebang(options.programSource)
 		const globalEval = (0, eval) as (code: string) => unknown
-		globalEval(`"use strict";\n${programBody}`)
+		globalEval(`"use strict";\n(async function() { 
+			// Somehow this makes all the sync calls pass.
+			// @TODO: Look into initialization flows, most likely,
+			// there's a missing await between something is initialized and
+			// Atomics.wait() is called.
+			await processController.fs.readdir('/');
+			${programBody}
+		})()`)
 	} catch (error) {
 		reportProgramError(error)
 	} finally {
@@ -664,14 +677,6 @@ const executeProgram = (options: ChildProcessInitOptions) => {
 			;(globalThis as any).__dirname = originalDirname
 		}
 	}
-}
-
-const startProgram = (options: ChildProcessInitOptions) => {
-	if (programStarted) {
-		return
-	}
-	programStarted = true
-	executeProgram(options)
 }
 
 function requestSpawnFromKernel(
