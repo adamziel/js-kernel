@@ -19,8 +19,9 @@ function mockShell(argv: string[]) {
 		env: {},
 		cwd: '/',
 		name: 'shell',
-		debug: true,
+		// debug: true,
 	})
+	console.log('worker', worker)
 
 	return new Promise((resolve) => {
 		worker.onExit((code) => {

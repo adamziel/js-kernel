@@ -1,3 +1,5 @@
+import { joinPaths } from "../util/paths"
+
 export type StdioMode = 'inherit' | 'ignore' | 'pipe'
 
 export interface SpawnStdioOptions {

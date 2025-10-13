@@ -133,28 +133,8 @@ export class Kernel extends InMemoryFileSystem {
 		return this.env[key] || ''
 	}
 
-	resolveExecutable(name: string) {
-		if (name.includes('/')) {
-			if (!name.startsWith('/')) {
-				throw new Error('Relative paths are not supported in kernel.resolveExecutable()');
-			}
-			if (!this.existsSync(name)) {
-				throw new Error(`Executable not found: ${name}`);
-			}
-			return name
-		}
-		const paths = this.getEnv('PATH').split(':')
-		for (const path of paths) {
-			const executable = joinPaths(path, name)
-			if (this.existsSync(executable)) {
-				return executable
-			}
-		}
-		return null
-	}
-
-	private loadProgram(command: string) {
-		const executablePath = this.resolveExecutable(command)
+	private loadProgram(command: string, cwd: string) {
+		const executablePath = this.resolveExecutable(command, cwd)
 		if (!executablePath) {
 			return null
 		}
@@ -162,8 +142,28 @@ export class Kernel extends InMemoryFileSystem {
 		return { executablePath, programSource }
 	}
 
+	resolveExecutable(path: string, cwd: string) {
+		if (path.includes('/')) {
+			if (!path.startsWith('/')) {
+				path = joinPaths(cwd, path)
+			}
+			if (!this.existsSync(path)) {
+				throw new Error(`Executable not found: ${path}`)
+			}
+			return path
+		}
+		const paths = this.getEnv('PATH').split(':')
+		for (const executablesRoot of paths) {
+			const executable = joinPaths(executablesRoot, path)
+			if (this.existsSync(executable)) {
+				return executable
+			}
+		}
+		return null
+	}
+
 	spawn(options: SpawnOptions): KernelSubprocess | ExitCode {
-		const program = this.loadProgram(options.argv[0])
+		const program = this.loadProgram(options.argv[0], options.cwd)
 		if (!program) {
 			return ExitCode.NOT_FOUND
 		}
@@ -567,7 +567,7 @@ export class Kernel extends InMemoryFileSystem {
 		stderr?: string
 		error?: string
 	}> {
-		const program = this.loadProgram(options.argv[0])
+		const program = this.loadProgram(options.argv[0], options.cwd)
 		if (!program) {
 			throw new Error(`Command not found: ${options.argv[0]}`)
 		}
@@ -761,10 +761,7 @@ export class Kernel extends InMemoryFileSystem {
 		}
 
 		timeoutHandle = setTimeout(() => {
-			finalize(
-				null,
-				`Process timed out after ${timeoutMs}ms`
-			)
+			finalize(null, `Process timed out after ${timeoutMs}ms`)
 			try {
 				worker.terminate()
 			} catch {
@@ -857,7 +854,7 @@ export class Kernel extends InMemoryFileSystem {
 			return
 		}
 
-		const program = this.loadProgram(options.argv[0])
+		const program = this.loadProgram(options.argv[0], options.cwd)
 		if (!program) {
 			this.sendSpawnFailure(
 				parentRecord.controlPort,
