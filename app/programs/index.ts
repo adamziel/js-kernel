@@ -1,9 +1,11 @@
 import { Kernel } from '../../runtime/index.ts'
 import { joinPaths } from '../../runtime/util/paths.ts'
 import { phpProgramSource } from './php.ts'
+import { nodeProgramSource } from './node.ts'
 
 export const programs: Record<string, string> = {
 	php: phpProgramSource,
+	node: nodeProgramSource,
 }
 
 export type ProgramName = keyof typeof programs

@@ -1,0 +1,1097 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Node.js Web Polyfills</title>
+		<link
+			rel="stylesheet"
+			href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css"
+		/>
+		<style>
+			:root {
+				color-scheme: dark;
+			}
+
+			html,
+			body {
+				height: 100%;
+				margin: 0;
+				background: #1e1e1e;
+			}
+
+			#terminal-container {
+				position: relative;
+				height: 40vh;
+				width: 100%;
+			}
+
+			#terminal {
+				height: 100%;
+				width: 100%;
+			}
+
+			#loading-overlay {
+				position: absolute;
+				top: 0;
+				left: 0;
+				right: 0;
+				bottom: 0;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				background: rgba(30, 30, 30, 0.95);
+				backdrop-filter: blur(4px);
+				z-index: 1000;
+				color: #fff;
+				font-family: 'Georgia', serif;
+			}
+
+			#loading-card {
+				width: min(320px, 80%);
+				padding: 24px;
+				background: rgba(0, 0, 0, 0.6);
+				border: 1px solid rgba(255, 255, 255, 0.1);
+				border-radius: 12px;
+				box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35);
+			}
+
+			#loading-message {
+				margin: 0 0 16px;
+				font-size: 1.1em;
+				text-align: center;
+			}
+
+			#progress-bar-track {
+				position: relative;
+				height: 8px;
+				border-radius: 20px;
+				background: rgba(255, 255, 255, 0.1);
+				overflow: hidden;
+			}
+
+			#progress-bar-fill {
+				position: absolute;
+				top: 0;
+				left: 0;
+				height: 100%;
+				width: 0%;
+				border-radius: 20px;
+				background: linear-gradient(
+					90deg,
+					rgba(30, 144, 255, 0.7),
+					rgba(30, 144, 255, 1)
+				);
+				transition: width 0.3s ease;
+			}
+
+			#readme {
+				font-family: 'Georgia', serif;
+				line-height: 1.6;
+				color: #e0e0e0;
+				padding: 20px;
+				max-width: 800px;
+				margin: 0 auto;
+			}
+			#readme h2 {
+				font-size: 2em;
+				margin-bottom: 0.5em;
+				color: #ffffff;
+			}
+			#readme p {
+				font-size: 1.1em;
+				margin-bottom: 1em;
+			}
+			#readme a {
+				color: #1e90ff;
+				text-decoration: none;
+			}
+			#readme a:hover {
+				text-decoration: underline;
+			}
+		</style>
+	</head>
+	<body>
+		<div id="terminal-container">
+			<div id="terminal"></div>
+			<div id="loading-overlay">
+				<div id="loading-card">
+					<p id="loading-message">Preparing the runtime…</p>
+					<div id="progress-bar-track">
+						<div id="progress-bar-fill"></div>
+					</div>
+				</div>
+			</div>
+		</div>
+		<script type="module">
+			window.corsProxyUrl = new URL(
+				'./php-cors-proxy/cors-proxy.php',
+				window.location.href
+			)
+
+			const previousFetch = globalThis.fetch
+			globalThis.fetch = async (url, ...args) => {
+				const parsed = new URL(url, window.location.href)
+				if (parsed.hostname === window.location.hostname) {
+					return previousFetch(url, ...args)
+				}
+
+				if (typeof url === 'string' && url.startsWith('https://')) {
+					url = `${window.corsProxyUrl}?${url}`
+				}
+
+				let result = await previousFetch(url, ...args)
+
+				if (result.headers.has('content-encoding')) {
+					const newHeaders = new Headers(result.headers)
+					newHeaders.delete('content-encoding')
+
+					result = new Response(result.body, {
+						status: result.status,
+						statusText: result.statusText,
+						headers: newHeaders,
+					})
+				}
+
+				return result
+			}
+
+			import { Terminal } from 'https://cdn.jsdelivr.net/npm/xterm@5.3.0/+esm'
+			import { FitAddon } from 'https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.7.0/+esm'
+			import { RemoteInMemoryFileSystem } from './dist/app/in-memory-fs.client.js'
+			import { wrap } from './dist/app/api.js'
+			import { StoredHistory } from './dist/app/ui/StoredHistory.js'
+
+			window.stableConsole = {
+				log: console.log.bind(console),
+				info: console.info.bind(console),
+				warn: console.warn.bind(console),
+				error: console.error.bind(console),
+				trace: console.trace.bind(console),
+			}
+
+			function createProgressTracker() {
+				const overlay = document.getElementById('loading-overlay')
+				const messageEl = document.getElementById('loading-message')
+				const barFill = document.getElementById('progress-bar-fill')
+				if (!overlay || !messageEl || !barFill) {
+					return {
+						show() {},
+						update() {},
+						complete() {},
+					}
+				}
+
+				const clamp = (value) =>
+					Math.max(
+						0,
+						Math.min(100, Number.isFinite(value) ? value : 0)
+					)
+
+				let current = 0
+
+				return {
+					show(message = 'Loading…') {
+						messageEl.textContent = message
+						barFill.style.width = `${clamp(current)}%`
+						overlay.style.opacity = '1'
+						overlay.style.pointerEvents = 'auto'
+						overlay.hidden = false
+					},
+					update({ message, progress }) {
+						if (message) {
+							messageEl.textContent = message
+						}
+						if (typeof progress === 'number') {
+							current = clamp(progress)
+							barFill.style.width = `${current}%`
+						}
+					},
+					complete({ delay = 250 } = {}) {
+						current = 100
+						barFill.style.width = '100%'
+						setTimeout(() => {
+							overlay.style.opacity = '0'
+							overlay.style.pointerEvents = 'none'
+							barFill.style.width = '0%'
+							setTimeout(() => {
+								overlay.hidden = true
+							}, 200)
+						}, delay)
+					},
+				}
+			}
+
+			const progress = createProgressTracker()
+			progress.show('Preparing the runtime…')
+			const PROMPT_SUFFIX = '$ '
+
+			const mainWorker = new Worker('./dist/app/main-worker.js', {
+				type: 'module',
+			})
+			const mainWorkerClient = await wrap(mainWorker)
+
+			// @TODO: If this is await-ed, it never gets resolved. If
+			// it's then-ed, it works as expected. Why?
+			mainWorkerClient.initDemoFilesystem().then(
+				() => {
+					console.log('initDemoFilesystem done')
+				},
+				(error) => {
+					console.error('initDemoFilesystem failed', error)
+				}
+			)
+
+			progress.update({
+				message: 'Launching terminal…',
+				progress: 98,
+			})
+
+			class NodeRunner {
+				constructor(shell, workerClient) {
+					this.shell = shell
+					this.workerClient = workerClient
+					this.active = false
+					this.currentRunToken = null
+					this.currentProcess = null
+					this.abortCurrent = null
+					this.stdinWriter = null
+					this.unsubscribeResize = null
+					this.currentProcessEventListeners = []
+				}
+
+				isNodeCommand(command) {
+					return command === 'node' || command === 'npm'
+				}
+
+				async disposeCurrentProcess({ terminate = false } = {}) {
+					if (typeof this.unsubscribeResize === 'function') {
+						try {
+							this.unsubscribeResize()
+						} catch {
+							// ignore cleanup errors
+						}
+					}
+					this.unsubscribeResize = null
+					this.abortCurrent = null
+					this.stdinWriter = null
+					const current = this.currentProcess
+					if (
+						current &&
+						Array.isArray(this.currentProcessEventListeners)
+					) {
+						for (const { type, listener, options } of this
+							.currentProcessEventListeners) {
+							try {
+								current.removeEventListener?.(
+									type,
+									listener,
+									options
+								)
+							} catch {
+								// ignore cleanup errors
+							}
+						}
+					}
+					this.currentProcessEventListeners = []
+					if (current && terminate) {
+						try {
+							current.waitForExit?.().catch(() => {})
+							current.terminate?.()
+						} catch {
+							// ignore termination errors
+						}
+					}
+					this.currentProcess = null
+				}
+
+				snapshotProcessEnv() {
+					const env = globalThis.process?.env
+					const result = {}
+					if (env && typeof env === 'object') {
+						for (const [key, value] of Object.entries(env)) {
+							result[key] = value
+						}
+					}
+					return result
+				}
+
+				async run(command, args) {
+					this.active = true
+					try {
+						if (command === 'node') {
+							await this.runNodeCommand(args)
+						} else if(command === 'npm') {
+							await this.runNodeCommand(['/bin/npm', ...args])
+						} else {
+							throw new Error(`Unsupported command: ${command}`)
+						}
+					} finally {
+						this.active = false
+					}
+				}
+
+				async runNodeCommand(args) {
+					if (args.length === 0) {
+						this.shell.writeStderr(
+							'node: interactive REPL is not supported yet.\n'
+						)
+						return
+					}
+					const [first, ...rest] = args
+					if (first === '-v' || first === '--version') {
+						const version = globalThis.process?.version ?? 'v0.0.0'
+						this.shell.writeStdout(`${version}\n`)
+						return
+					}
+					if (first.startsWith('-')) {
+						this.shell.writeStderr(
+							`node: option '${first}' is not supported yet.\n`
+						)
+						return
+					}
+					const scriptPath = this.shell.resolvePath(first)
+					const scriptExists = await this.workerClient
+						.pathExists(scriptPath)
+						.catch((error) => {
+							console.error(
+								'Failed to check script existence:',
+								error
+							)
+							return false
+						})
+					if (!scriptExists) {
+						this.shell.writeStderr(
+							`node: cannot open '${first}': No such file or directory\n`
+						)
+						return
+					}
+					const argv = ['node', scriptPath, ...rest]
+					await this.runMainWithArgv(argv)
+				}
+
+				async runMainWithArgv(argv) {
+					const scriptPath =
+						Array.isArray(argv) &&
+						typeof argv[1] === 'string' &&
+						argv[1].length
+							? argv[1]
+							: null
+					if (!scriptPath) {
+						throw new Error(
+							'argv[1] must be a script path to launch a Node process.'
+						)
+					}
+
+					await this.disposeCurrentProcess({ terminate: true })
+					const runToken = Symbol('node-run')
+					this.currentRunToken = runToken
+					this.shell.setActiveOutputToken(runToken)
+					const columns = this.shell.term?.cols ?? 80
+					const rows = this.shell.term?.rows ?? 24
+					const envSnapshot = this.snapshotProcessEnv()
+					const processHandle =
+						await mainWorkerClient.spawnRemoteProcess({
+							argv,
+							cwd: this.shell.cwd,
+							env: envSnapshot,
+							columns,
+							rows,
+						})
+					console.log('processHandle', processHandle)
+					const listeners = []
+					const handleStdout = (event) => {
+						const detail = event?.detail
+						const text =
+							typeof detail === 'string'
+								? detail
+								: String(detail ?? '')
+						this.shell.writeStdoutForRun(runToken, text)
+					}
+					processHandle.addEventListener('stdout', handleStdout)
+					listeners.push({ type: 'stdout', listener: handleStdout })
+
+					const handleStderr = (event) => {
+						const detail = event?.detail
+						const text =
+							typeof detail === 'string'
+								? detail
+								: String(detail ?? '')
+						this.shell.writeStderrForRun(runToken, text)
+					}
+					processHandle.addEventListener('stderr', handleStderr)
+					listeners.push({ type: 'stderr', listener: handleStderr })
+
+					const handleError = (event) => {
+						const detail = event?.detail
+						let message
+						if (
+							detail &&
+							typeof detail === 'object' &&
+							'message' in detail
+						) {
+							const candidate = detail.message
+							message =
+								typeof candidate === 'string'
+									? candidate
+									: String(candidate ?? 'Unknown error')
+						} else if (typeof detail === 'string') {
+							message = detail
+						} else {
+							message = String(detail ?? 'Unknown error')
+						}
+						this.shell.writeStderrForRun(runToken, `${message}\n`)
+					}
+					processHandle.addEventListener('error', handleError)
+					listeners.push({ type: 'error', listener: handleError })
+
+					this.currentProcessEventListeners = listeners
+					this.currentProcess = processHandle
+					this.stdinWriter = (data) => processHandle.write(data)
+					this.abortCurrent = () => processHandle.signal('SIGINT')
+					if (typeof this.shell.onTerminalResize === 'function') {
+						this.unsubscribeResize = this.shell.onTerminalResize(
+							(cols, rows) => {
+								processHandle.resize(cols, rows)
+							}
+						)
+					}
+					try {
+						const result =
+							typeof processHandle.waitForExit === 'function'
+								? await processHandle.waitForExit()
+								: await processHandle.exit
+						if (
+							result &&
+							typeof result.code === 'number' &&
+							result.code !== 0
+						) {
+							this.shell.writeStderrForRun(
+								runToken,
+								`Process exited with code ${result.code}\n`
+							)
+						}
+					} catch (error) {
+						const message =
+							error instanceof Error
+								? error.message
+								: String(error ?? 'Unknown error')
+						this.shell.writeStderrForRun(runToken, `${message}\n`)
+					} finally {
+						if (this.shell.getActiveOutputToken() === runToken) {
+							this.shell.setActiveOutputToken(null)
+						}
+						await this.disposeCurrentProcess()
+						this.currentRunToken = null
+					}
+				}
+
+				handleInput(data) {
+					if (!this.active || !this.stdinWriter) {
+						return false
+					}
+					this.stdinWriter(data)
+					return true
+				}
+
+				abort() {
+					if (!this.active || !this.currentProcess) {
+						return
+					}
+					try {
+						this.currentProcess.signal('SIGINT')
+					} catch (error) {
+						const message =
+							error instanceof Error
+								? error.message
+								: String(error)
+						this.shell.writeStderr(
+							`Failed to send SIGINT: ${message}\n`
+						)
+					}
+				}
+			}
+
+			function normalizeNewlines(text) {
+				return text.replace(/\r?\n/g, '\r\n')
+			}
+
+			class XTermShell {
+				constructor(term) {
+					this.term = term
+					this.buffer = ''
+					this.cursor = 0
+					this.history = new StoredHistory()
+					this.historyIndex = 0
+					this.stashedLine = ''
+					this.isRunning = false
+					this.abortCurrent = null
+					this.cwd = '/demos'
+					this.resizeSubscribers = new Set()
+					this.activeOutputToken = null
+					this.term.onResize(({ cols, rows }) => {
+						for (const handler of this.resizeSubscribers) {
+							try {
+								handler(cols, rows)
+							} catch (error) {
+								console.error(
+									'Terminal resize handler error:',
+									error
+								)
+							}
+						}
+					})
+
+					this.nodeRunner = new NodeRunner(this, mainWorkerClient)
+					this.syncProcessBindings()
+
+					this.term.onData((data) => this.onData(data))
+				}
+
+				onTerminalResize(handler) {
+					this.resizeSubscribers.add(handler)
+					return () => {
+						this.resizeSubscribers.delete(handler)
+					}
+				}
+
+				syncProcessBindings() {
+					const processObj = globalThis.process
+					if (!processObj) {
+						return
+					}
+					processObj.cwd = () => this.cwd
+					processObj.chdir = (input) => {
+						this.changeDirectory(input, { fromProcess: true })
+					}
+				}
+
+				start() {
+					this.writeStdout(
+						'Welcome to the Node.js Web Shell!\n' +
+							'Type "help" for available commands.\n' +
+							'Visit https://github.com/adamziel/node-js-in-the-browser for more information.\n\n'
+					)
+					this.showPrompt()
+				}
+
+				writeStdout(message) {
+					this.term.write(normalizeNewlines(String(message)))
+				}
+
+				writeStderr(message) {
+					this.term.write(normalizeNewlines(String(message)))
+				}
+
+				setActiveOutputToken(token) {
+					this.activeOutputToken = token ?? null
+				}
+
+				getActiveOutputToken() {
+					return this.activeOutputToken
+				}
+
+				writeStdoutForRun(token, message) {
+					if (token && token !== this.activeOutputToken) {
+						return
+					}
+					this.writeStdout(message)
+				}
+
+				writeStderrForRun(token, message) {
+					if (token && token !== this.activeOutputToken) {
+						return
+					}
+					this.writeStderr(message)
+				}
+
+				composePrompt() {
+					return `${this.cwd}${PROMPT_SUFFIX}`
+				}
+
+				onData(data) {
+					let index = 0
+					while (index < data.length) {
+						const char = data[index]
+
+						if (this.isRunning) {
+							if (char === '\u0003') {
+								this.handleCtrlC()
+							} else {
+								this.nodeRunner.handleInput(char)
+							}
+							index += 1
+							continue
+						}
+
+						if (char === '\u001b') {
+							const sequence = data.slice(index, index + 3)
+							if (sequence === '\u001b[A') {
+								this.navigateHistory(-1)
+								index += 3
+								continue
+							}
+							if (sequence === '\u001b[B') {
+								this.navigateHistory(1)
+								index += 3
+								continue
+							}
+							if (sequence === '\u001b[C') {
+								this.moveCursor(1)
+								index += 3
+								continue
+							}
+							if (sequence === '\u001b[D') {
+								this.moveCursor(-1)
+								index += 3
+								continue
+							}
+							index += 1
+							continue
+						}
+
+						if (char === '\u0003') {
+							this.handleCtrlC()
+							index += 1
+							continue
+						}
+
+						switch (char) {
+							case '\r':
+								this.handleEnter()
+								break
+							case '\u0001':
+								this.moveCursorToStart()
+								break
+							case '\u0005':
+								this.moveCursorToEnd()
+								break
+							case '\u007f':
+								this.handleBackspace()
+								break
+							default:
+								if (char >= ' ' && char !== '\u007f') {
+									this.insertText(char)
+								}
+								break
+						}
+
+						index += 1
+					}
+				}
+
+				moveCursor(direction) {
+					if (direction === -1 && this.cursor > 0) {
+						this.cursor -= 1
+						this.term.write('\u001b[D')
+						return
+					}
+					if (direction === 1 && this.cursor < this.buffer.length) {
+						this.term.write('\u001b[C')
+						this.cursor += 1
+					}
+				}
+
+				moveCursorToStart() {
+					if (this.cursor > 0) {
+						this.term.write(`\u001b[${this.cursor}D`)
+						this.cursor = 0
+					}
+				}
+
+				moveCursorToEnd() {
+					const diff = this.buffer.length - this.cursor
+					if (diff > 0) {
+						this.term.write(`\u001b[${diff}C`)
+						this.cursor = this.buffer.length
+					}
+				}
+
+				insertText(text) {
+					if (!text) {
+						return
+					}
+					const before = this.buffer.slice(0, this.cursor)
+					const after = this.buffer.slice(this.cursor)
+					this.buffer = before + text + after
+					this.cursor += text.length
+					this.term.write(text + after)
+					if (after.length) {
+						this.term.write(`\u001b[${after.length}D`)
+					}
+				}
+
+				handleBackspace() {
+					if (this.cursor === 0) {
+						return
+					}
+					this.buffer =
+						this.buffer.slice(0, this.cursor - 1) +
+						this.buffer.slice(this.cursor)
+					this.cursor -= 1
+					this.term.write('\u001b[D')
+					this.term.write('\u001b[P')
+				}
+
+				handleEnter() {
+					this.term.write('\r\n')
+					const line = this.buffer
+					const trimmed = line.trim()
+
+					if (!trimmed) {
+						this.showPrompt()
+						return
+					}
+
+					this.addToHistory(line)
+					this.isRunning = true
+
+					Promise.resolve(this.executeCommand(line))
+						.catch((error) => {
+							const message =
+								error instanceof Error
+									? error.stack ?? error.message
+									: String(error)
+							this.writeStderr(`${message}\n`)
+						})
+						.finally(() => {
+							this.finishCommand()
+						})
+				}
+
+				handleCtrlC() {
+					this.term.write('^C\r\n')
+					if (this.isRunning) {
+						if (typeof this.abortCurrent === 'function') {
+							try {
+								this.abortCurrent()
+							} catch (error) {
+								const message =
+									error instanceof Error
+										? error.message
+										: String(error)
+								this.writeStderr(`${message}\n`)
+							}
+						}
+						this.abortCurrent = null
+						this.finishCommand()
+					} else {
+						this.showPrompt()
+					}
+				}
+
+				addToHistory(line) {
+					if (!line.trim()) {
+						return
+					}
+					if (this.history.get(this.history.length - 1) !== line) {
+						this.history.push(line)
+					}
+					this.historyIndex = this.history.length
+					this.stashedLine = ''
+				}
+
+				navigateHistory(direction) {
+					if (!this.history.length) {
+						return
+					}
+
+					if (direction === -1) {
+						if (this.historyIndex === this.history.length) {
+							this.stashedLine = this.buffer
+						}
+						if (this.historyIndex > 0) {
+							this.historyIndex -= 1
+							this.buffer = this.history.get(this.historyIndex)
+							this.cursor = this.buffer.length
+							this.renderLine()
+						}
+						return
+					}
+
+					if (direction === 1) {
+						if (this.historyIndex === this.history.length) {
+							return
+						}
+						this.historyIndex += 1
+						if (this.historyIndex === this.history.length) {
+							this.buffer = this.stashedLine
+						} else {
+							this.buffer = this.history.get(this.historyIndex)
+						}
+						this.cursor = this.buffer.length
+						this.renderLine()
+					}
+				}
+
+				renderLine() {
+					this.term.write('\u001b[?25l')
+					this.term.write('\r')
+					this.term.write('\u001b[2K')
+					this.term.write(this.composePrompt() + this.buffer)
+					const offset = this.buffer.length - this.cursor
+					if (offset > 0) {
+						this.term.write(`\u001b[${offset}D`)
+					}
+					this.term.write('\u001b[?25h')
+				}
+
+				resetLineState() {
+					this.buffer = ''
+					this.cursor = 0
+					this.historyIndex = this.history.length
+					this.stashedLine = ''
+				}
+
+				showPrompt() {
+					this.resetLineState()
+					this.term.write(this.composePrompt())
+				}
+
+				finishCommand() {
+					this.isRunning = false
+					this.abortCurrent = null
+					this.syncProcessBindings()
+					this.showPrompt()
+				}
+
+				resolvePath(input) {
+					if (!input || input === '.') {
+						return this.cwd
+					}
+					const parts = input.split('/')
+					const base = input.startsWith('/')
+						? []
+						: this.cwd.split('/').filter(Boolean)
+					for (const part of parts) {
+						if (!part || part === '.') {
+							continue
+						}
+						if (part === '..') {
+							base.pop()
+							continue
+						}
+						base.push(part)
+					}
+					return `/${base.join('/')}` || '/'
+				}
+
+				async changeDirectory(target, { fromProcess = false } = {}) {
+					const desired = target ?? '/'
+					try {
+						const response = await mainWorkerClient.call(
+							'change-directory',
+							{
+								cwd: this.cwd,
+								target: desired,
+							}
+						)
+						const nextCwd =
+							response && typeof response.cwd === 'string'
+								? response.cwd
+								: this.cwd
+						this.cwd = nextCwd
+						return nextCwd
+					} catch (error) {
+						if (fromProcess) {
+							throw error
+						}
+						const message =
+							error instanceof Error
+								? error.message
+								: String(error ?? 'Unknown error')
+						this.writeStderr(
+							message.endsWith('\n') ? message : `${message}\n`
+						)
+					}
+					return this.cwd
+				}
+
+				formatFsError(prefix, target, error) {
+					const code = error && error.code ? error.code : 'ERROR'
+					if (code === 'ENOENT') {
+						return `${prefix}: cannot access '${target}': No such file or directory`
+					}
+					if (code === 'ENOTDIR') {
+						return `${prefix}: cannot access '${target}': Not a directory`
+					}
+					return `${prefix}: ${error.message}`
+				}
+
+				async executeCommand(line) {
+					const argv = this.parseCommand(line)
+					if (!argv.length) {
+						return
+					}
+
+					const [command, ...args] = argv
+
+					if (this.nodeRunner.isNodeCommand(command)) {
+						this.abortCurrent = () => this.nodeRunner.abort()
+						await this.nodeRunner.run(command, args)
+						return
+					}
+
+					try {
+						console.log('executeCommand', command, args)
+						const result =
+							await mainWorkerClient.executeShellCommand({
+								cwd: this.cwd,
+								command,
+								args,
+							})
+						console.log('result', result)
+						if (result && result.handled) {
+							if (
+								typeof result.cwd === 'string' &&
+								result.cwd !== this.cwd
+							) {
+								this.cwd = result.cwd
+							}
+							if (result.stdout) {
+								this.writeStdout(result.stdout)
+							}
+							if (result.stderr) {
+								this.writeStderr(result.stderr)
+							}
+							return
+						}
+					} catch (error) {
+						const message =
+							error instanceof Error
+								? error.message
+								: String(error ?? 'Unknown error')
+						this.writeStderr(`${message}\n`)
+						return
+					}
+				}
+
+				parseCommand(line) {
+					return line.trim().split(/\s+/).filter(Boolean)
+				}
+			}
+
+			const terminalElement = document.getElementById('terminal')
+			const terminal = new Terminal({
+				cursorBlink: true,
+				convertEol: true,
+				fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+				fontSize: 14,
+				cols: 200,
+			})
+
+			const fitAddon = new FitAddon()
+			terminal.loadAddon(fitAddon)
+
+			const resizeTerminal = () => {
+				requestAnimationFrame(() => {
+					fitAddon.fit()
+				})
+			}
+
+			terminal.open(terminalElement)
+			resizeTerminal()
+			window.addEventListener('resize', resizeTerminal)
+
+			const shell = new XTermShell(terminal)
+			shell.start()
+			progress.complete()
+
+			terminal.focus()
+			terminalElement.addEventListener('click', () => terminal.focus())
+			setTimeout(() => {
+				terminal.focus()
+			}, 50)
+			/*
+		I tried getting alrernative package managers to work, but they
+		rely on deep Node internals and will require more work:
+
+		 npm install -g corepack
+		 node /lib/node_modules/corepack/dist/corepack.js install -g yarn
+		 node /lib/node_modules/corepack/dist/corepack.js use yarn
+		 node /lib/node_modules/corepack/dist/yarnpkg.js add @wordpress/scripts@*
+
+		 npm install -g yarn
+		 node /lib/node_modules/yarn/bin/yarn.js add @wordpress/scripts
+
+		 npm install -g pnpm
+		 node /lib/node_modules/pnpm/bin/pnpm.cjs install @wordpress/scripts
+		 # Cannot find module worker_threads
+
+		 npm pack @wordpress/scripts
+		 extract-targz /bin/wordpress-scripts-30.25.0.tgz /bin/wordpress-scripts
+
+		 npm install @wordpress/scripts --omit=dev --omit=optional
+		 node node_modules/@wordpress/scripts/bin/wp-scripts.js build wp.js
+		 */
+		</script>
+
+		<div id="readme">
+			<h2 id="node-js-runtime-in-the-browser">
+				Node.js Runtime in the browser
+			</h2>
+
+			<p>
+				Visit
+				<a
+					href="https://github.com/adamziel/node-js-in-the-browser"
+					target="_blank"
+					>https://github.com/adamziel/node-js-in-the-browser</a
+				>
+				for more information.
+			</p>
+
+			<p>
+				I wanted to support webpack in
+				<a href="http://w.org/playground">WordPress Playground</a>, but
+				it requires a Node.js runtime. All the existing libraries seem
+				to be polyfilling entire Node.js core modules such as
+				<code>fs</code>, <code>http</code>, <code>crypto</code>, etc.
+				This is useful for simple use-cases, but Node.js modules are
+				large and nuanced.
+			</p>
+			<p>
+				This project is different. It ships the actual Node.js core
+				library with browser-specific polyfills for system calls.
+				It&#39;s an exploratory project to see how far we can go. The
+				approach seems very viable! It still requires a lot more work to
+				correctly support all the internal syscalls, the initialization
+				flow, actual Worker with shared filesystem etc. but even without
+				those features, it can already run <code>npm</code>, build
+				TypeScript, etc.
+			</p>
+
+			<h3 id="examples">Examples</h3>
+			<p>Run these in the XTerm shell above.</p>
+			<p>
+				<strong>There&#39;s a big gotcha with CWD!</strong> Once you run
+				<code>npm</code> for the first time, node CWD will be stuck in
+				your current <code>cwd</code>! This means you must refresh the
+				page before going to another demo and running
+				<code>npm install</code> there! This will be fixed in the
+				future.
+			</p>
+			<p>
+				Also! The terminal will not always show you the prompt once
+				it&#39;s ready for interactions! If your command finished, just
+				press enter again and you&#39;ll be back in the interactive
+				shell!
+			</p>
+			<h4 id="hello-world">Hello world</h4>
+			<pre><code><span class="hljs-keyword">node</span> <span class="hljs-title">hello</span>.js
+</code></pre>
+			<h4 id="cowsay">Cowsay</h4>
+			<pre><code>cd demo-cowsay
+npm install
+<span class="hljs-keyword">node</span> <span class="hljs-title">test</span>.js
+</code></pre>
+			<h4 id="webpack">Webpack</h4>
+			<pre><code>cd demo-ts
+npm install --verbose
+<span class="hljs-keyword">node</span> <span class="hljs-title">./node_modules</span>/.bin/webpack build
+ls dist
+cat dist/bundle.js
+</code></pre>
+		</div>
+	</body>
+</html>

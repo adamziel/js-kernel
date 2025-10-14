@@ -15,7 +15,7 @@ export default defineConfig({
 			'Cross-Origin-Embedder-Policy': 'require-corp',
 		},
 		fs: {
-			allow: ['../'],
+			allow: ['../../../'],
 		},
 	},
 	preview: {
@@ -55,8 +55,11 @@ export default defineConfig({
 				index: path.resolve(appRoot, 'index.html'),
 				'main-app': path.resolve(appRoot, 'main-app.ts'),
 				'php-loader': path.resolve(appRoot, 'programs/php-loader.ts'),
+				'node-loader': path.resolve(
+					appRoot,
+					'programs/node-loader/node-loader.ts'
+				),
 			},
 		},
 	},
 })
-

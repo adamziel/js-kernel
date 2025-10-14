@@ -11,7 +11,7 @@ const createProgramSource = (): string => {
 			exitSafely,
 			writeStdout,
 			writeStderr,
-		} = await import(urls.utilsModuleUrl)
+		} = await import( /* @vite-ignore */urls.utilsModuleUrl)
 
 		try {
 			const cwd =

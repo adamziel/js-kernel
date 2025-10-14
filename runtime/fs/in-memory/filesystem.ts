@@ -303,6 +303,13 @@ export class InMemoryFileSystem {
 			}
 		}
 	}
+	/**
+	 * TODO: Harmonize all the FS method names with their sync/async purpose.
+	 *       Node calls walkSync somewhere so we need to provide it.
+	 */
+	walkSync(path): WalkResult {
+		return this.walk(path)
+	}
 	walk(path): WalkResult {
 		const segments = splitPath(path)
 		if (segments.length === 0) {
@@ -762,47 +769,6 @@ export class InMemoryFileSystem {
 		if (parent) {
 			updateDirectoryTimestamp(parent)
 		}
-	}
-	rmSync(path, options) {
-		const { node, blockedBy, missingParent } = this.walk(path)
-		if (missingParent) {
-			if (
-				options === null || options === void 0 ? void 0 : options.force
-			) {
-				return
-			}
-			throw createFsError(
-				'ENOENT',
-				`ENOENT: no such file or directory, rm '${path}'`
-			)
-		}
-		if (blockedBy) {
-			throw createFsError(
-				'ENOTDIR',
-				`ENOTDIR: not a directory, rm '${path}'`
-			)
-		}
-		if (!node) {
-			if (
-				options === null || options === void 0 ? void 0 : options.force
-			) {
-				return
-			}
-			throw createFsError(
-				'ENOENT',
-				`ENOENT: no such file or directory, rm '${path}'`
-			)
-		}
-		if (node.type === 'dir') {
-			this.rmdirSync(path, {
-				recursive:
-					options === null || options === void 0
-						? void 0
-						: options.recursive,
-			})
-			return
-		}
-		this.unlinkSync(path)
 	}
 	renameSync(oldPath, newPath) {
 		const oldResult = this.walk(oldPath)
@@ -1834,6 +1800,10 @@ export class InMemoryFileSystem {
 
 		updateTimestamps(fileNode, 'access')
 		return totalBytesRead
+	}
+
+	readBuffersSync(fd, buffers, position) {
+		return this.readBuffers(fd, buffers, position)
 	}
 
 	// mkdtemp - create a temporary directory with unique name

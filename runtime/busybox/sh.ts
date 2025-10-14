@@ -15,7 +15,7 @@ const createProgramSource = (): string => {
 			exitSafely,
 			getArgv,
 			writeStderr,
-		} = await import(urls.utilsUrl)
+		} = await import( /* @vite-ignore */urls.utilsUrl)
 
 		try {
 			const argv = getArgv()
@@ -51,8 +51,8 @@ const createProgramSource = (): string => {
 			try {
 				const [{ runShellScript: run }, { parseShellCode: parse }] =
 					await Promise.all([
-						import(urls.runUrl),
-						import(urls.parseUrl),
+						import( /* @vite-ignore */urls.runUrl),
+						import( /* @vite-ignore */urls.parseUrl),
 					])
 				runShellScript = run!
 				parseShellCode = parse!

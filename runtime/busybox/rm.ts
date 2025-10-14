@@ -11,7 +11,7 @@ const createProgramSource = (): string => {
 			exitSafely,
 			getArgv,
 			writeStderr,
-		} = await import(urls.utilsModuleUrl)
+		} = await import( /* @vite-ignore */urls.utilsModuleUrl)
 
 		try {
 			const argv = getArgv()
