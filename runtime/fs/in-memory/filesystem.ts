@@ -582,14 +582,14 @@ export class InMemoryFileSystem {
 		const entries = Array.from(node.children.entries())
 		const encodeName = (name) => {
 			if (resolvedEncoding === 'buffer') {
-				return Buffer.from(name)
+				return new TextEncoder().encode(name)
 			}
 			if (
 				resolvedEncoding &&
 				resolvedEncoding !== 'utf8' &&
 				resolvedEncoding !== 'utf-8'
 			) {
-				return Buffer.from(name).toString(resolvedEncoding)
+				throw new Error(`Unsupported encoding ${resolvedEncoding}`)
 			}
 			return name
 		}
