@@ -7,6 +7,45 @@ const { InMemoryFileSystem } = await import('../../dist/app/in-memory-fs.js')
 globalThis.window = globalThis.global = globalThis;
 globalThis.globalFs = processController.fsSync;
 
+const UTF8_DECODER = new TextDecoder('utf-8');
+const READ_FILE_UTF8_CHUNK_SIZE = 64 * 1024;
+
+function readUtf8FromFileDescriptor(fd) {
+	const chunks = [];
+	while (true) {
+		const chunk = globalFs.readSync(fd, READ_FILE_UTF8_CHUNK_SIZE, null);
+		if (!chunk || chunk.byteLength === 0) {
+			break;
+		}
+		chunks.push(
+			chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk)
+		);
+		if (chunk.byteLength < READ_FILE_UTF8_CHUNK_SIZE) {
+			break;
+		}
+	}
+
+	if (chunks.length === 0) {
+		return '';
+	}
+
+	if (chunks.length === 1) {
+		return UTF8_DECODER.decode(chunks[0]);
+	}
+
+	const totalLength = chunks.reduce(
+		(sum, chunk) => sum + chunk.byteLength,
+		0
+	);
+	const merged = new Uint8Array(totalLength);
+	let offset = 0;
+	for (const chunk of chunks) {
+		merged.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return UTF8_DECODER.decode(merged);
+}
+
 // Global module registry for built modules to register their exports
 // This allows defineLazyProperties to access internal modules
 globalThis.__moduleRegistry = new Map()
@@ -783,102 +822,34 @@ globalThis.internalModules = {
 				)
 			},
 			readdir(path, encoding, withFileTypes, kUsePromises) {
-				// Native binding returns [names, types] tuple where types are UV_DIRENT_* constants
-				// This is different from readdirSync which returns strings or Dirent objects
-				return maybePromiseFromSync(() => {
-					// Get the raw directory node to access children
-					const { node, blockedBy, missingParent } =
-						globalFs.walk(path)
-
-					if (missingParent || !node) {
-						const error = new Error(
-							`ENOENT: no such file or directory, scandir '${path}'`
-						)
-						error.code = 'ENOENT'
-						throw error
-					}
-
-					if (blockedBy || node.type !== 'dir') {
-						const error = new Error(
-							`ENOTDIR: not a directory, scandir '${path}'`
-						)
-						error.code = 'ENOTDIR'
-						throw error
-					}
-
-					// Extract names and types from children
-					const names = []
-					const types = []
-
-					// Map node types to UV_DIRENT constants
-					const UV_DIRENT_FILE = 1
-					const UV_DIRENT_DIR = 2
-					const UV_DIRENT_UNKNOWN = 0
-					for (const [name, childNode] of node.children.entries()) {
-						// When encoding is 'buffer', return Buffer names; otherwise strings
-						if (encoding === 'buffer') {
-							names.push(globalThis.Buffer.from(name))
-						} else {
-							names.push(name)
-						}
-
-						// Map the type string to UV_DIRENT constant
-						let typeConstant = UV_DIRENT_UNKNOWN
-						if (childNode.type === 'file') {
-							typeConstant = UV_DIRENT_FILE
-						} else if (childNode.type === 'dir') {
-							typeConstant = UV_DIRENT_DIR
-						}
-
-						types.push(typeConstant)
-					}
-
-					// Return tuple [names, types] like the native binding
-					return withFileTypes ? [names, types] : names
-				}, kUsePromises)
+				return maybePromiseFromSync(
+					() => globalFs.readdirBinding(path, encoding, withFileTypes),
+					kUsePromises
+				)
 			},
 			readFileUtf8(path, flags) {
 				// readFileUtf8 is a synchronous optimized path for reading UTF-8 files
 				// It takes a path (string, Buffer, or file descriptor) and flags (number)
 				// Returns the file contents as a UTF-8 string
+				const usingFileDescriptor = typeof path === 'number'
+				const normalizedFlags =
+					typeof flags === 'number' ? flags : undefined
 
-				// If path is a file descriptor (number), use it directly
-				// Otherwise, treat it as a path string
-				const receivedFileDescriptor = typeof path === 'number'
-				let fd = receivedFileDescriptor
-					? path
-					: globalFs.openSync(path, flags || 0)
+				// Fast path: delegate to the kernel's readFileSync whenever we have a string/URL
+				// path and default read-only flags. The kernel already returns complete UTF-8 data.
+				if (!usingFileDescriptor && (normalizedFlags === 0 || normalizedFlags === undefined)) {
+					return globalFs.readFileSync(path, 'utf8')
+				}
+
+				let fd = path
+				if (!usingFileDescriptor) {
+					fd = globalFs.openSync(path, normalizedFlags ?? 0)
+				}
 
 				try {
-					const stats = globalFs.fstatSync(fd)
-					const size = stats.size
-
-					// Empty file or special file
-					const chunks = []
-					let readBuffer
-
-					do {
-						readBuffer = globalFs.readSync(fd, 64 * 1024, null)
-						if (readBuffer && readBuffer.byteLength > 0) {
-							chunks.push(readBuffer)
-						}
-					} while (readBuffer && readBuffer.byteLength > 0)
-
-					// Concatenate all chunks into a single buffer
-					const totalLength = chunks.reduce(
-						(sum, chunk) => sum + chunk.byteLength,
-						0
-					)
-					const finalBuffer = new Uint8Array(totalLength)
-					let offset = 0
-					for (const chunk of chunks) {
-						finalBuffer.set(chunk, offset)
-						offset += chunk.byteLength
-					}
-
-					return new TextDecoder('utf-8').decode(finalBuffer)
+					return readUtf8FromFileDescriptor(fd)
 				} finally {
-					if (receivedFileDescriptor) {
+					if (!usingFileDescriptor && typeof fd === 'number') {
 						globalFs.closeSync(fd)
 					}
 				}

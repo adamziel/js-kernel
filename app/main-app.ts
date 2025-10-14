@@ -50,20 +50,11 @@ const defaultInputCode = await defaultInputResponse.text()
 kernel.writeFileSync('/bin/default-input.js', defaultInputCode, { mode: 0o755 })
 
 // This works fine
-console.log(kernel.readFileSync('/bin/default-input.js', { encoding: 'utf-8' }).substring(0, 100))
-
-kernel.writeFileSync(
-	`/hello-node.js`,
-	`
-	console.log('Hello from Node.js inside the kernel');
-	require('fs');
-	// This starts later on in the file, a good chunk of the data is missing.
-	console.log(fs.default.readFileSync('/bin/npm', { encoding: 'utf-8' }))
-	// console.log(process)
-	`,
-	{ mode: 0o755 }
+console.log(
+	'INDEX',
+	kernel.readFileSync('/bin/default-input.js', { encoding: 'utf-8' }).indexOf(`RIM], tildeTrimReplace);`),
+	kernel.readFileSync('/bin/default-input.js', { encoding: 'utf-8' }).length - 170709
 )
-await runProgram(['node', '/hello-node.js'])
 
 await runProgram(['node', '/bin/npm'])
 

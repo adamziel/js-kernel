@@ -552,6 +552,65 @@ export class InMemoryFileSystem {
 		// Default: return strings as-is
 		return entries || []
 	}
+	readdirBindingSync(path, encoding, withFileTypes = false) {
+		const { node, blockedBy, missingParent } = this.walk(path)
+		if (missingParent) {
+			throw createFsError(
+				'ENOENT',
+				`ENOENT: no such file or directory, scandir '${path}'`
+			)
+		}
+		if (blockedBy) {
+			throw createFsError(
+				'ENOTDIR',
+				`ENOTDIR: not a directory, scandir '${path}'`
+			)
+		}
+		if (!node || node.type !== 'dir') {
+			const code = node ? 'ENOTDIR' : 'ENOENT'
+			const description = node
+				? 'not a directory'
+				: 'no such file or directory'
+			throw createFsError(
+				code,
+				`${code}: ${description}, scandir '${path}'`
+			)
+		}
+		updateTimestamps(node, 'access')
+		const resolvedEncoding =
+			typeof encoding === 'string' && encoding.length > 0 ? encoding : null
+		const entries = Array.from(node.children.entries())
+		const encodeName = (name) => {
+			if (resolvedEncoding === 'buffer') {
+				return Buffer.from(name)
+			}
+			if (
+				resolvedEncoding &&
+				resolvedEncoding !== 'utf8' &&
+				resolvedEncoding !== 'utf-8'
+			) {
+				return Buffer.from(name).toString(resolvedEncoding)
+			}
+			return name
+		}
+		const names = entries.map(([name]) => encodeName(name))
+		if (!withFileTypes) {
+			return names
+		}
+		const UV_DIRENT_FILE = 1
+		const UV_DIRENT_DIR = 2
+		const UV_DIRENT_UNKNOWN = 0
+		const types = entries.map(([, childNode]) => {
+			if (childNode.type === 'file') {
+				return UV_DIRENT_FILE
+			}
+			if (childNode.type === 'dir') {
+				return UV_DIRENT_DIR
+			}
+			return UV_DIRENT_UNKNOWN
+		})
+		return [names, types]
+	}
 	statSync(path) {
 		const { node, blockedBy, missingParent } = this.walk(path)
 		if (missingParent) {
