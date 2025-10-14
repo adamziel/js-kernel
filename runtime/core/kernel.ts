@@ -1,8 +1,7 @@
 import { InMemoryFileSystem } from '../fs/in-memory/filesystem.ts'
 import { joinPaths } from '../util/paths.ts'
 import {
-	BasicEventEmitter,
-	KernelStdioChunk,
+	type KernelStdioChunk,
 	MessagePortReadableStream,
 	MessagePortWritableStream,
 } from '../ipc/message-port.ts'

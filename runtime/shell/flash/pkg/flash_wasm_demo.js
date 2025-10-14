@@ -292,7 +292,35 @@ async function __wbg_init(module_or_path) {
     const imports = __wbg_get_imports();
 
     if (typeof module_or_path === 'string' || (typeof Request === 'function' && module_or_path instanceof Request) || (typeof URL === 'function' && module_or_path instanceof URL)) {
-        module_or_path = fetch(module_or_path);
+        // Check if we're in Node.js environment
+        if (typeof process !== 'undefined' && process.versions && process.versions.node) {
+            // In Node.js, use fs to read the file
+            const fs = await import('fs');
+            const path = await import('path');
+            const url = await import('url');
+            
+            let filePath;
+            if (module_or_path instanceof URL) {
+                filePath = url.fileURLToPath(module_or_path);
+            } else if (typeof module_or_path === 'string') {
+                // If it's a relative path, resolve it relative to current module
+                if (!path.isAbsolute(module_or_path)) {
+                    const currentDir = path.dirname(url.fileURLToPath(import.meta.url));
+                    filePath = path.resolve(currentDir, module_or_path);
+                } else {
+                    filePath = module_or_path;
+                }
+            }
+            
+            if (filePath) {
+                module_or_path = fs.promises.readFile(filePath);
+            } else {
+                module_or_path = fetch(module_or_path);
+            }
+        } else {
+            // In browser environment, use fetch
+            module_or_path = fetch(module_or_path);
+        }
     }
 
     __wbg_init_memory(imports);
