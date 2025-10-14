@@ -30,7 +30,7 @@ const createProgramSource = (): string => {
 				typeof processController.argv === 'function'
 					? processController.argv()
 					: []
-			await runtime.runMain({ argv })
+			await runtime.runMain()
 			exitSafely(0)
 		} catch (error) {
 			console.trace(error);

@@ -71005,8 +71005,6 @@ var require_shrinkwrap = __commonJS({
           } else {
             this.filename = resolve(this.path, "package-lock.json");
           }
-          console.log('load()', this.filename);
-          console.log({'hiddenLockfile': this.hiddenLockfile});
           this.type = basename(this.filename);
           this.loadedFromDisk = Boolean(sw || lock);
           if (yarn) {
@@ -71329,6 +71327,7 @@ var require_shrinkwrap = __commonJS({
         );
       }
       commit() {
+        console.log('commit()');
         if (this.tree) {
           if (this.yarnLock) {
             this.yarnLock.fromTree(this.tree);
@@ -71362,6 +71361,7 @@ var require_shrinkwrap = __commonJS({
           this.lockfileVersion = defaultLockfileVersion;
         }
         this.data.lockfileVersion = this.lockfileVersion;
+        console.log('commit()', this.filename);
         if (this.hiddenLockfile) {
           delete this.data.packages[""];
           delete this.data.dependencies;
@@ -81101,6 +81101,8 @@ var require_lib51 = __commonJS({
         runPath,
         scriptShell
       });
+      console.log('exec 12()');
+
       if (!call && !args.length && !packages.length) {
         return run();
       }
@@ -93791,8 +93793,11 @@ var require_npm2 = __commonJS({
           process.env.npm_command = this.command;
         }
         if (this.config.get("usage")) {
+          console.log('exec 1()');
           return output.standard(command.usage);
         }
+        console.log('exec 2()');
+        debugger;
         let execWorkspaces = false;
         const hasWsConfig = this.config.get("workspaces") || this.config.get("workspace").length;
         const implicitWs = this.config.get("workspace", "default").length;

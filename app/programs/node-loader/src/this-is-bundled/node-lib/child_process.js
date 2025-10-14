@@ -246,13 +246,13 @@ const runHandler = async (child, command, args, options, handler) => {
 		}
 	}
 }
-// import { spawnNodeProcess } from '../app/spawn-node-process.js'
 export const spawn = (command, args = [], options = {}) => {
 	const stdio = normaliseStdio(options.stdio)
 	const child = new ChildProcessPolyfill(stdio)
 	queueMicrotask(() => {
 		// @TODO: Support other options
-		spawnNodeProcess([command, ...args], {
+		globalThis.processController.spawnNodeProcess({
+			argv: [command, ...args],
 			options,
 		})
 		// runHandler(child, command, Array.from(args), options, handler);

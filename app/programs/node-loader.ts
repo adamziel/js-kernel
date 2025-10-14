@@ -77,7 +77,7 @@ export type SpawnNodeProcessOptions = {
 }
 
 interface NodeRuntime {
-	runMain(input: unknown): unknown
+	runMain(): unknown
 }
 
 const clientBootUrl = new URL(
@@ -121,8 +121,8 @@ async function bootstrapNodeRuntime(): Promise<NodeRuntime> {
 	}
 
 	return {
-		runMain(input: unknown) {
-			return Promise.resolve(module.runMain(input))
+		runMain() {
+			return Promise.resolve(module.runMain())
 		},
 	}
 }
@@ -143,11 +143,10 @@ function createSpawnNodeProcess(controller: ProcessControllerLike) {
 	const decoder = new TextDecoder()
 
 	return async function spawnNodeProcess(
-		argvInput: unknown = [],
 		options: SpawnNodeProcessOptions = {}
 	): Promise<SpawnedNodeProcessHandle> {
 		try {
-			const argv = sanitizeArgv(argvInput)
+			const argv = sanitizeArgv(options?.argvInput)
 			if (argv.length === 0) {
 				throw new Error(
 					'spawnNodeProcess: argv must be a non-empty array of strings'

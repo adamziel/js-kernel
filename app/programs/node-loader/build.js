@@ -10,30 +10,30 @@ if (!isWatchMode) {
 	fs.mkdirSync('dist')
 }
 
-const buildOptionsApp = {
-	entryPoints: {
-		api: './src/this-is-bundled/app/api.ts',
-		'main-worker': './src/this-is-bundled/app/main-worker.ts',
-		'in-memory-fs.client': './src/this-is-bundled/app/in-memory-fs.client.js',
-		'in-memory-fs': './src/this-is-bundled/app/in-memory-fs.js',
-		'in-memory-fs.worker': './src/this-is-bundled/app/in-memory-fs.worker.js',
-		'node-process.worker': './src/this-is-bundled/app/node-process.worker.js',
-		'ui/StoredHistory': './src/this-is-bundled/app/ui/StoredHistory.ts',
-		'spawn-node-process': './src/this-is-bundled/app/spawn-node-process.ts',
-	},
-	bundle: true,
-	outdir: './dist/app',
-	format: 'esm',
-	platform: 'browser',
-	splitting: true,
-	external: [
-		'worker_threads',
-		'/src/this-is-imported-directly/client-boot.js'
-	],
-	define: {
-		process: 'globalThis.process',
-	},
-}
+// const buildOptionsApp = {
+// 	entryPoints: {
+// 		api: './src/this-is-bundled/app/api.ts',
+// 		'main-worker': './src/this-is-bundled/app/main-worker.ts',
+// 		'in-memory-fs.client': './src/this-is-bundled/app/in-memory-fs.client.js',
+// 		'in-memory-fs': './src/this-is-bundled/app/in-memory-fs.js',
+// 		'in-memory-fs.worker': './src/this-is-bundled/app/in-memory-fs.worker.js',
+// 		'node-process.worker': './src/this-is-bundled/app/node-process.worker.js',
+// 		'ui/StoredHistory': './src/this-is-bundled/app/ui/StoredHistory.ts',
+// 		'spawn-node-process': './src/this-is-bundled/app/spawn-node-process.ts',
+// 	},
+// 	bundle: true,
+// 	outdir: './dist/app',
+// 	format: 'esm',
+// 	platform: 'browser',
+// 	splitting: true,
+// 	external: [
+// 		'worker_threads',
+// 		'/src/this-is-imported-directly/client-boot.js'
+// 	],
+// 	define: {
+// 		process: 'globalThis.process',
+// 	},
+// }
 
 const entryPoints = {
 	child_process: './src/this-is-bundled/node-lib/child_process.js',
@@ -151,8 +151,8 @@ async function main() {
 		const ctx1 = await esbuild.context(buildOptionsNode)
 		await ctx1.watch();
 
-		const ctx2 = await esbuild.context(buildOptionsApp)
-		await ctx2.watch();
+		// const ctx2 = await esbuild.context(buildOptionsApp)
+		// await ctx2.watch();
 		console.log('👀 Watching for changes...')
 		
 		// Keep the process alive
@@ -163,7 +163,7 @@ async function main() {
 		})
 	} else {
 		try {
-			await esbuild.build(buildOptionsApp)
+			await esbuild.build(buildOptionsNode)
 			console.log('✅ Build completed successfully')
 		} catch (error) {
 			console.error('❌ Build failed:', error)

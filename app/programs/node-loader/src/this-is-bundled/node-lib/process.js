@@ -7,20 +7,11 @@ function setTerminal(terminal) {
 const sharedDecoder =
 	typeof TextDecoder !== 'undefined' ? new TextDecoder() : undefined;
 
-let argc = 0;
-let argv = [];
-let env = {};
-// export const argc = 2;
-// export const argv = ['node', 'npm'];
-
-// @TODO: Support setting this
-const execPath = '/bin/node';
-
 // ESM exports for process methods
 const exit = (code) => {
 	console.log('exit', { code });
 	emit('exit', code ?? 0);
-	exitFn(code ?? 0);
+	globalThis.processController.exit(code ?? 0);
 };
 
 const abort = () => {
@@ -28,14 +19,12 @@ const abort = () => {
 	throw new Error('Process aborted');
 };
 
-let currentDirectory = '/bin';
-
 function chdir(directory) {
-	currentDirectory = directory;
+	processController.chdir(directory);
 }
 
 const cwd = () => {
-	return currentDirectory;
+	return processController.cwd();
 };
 
 const getuid = () => {
@@ -182,7 +171,7 @@ const emit = (event, ...args) => {
 		} catch (e) {
 			console.error(`Error in ${event} listener:`, e);
 			console.trace(e);
-			console.log(...args)
+			console.log(...args);
 			debugger;
 		}
 	});
@@ -201,7 +190,9 @@ const emitWarning = (warning, type, code, ctor) => {
 		if (type) warningObj.name = type;
 		if (code) warningObj.code = code;
 	} else {
-		throw new TypeError('The "warning" argument must be of type string or an instance of Error');
+		throw new TypeError(
+			'The "warning" argument must be of type string or an instance of Error'
+		);
 	}
 
 	// Emit the warning event
@@ -209,7 +200,11 @@ const emitWarning = (warning, type, code, ctor) => {
 
 	// If no listeners, log to console
 	if (!hasListeners) {
-		console.warn(`(node:${globalThis.process?.pid || 0}) ${warningObj.name}: ${warningObj.message}`);
+		console.warn(
+			`(node:${globalThis.process?.pid || 0}) ${warningObj.name}: ${
+				warningObj.message
+			}`
+		);
 		if (warningObj.code) {
 			console.warn(`[${warningObj.code}]`);
 		}
@@ -218,7 +213,7 @@ const emitWarning = (warning, type, code, ctor) => {
 
 const nextTick = (fn, ...args) => {
 	if (!fn) {
-		console.log(fn)
+		console.log(fn);
 		console.error('nextTick called with no function');
 		return;
 	}
@@ -226,41 +221,42 @@ const nextTick = (fn, ...args) => {
 };
 const version = 'v20.17.0';
 const versions = {
-		arch: 'x64',
-		version: version,
-		platform: 'darwin',
-		release: {
-			name: 'node',
-			sourceUrl: 'https://nodejs.org/download/release/v20.17.0/',
-			headersUrl: 'https://nodejs.org/download/release/v20.17.0/headers.tar.gz',
-			libUrl: 'https://nodejs.org/download/release/v20.17.0/lib.tar.gz',
-		},
-		modules: 'node:buffer',
-		node: version,
-		openssl: '3.3.2',
-		uv: '1.46.0',
-		v8: '11.7.50.18',
-		zlib: '1.3.0',
-		libc: 'glibc',
-		libcxx: 'libcxx',
-		libcxxabi: 'libcxxabi',
-		libunwind: 'libunwind',
-		libatomic: 'libatomic',
-		libuv: '1.46.0',
-		libvips: '8.14.2',
-		libjpeg: '2.1.4',
-		libpng: '1.6.39',
-		libtiff: '4.5.0',
-		libwebp: '1.3.2',
-		libgif: '5.2.1',
-		libavif: '0.13.0',
-		libexif: '0.6.24',
-		libheif: '1.16.2',
-		libopenjpeg: '2.5.0',
-		libraw: '0.21.1',
-		libheif: '1.16.2',
-		libopenjpeg: '2.5.0',
-		libraw: '0.21.1',
+	arch: 'x64',
+	version: version,
+	platform: 'darwin',
+	release: {
+		name: 'node',
+		sourceUrl: 'https://nodejs.org/download/release/v20.17.0/',
+		headersUrl:
+			'https://nodejs.org/download/release/v20.17.0/headers.tar.gz',
+		libUrl: 'https://nodejs.org/download/release/v20.17.0/lib.tar.gz',
+	},
+	modules: 'node:buffer',
+	node: version,
+	openssl: '3.3.2',
+	uv: '1.46.0',
+	v8: '11.7.50.18',
+	zlib: '1.3.0',
+	libc: 'glibc',
+	libcxx: 'libcxx',
+	libcxxabi: 'libcxxabi',
+	libunwind: 'libunwind',
+	libatomic: 'libatomic',
+	libuv: '1.46.0',
+	libvips: '8.14.2',
+	libjpeg: '2.1.4',
+	libpng: '1.6.39',
+	libtiff: '4.5.0',
+	libwebp: '1.3.2',
+	libgif: '5.2.1',
+	libavif: '0.13.0',
+	libexif: '0.6.24',
+	libheif: '1.16.2',
+	libopenjpeg: '2.5.0',
+	libraw: '0.21.1',
+	libheif: '1.16.2',
+	libopenjpeg: '2.5.0',
+	libraw: '0.21.1',
 };
 
 on('output.standard', (data) => {
@@ -301,26 +297,12 @@ const getMaxListeners = () => {
 
 const features = {
 	openssl_is_boringssl: false,
-}
+};
 
-let exitFn = () => {};
-const initProcess = ({
-	args,
-	cwd,
-	stdin,
-	stdout,
-	stderr,
-	exit,
-}) => {
-	module.exports.argv = [...args];
-	module.exports.argc = args.length;
-	module.exports.stdout = stdout;
-	module.exports.stderr = stderr;
-	module.exports.stdin = stdin;
-	module.exports.stdin.setEncoding("utf-8");
-	module.exports.stdin.resume();
-	currentDirectory = cwd;
-	exitFn = exit;
+const initStreams = ({ stdin, stdout, stderr }) => {
+	globalThis.process.stdout = module.exports.stdout = stdout;
+	globalThis.process.stderr = module.exports.stderr = stderr;
+	globalThis.process.stdin = module.exports.stdin = stdin;
 };
 
 function binding(name) {
@@ -330,14 +312,14 @@ function binding(name) {
 module.exports = {
 	pid: Math.round(Math.random() * 1000000),
 	setTerminal,
-	initProcess,
-	argc,
-	argv,
-	env,
+	initStreams,
+	argc: processController.argv().length,
+	argv: processController.argv(),
+	env: processController.getAllEnv(),
 	nextTick,
 	version,
 	versions,
-	execPath,
+	execPath: processController.executablePath(),
 	exit,
 	features,
 	abort,

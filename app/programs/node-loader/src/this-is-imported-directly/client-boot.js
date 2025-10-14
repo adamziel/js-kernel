@@ -3279,16 +3279,16 @@ globalThis.internalModules.worker.Worker = class WorkerImplementation extends (
 	) {
 		super();
 
-		const fs = globalThis.coreModules.fs;
-		throw new Error('Workers not implemented yet');
-		// @TODO: Use kernel-based spawning
-		// this.spawnedNodeProcess = spawnNodeProcess(argv, {
-		// 	env: envVariables,
-		// 	cwd: '/',
-		// 	columns: 80,
-		// 	rows: 24,
-		// 	name: name,
-		// });
+		// TODO: pass through all the events etc
+		console.log("SPAWNING NODE PROCESS");
+		this.spawnedNodeProcess = globalThis.processController.spawnNodeProcess({
+			argv,
+			env: envVariables,
+			cwd: '/',
+			columns: 80,
+			rows: 24,
+			name: name,
+		});
 	}
 };
 
@@ -3304,7 +3304,7 @@ globalThis.coreModules.worker_threads = workerThreads.default;
 const Module = await import('./module.js');
 globalThis.coreModules.module = {
 	...Module,
-	runMain: (args) => Module.Module.runMain(args),
+	runMain: () => Module.Module.runMain(),
 };
 
 // realm.BuiltinModule
@@ -3351,53 +3351,9 @@ function ensureEntryFromArgv(argv) {
 	return typeof candidate === 'string' && candidate.length ? candidate : '';
 }
 
-export function runMain(input) {
-	const isArrayInput = Array.isArray(input);
-	const isObjectInput =
-		typeof input === 'object' && input !== null && !isArrayInput;
-
-	let argv = isArrayInput
-		? normalizeArgv(input)
-		: normalizeArgv(isObjectInput ? input.argv : null);
-
-	let entry = typeof input === 'string' ? input : '';
-
-	const code =
-		isObjectInput && typeof input.code === 'string' ? input.code : null;
-
-	if (code) {
-		globalFs.mkdirSync('/tmp', { recursive: true });
-		const tempPath = `/tmp/file-${Date.now()}.cjs`;
-		globalFs.writeFileSync(tempPath, code);
-		entry = tempPath;
-		if (!argv) {
-			argv = ['node', tempPath];
-		} else if (argv.length === 0) {
-			argv = ['node', tempPath];
-		} else if (argv.length === 1) {
-			argv = [argv[0], tempPath];
-		} else {
-			argv[1] = tempPath;
-		}
-	}
-
-	if (!entry && argv) {
-		entry = ensureEntryFromArgv(argv);
-	}
-
-	if (!entry) {
-		throw new Error('runMain: unable to determine entry script path.');
-	}
-
-	if (argv) {
-		const processObj = globalThis.process;
-		if (processObj && Array.isArray(processObj.argv)) {
-			processObj.argv = [...argv];
-		}
-	}
-
-	globalThis.coreModules.module.initializeCJS(entry);
-	return globalThis.coreModules.module.Module.runMain(entry);
+export function runMain() {
+	globalThis.coreModules.module.initializeCJS();
+	return globalThis.coreModules.module.Module.runMain();
 }
 
 globalThis.setImmediate = setTimeout;
@@ -3575,13 +3531,10 @@ stderr.on('finish', () => {
 	processController.stderr.end();
 });
 
-globalThis.process.initProcess({
-	args: processController.argv(),
-	cwd: processController.cwd(),
-	exit: (code) => {
-		globalThis.processController.exit(code);
-	},
+globalThis.process.initStreams({
 	stdin,
 	stdout,
 	stderr,
 });
+globalThis.process.stdin.setEncoding('utf-8');
+globalThis.process.stdin.resume();

@@ -18,3 +18,4 @@
   the shell process needs to see it immediately on stdin and decide what to do with it.
   Could be running a program, could be extending an internal buffer, could be moving
   the cursor to the beginning of the line or next word, etc.
+* Debug mode where we see all the output of all processes in the browser's terminal

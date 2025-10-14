@@ -462,7 +462,7 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 			childProcessState!.env[name] = value
 		},
 		getAllEnv() {
-			return childProcessState!.env
+			return {...childProcessState!.env}
 		},
 		pid() {
 			return childProcessState!.pid

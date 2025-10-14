@@ -13,6 +13,7 @@ kernel.mkdirSync('/tmp', { recursive: true })
 if (!kernel.existsSync('/bin/node')) {
 	kernel.writeFileSync('/bin/node', '', { mode: 0o755 })
 }
+kernel.writeFileSync('/bin/package.json', `{ "name": "my-package", "version": "1.0.0" }`, { mode: 0o755 })
 kernel.mkdirSync('/node_modules/node-gyp/bin', { recursive: true })
 kernel.writeFileSync('/node_modules/node-gyp/package.json', '{}', { mode: 0o755 })
 kernel.writeFileSync('/node_modules/node-gyp/bin/node-gyp.js', '', { mode: 0o755 })
@@ -21,25 +22,30 @@ kernel.mkdirSync('/bin/node_modules/node-gyp/bin', { recursive: true })
 kernel.writeFileSync('/bin/node_modules/node-gyp/package.json', '{}', { mode: 0o755 })
 kernel.writeFileSync('/bin/node_modules/node-gyp/bin/node-gyp.js', '', { mode: 0o755 })
 
-kernel.writeFileSync(
-	`/my-script.sh`,
-	`echo "Hello, world from a script!"`,
-	// The pipe hangs once every couple page refreshes. @TODO: fix it.
-	// `echo "Hello, world from a script!" | cat`,
-	{ mode: 0o755 }
-)
-await runProgram(['sh', '/my-script.sh'])
+// kernel.writeFileSync(
+// 	`/my-script.sh`,
+// 	// `echo "Hello, world from a script!"`,
+// 	// The pipe hangs once every couple page refreshes. @TODO: fix it.
+// 	`
+// 	echo "Hello, world from a script!" | cat > /my-file-haha.txt;
+// 	ls /
+// 	cat /my-file-haha.txt
+	
+// 	`,
+// 	{ mode: 0o755 }
+// )
+// await runProgram(['sh', '/my-script.sh'])
 
-kernel.writeFileSync(
-	`/hello-node.js`,
-	`
-	console.log('Hello from Node.js inside the kernel, here is the list of top-level files:');
-	const fs = require('fs');
-	console.log(fs.default.readdirSync('/'));
-	`,
-	{ mode: 0o755 }
-)
-await runProgram(['node', '/hello-node.js'])
+// kernel.writeFileSync(
+// 	`/hello-node.js`,
+// 	`
+// 	console.log('Hello from Node.js inside the kernel, here is the list of top-level files:');
+// 	const fs = require('fs');
+// 	console.log(fs.readdirSync('/'));
+// 	`,
+// 	{ mode: 0o755 }
+// )
+// await runProgram(['node', '/hello-node.js'])
 
 // Install npm
 const npmCodeResponse = await fetch('/programs/node-loader/npm/npm-single.js')
@@ -52,6 +58,10 @@ kernel.writeFileSync('/bin/default-input.js', defaultInputCode, { mode: 0o755 })
 
 // await runProgram(['node', '/bin/npm'])
 await runProgram(['node', '/bin/npm', 'install', 'cowsay'])
+await runProgram(['cat', '/bin/package-lock.json'])
+setTimeout(() => {
+	runProgram(['cat', '/bin/package-lock.json'])
+}, 8000)
 
 function runProgram(argv: string[]) {
 	const worker = kernel.spawn({
