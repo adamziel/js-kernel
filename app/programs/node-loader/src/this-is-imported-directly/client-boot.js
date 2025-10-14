@@ -3543,3 +3543,35 @@ globalThis.process.initStreams({
 });
 globalThis.process.stdin.setEncoding('utf-8');
 globalThis.process.stdin.resume();
+
+const originalFetch = globalThis.fetch;
+globalThis.fetch = async (input, init) => {
+	// Check if the URL is cross-origin and needs proxying
+	let url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+	
+	if (url && typeof url === 'string') {
+		try {
+			const parsedUrl = new URL(url, globalThis.location?.href);
+			const currentOrigin = globalThis.location?.origin;
+			
+			// If it's a cross-origin request, proxy it through our CORS proxy
+			if (currentOrigin && parsedUrl.origin !== currentOrigin) {
+				const proxyUrl = `/proxy/?url=${encodeURIComponent(url)}`;
+				
+				if (typeof input === 'string') {
+					input = proxyUrl;
+				} else if (input instanceof URL) {
+					input = new URL(proxyUrl);
+				} else if (input && typeof input === 'object') {
+					input = { ...input, url: proxyUrl };
+				}
+			}
+		} catch (error) {
+			// If URL parsing fails, proceed with original request
+			console.warn('Failed to parse URL for proxy check:', error);
+		}
+	}
+	
+	return originalFetch(input, init);
+
+};
