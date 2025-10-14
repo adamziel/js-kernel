@@ -3008,7 +3008,6 @@ Object.assign(
 globalThis.internalModules.os.constants =
 	globalThis.internalModules.constants.os;
 globalThis.internalModules.os.default = globalThis.internalModules.os;
-console.log(globalThis.internalModules);
 
 await import('../../dist/primordials.js');
 // import * as myPrimordials from "./src/this-is-imported-directly/primordials.js";
@@ -3121,13 +3120,11 @@ globalThis.internalModules.errors = {
 	...errors.default,
 	codes: errors.default.codes,
 };
-console.log(globalThis.internalModules.errors);
 
 const realm = await import('../../dist/realm.js');
 globalThis.realm = { ...realm };
 
 const path = await import('../../dist/path.js');
-console.log(path.default.join('a', 'b', 'c'));
 globalThis.coreModules.path = path.default;
 
 const stream = await import('../../dist/stream.js');
@@ -3135,17 +3132,14 @@ globalThis.coreModules.stream = stream.default;
 
 const asyncHooks = await import('../../dist/async_hooks.js');
 globalThis.coreModules.async_hooks = asyncHooks.default;
-console.log('asyncHooks', asyncHooks);
 
 const debuglog = await import('../../dist/internal/util/debuglog.js');
 globalThis.internalModules.util = {
 	...globalThis.internalModules.util,
 	debuglog: debuglog.default,
 };
-console.log('debuglog', debuglog);
 debuglog.default.initializeDebugEnv('debug');
 
-console.log('Setting stdout etc.');
 globalThis.coreModules.os = globalThis.internalModules.os;
 
 // Node Response class has an abort method.
@@ -3157,7 +3151,6 @@ const blob = await import('../../dist/blob.js');
 globalThis.coreModules.blob = blob.default;
 
 const fs = await import('../../dist/fs.js');
-console.log('fs', fs);
 
 // Register internal/fs/dir module for lazy loading
 // Use the Dir class we implemented in fs_dir binding
@@ -3207,7 +3200,6 @@ globalThis.coreModules.http2 = {
 
 const crypto = await import('../../dist/crypto.js');
 globalThis.coreModules.crypto = crypto.default;
-console.log('globalThis.coreModules.crypto', crypto);
 
 const https = await import('../../dist/https.js');
 globalThis.coreModules.https = https.default;
@@ -3224,7 +3216,6 @@ globalThis.coreModules.url = {
 	pathToFileURL: globalThis.internalModules.url.pathToFileURL,
 	fileURLToPath: globalThis.internalModules.url.fileURLToPath,
 };
-console.log('URL', globalThis.coreModules.url);
 
 const zlib = await import('../../dist/zlib.js');
 globalThis.coreModules.zlib = zlib.default;
@@ -3491,7 +3482,6 @@ const stdin = new (class extends Readable {
 		});
 	}
 	read(size) {
-		console.log('read', size);
 		return processController.stdin.read(size);
 	}
 })();

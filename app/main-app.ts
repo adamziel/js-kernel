@@ -59,10 +59,8 @@ kernel.writeFileSync('/bin/default-input.js', defaultInputCode, { mode: 0o755 })
 
 // await runProgram(['node', '/bin/npm'])
 await runProgram(['node', '/bin/npm', 'install', 'cowsay'])
-await runProgram(['cat', '/bin/package-lock.json'])
-setTimeout(() => {
-	runProgram(['cat', '/bin/package-lock.json'])
-}, 8000)
+// await runProgram(['cat', '/bin/package-lock.json'])
+
 
 function runProgram(argv: string[]) {
 	const worker = kernel.spawn({
@@ -70,7 +68,7 @@ function runProgram(argv: string[]) {
 		env: {},
 		cwd: '/bin',
 		name: argv[0],
-		debug: true,
+		// debug: true,
 	})
 	if (typeof worker === 'number') {
 		throw new Error('Failed to spawn program')

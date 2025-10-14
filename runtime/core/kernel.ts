@@ -732,7 +732,8 @@ export class Kernel extends InMemoryFileSystem {
 				argv: [...adjustedOptions.argv],
 				env: { ...adjustedOptions.env },
 				cwd: adjustedOptions.cwd,
-				debug: true,  //Boolean(adjustedOptions.debug),
+				debug: Boolean(adjustedOptions.debug),
+				// debug: true,
 				stdio: resources.stdio.map((descriptor) => ({
 					fd: descriptor.fd,
 					mode: descriptor.mode,
