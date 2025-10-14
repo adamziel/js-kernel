@@ -517,7 +517,7 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 	;(globalThis as any).processController = processController
 }
 
-export function installStdIo(isDebug: boolean) {
+export function redirectConsoleToStdio(isDebug: boolean) {
 	if (!stdioStreams) {
 		throw new Error('installStdIo called before initChildProcess')
 	}
@@ -581,7 +581,7 @@ const handleKernelInit = (event: MessageEvent) => {
 
 	const payload = event.data.payload as ChildProcessInitOptions
 	initChildProcess(payload)
-	installStdIo(payload.debug)
+	redirectConsoleToStdio(payload.debug)
 	queueMicrotask(() => startProgram(payload))
 }
 

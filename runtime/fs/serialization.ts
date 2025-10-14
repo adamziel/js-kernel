@@ -9,6 +9,8 @@ export type SerializedFsValue =
 	| { type: 'bigint'; value: string }
 	| { type: 'uint8array'; value: number[] }
 	| { type: 'array'; value: SerializedFsValue[] }
+	| { type: 'map'; value: [string, SerializedFsValue][] }
+	| { type: 'set'; value: SerializedFsValue[] }
 	| { type: 'object'; value: Record<string, SerializedFsValue> }
 	| { type: 'stats'; value: SerializedStatsShape }
 	| { type: 'dirent'; value: { name: string; type: string } }
@@ -141,8 +143,24 @@ function serializeFsValue(
 			value: value.map((entry) => serializeFsValue(entry, seen)),
 		}
 	}
+	
+	if(value instanceof Map) {
+		return {
+			type: 'map',
+			value: Array.from(value.entries()).map(([key, value]) => [key, serializeFsValue(value, seen)]),
+		}
+	}
+	if(value instanceof Set) {
+		return {
+			type: 'set',
+			value: Array.from(value).map((value) => serializeFsValue(value, seen)),
+		}
+	}
 
 	if (valueType === 'object') {
+		if (value.constructor !== Object) {
+			throw new TypeError('Cannot serialize class instances or objects with custom prototypes')
+		}
 		const objectValue = value as Record<string, unknown>
 		if (seen.has(objectValue)) {
 			throw new TypeError('Cannot serialize circular object structure')
@@ -215,6 +233,10 @@ export const deserializeFsValue = (
 			return hydrateStats(value.value)
 		case 'array':
 			return value.value.map((entry) => deserializeFsValue(entry))
+		case 'map':
+			return new Map(value.value.map(([key, value]) => [key, deserializeFsValue(value)]))
+		case 'set':
+			return new Set(value.value.map((value) => deserializeFsValue(value)))
 		case 'object': {
 			const result: Record<string, unknown> = {}
 			for (const [key, entry] of Object.entries(value.value)) {

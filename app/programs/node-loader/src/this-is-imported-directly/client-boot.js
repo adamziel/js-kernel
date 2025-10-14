@@ -814,7 +814,6 @@ globalThis.internalModules = {
 					const UV_DIRENT_FILE = 1
 					const UV_DIRENT_DIR = 2
 					const UV_DIRENT_UNKNOWN = 0
-
 					for (const [name, childNode] of node.children.entries()) {
 						// When encoding is 'buffer', return Buffer names; otherwise strings
 						if (encoding === 'buffer') {

@@ -1008,7 +1008,6 @@ export class InMemoryFileSystem {
 		}
 
 		updateTimestamps(fileNode, 'access')
-		// console.log('READ SYNC', buffer)
 		return buffer
 	}
 	read(fd, length, position, callback) {

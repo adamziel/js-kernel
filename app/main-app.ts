@@ -30,7 +30,11 @@ await runProgram(['sh', '/my-script.sh'])
 
 kernel.writeFileSync(
 	`/hello-node.js`,
-	`require('fs');console.log('Hello from Node.js inside the kernel', fs.default.readdirSync('/'))`,
+	`
+	console.log('Hello from Node.js inside the kernel');
+	require('fs');
+	console.log(fs.default.readdirSync('/'))
+	`,
 	{ mode: 0o755 }
 )
 await runProgram(['node', '/hello-node.js'])
