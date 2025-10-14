@@ -8,9 +8,7 @@ installCustomPrograms(kernel)
 
 kernel.writeFileSync(
 	`/my-script.sh`,
-	// The pipe hangs once every couple refreshes. Let's fix it.
-	// `echo "Hello, world from a script!" | cat`,
-	`echo "Hello, world from a script!"`,
+	`echo "Hello, world from a script!" | cat`,
 	{ mode: 0o755 }
 )
 await runProgram(['sh', '/my-script.sh'])
