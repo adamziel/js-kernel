@@ -13,6 +13,13 @@ kernel.mkdirSync('/tmp', { recursive: true })
 if (!kernel.existsSync('/bin/node')) {
 	kernel.writeFileSync('/bin/node', '', { mode: 0o755 })
 }
+kernel.mkdirSync('/node_modules/node-gyp/bin', { recursive: true })
+kernel.writeFileSync('/node_modules/node-gyp/package.json', '{}', { mode: 0o755 })
+kernel.writeFileSync('/node_modules/node-gyp/bin/node-gyp.js', '', { mode: 0o755 })
+
+kernel.mkdirSync('/bin/node_modules/node-gyp/bin', { recursive: true })
+kernel.writeFileSync('/bin/node_modules/node-gyp/package.json', '{}', { mode: 0o755 })
+kernel.writeFileSync('/bin/node_modules/node-gyp/bin/node-gyp.js', '', { mode: 0o755 })
 
 kernel.writeFileSync(
 	`/my-script.sh`,
@@ -23,18 +30,12 @@ kernel.writeFileSync(
 )
 await runProgram(['sh', '/my-script.sh'])
 
-// kernel.writeFileSync(`/my-script.php`, `<?php echo "Hello from PHP!"; ?>`, {
-// 	mode: 0o755,
-// })
-// await runProgram(['php', '/my-script.php'])
-
 kernel.writeFileSync(
 	`/hello-node.js`,
 	`
-	console.log('Hello from Node.js inside the kernel');
-	require('fs');
-	console.log(fs.default.readdirSync('/'))
-	console.log(process)
+	console.log('Hello from Node.js inside the kernel, here is the list of top-level files:');
+	const fs = require('fs');
+	console.log(fs.default.readdirSync('/'));
 	`,
 	{ mode: 0o755 }
 )
@@ -49,20 +50,14 @@ const defaultInputResponse = await fetch('/programs/node-loader/npm/default-inpu
 const defaultInputCode = await defaultInputResponse.text()
 kernel.writeFileSync('/bin/default-input.js', defaultInputCode, { mode: 0o755 })
 
-// This works fine
-console.log(
-	'INDEX',
-	kernel.readFileSync('/bin/default-input.js', { encoding: 'utf-8' }).indexOf(`RIM], tildeTrimReplace);`),
-	kernel.readFileSync('/bin/default-input.js', { encoding: 'utf-8' }).length - 170709
-)
-
-await runProgram(['node', '/bin/npm'])
+// await runProgram(['node', '/bin/npm'])
+await runProgram(['node', '/bin/npm', 'install', 'cowsay'])
 
 function runProgram(argv: string[]) {
 	const worker = kernel.spawn({
 		argv,
 		env: {},
-		cwd: '/',
+		cwd: '/bin',
 		name: argv[0],
 		debug: true,
 	})

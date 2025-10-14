@@ -39824,7 +39824,7 @@ var require_definitions = __commonJS({
         flatten
       }),
       "node-gyp": new Definition("node-gyp", {
-        default: require.resolve("node-gyp/bin/node-gyp.js"),
+        default: null, //require.resolve("node-gyp/bin/node-gyp.js"),
         defaultDescription: `
       The path to the node-gyp bin that ships with npm
     `,
@@ -48574,7 +48574,7 @@ var require_make_spawn_args = __commonJS({
       } else if (env3.npm_config_node_gyp) {
         npm_config_node_gyp = env3.npm_config_node_gyp;
       } else {
-        npm_config_node_gyp = require.resolve("node-gyp/bin/node-gyp.js");
+        npm_config_node_gyp = null; //require.resolve("node-gyp/bin/node-gyp.js");
       }
       const spawnEnv = setPATH(path, binPaths, {
         // we need to at least save the PATH environment var
@@ -92303,6 +92303,7 @@ var require_lib60 = __commonJS({
 // ../../../../../../../../private/var/folders/sb/cywb762129g3f0jzq1_p2q5h0000gp/T/pkg-work-8BkYRW/npm/lib/utils/npm-usage.js
 var require_npm_usage = __commonJS({
   "../../../../../../../../private/var/folders/sb/cywb762129g3f0jzq1_p2q5h0000gp/T/pkg-work-8BkYRW/npm/lib/utils/npm-usage.js"(exports2, module2) {
+    // debugger;
     var { commands } = require_cmd_list();
     var COL_MAX = 60;
     var COL_MIN = 24;
@@ -94752,7 +94753,8 @@ var require_entry3 = __commonJS({
       const satisfies = require_satisfies();
       const ExitHandler = require_exit_handler();
       const exitHandler = new ExitHandler({ process: process4 });
-      const Npm = require_npm2();
+      let Npm;
+      Npm = require_npm2();
       const npm = new Npm();
       exitHandler.setNpm(npm);
       const { log, output } = require_lib();
@@ -94782,6 +94784,7 @@ var require_entry3 = __commonJS({
             require_lib2().redactLog(nonDashArgs.join(", "))
           );
         }
+        console.log('pre npm.exec')
         const execPromise = npm.exec(command, args);
         const updateNotifier = require_update_notifier();
         updateNotifier(npm).then((msg) => npm.updateNotification = msg);
@@ -94803,6 +94806,7 @@ var require_cli = __commonJS({
         enableCompileCache();
       }
     } catch (e) {
+      console.error(e);
     }
     var validateEngines = require_validate_engines();
     module2.exports = (process4) => validateEngines(process4, () => require_entry3());
@@ -94810,7 +94814,13 @@ var require_cli = __commonJS({
 });
 
 // ../../../../../../../../private/var/folders/sb/cywb762129g3f0jzq1_p2q5h0000gp/T/pkg-work-8BkYRW/npm/bin/npm-cli.js
-require_cli()(process);
+try {
+  require_cli()(process);
+} catch (e) {
+  console.error(e);
+}
+
+
 /*! Bundled license information:
 
 negotiator/index.js:

@@ -246,7 +246,7 @@ const runHandler = async (child, command, args, options, handler) => {
 		}
 	}
 }
-import { spawnNodeProcess } from '../app/spawn-node-process.js'
+// import { spawnNodeProcess } from '../app/spawn-node-process.js'
 export const spawn = (command, args = [], options = {}) => {
 	const stdio = normaliseStdio(options.stdio)
 	const child = new ChildProcessPolyfill(stdio)

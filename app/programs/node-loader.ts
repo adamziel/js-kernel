@@ -108,7 +108,14 @@ async function bootstrapNodeRuntime(): Promise<NodeRuntime> {
 
 	ensureSpawnNodeProcess(controller)
 
-	const module = await import(/* @vite-ignore */ clientBootUrl)
+	let module;
+	try {
+		module = await import(/* @vite-ignore */ clientBootUrl.slice(0, 4) + clientBootUrl.slice(4))
+	} catch (error) {
+		console.error(error);
+		console.trace('Error loading client-boot.js:', error)
+		throw error
+	}
 	if (typeof module.runMain !== 'function') {
 		throw new Error('client-boot.js did not export runMain')
 	}

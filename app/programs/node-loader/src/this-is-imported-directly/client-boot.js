@@ -1,8 +1,6 @@
-globalThis.primordials = {}
-globalThis.global = globalThis
-import * as builtins from './builtins.js'
-const { InMemoryFileSystem } = await import('../../dist/app/in-memory-fs.js')
-
+globalThis.primordials = {};
+globalThis.global = globalThis;
+import * as builtins from './builtins.js';
 // @TODO: Do not rely on `window` here. We're running a Node.js process after all.
 globalThis.window = globalThis.global = globalThis;
 globalThis.globalFs = processController.fsSync;
@@ -48,20 +46,20 @@ function readUtf8FromFileDescriptor(fd) {
 
 // Global module registry for built modules to register their exports
 // This allows defineLazyProperties to access internal modules
-globalThis.__moduleRegistry = new Map()
+globalThis.__moduleRegistry = new Map();
 
 function maybePromiseFromSync(syncFn, kUsePromisesOrReq) {
 	// Sync call
 	if (kUsePromisesOrReq === undefined) {
-		return syncFn()
+		return syncFn();
 	}
 	const promise = new Promise((resolve, reject) => {
 		try {
-			resolve(syncFn())
+			resolve(syncFn());
 		} catch (err) {
-			reject(err)
+			reject(err);
 		}
-	})
+	});
 
 	// Callback mode
 	if (
@@ -72,86 +70,86 @@ function maybePromiseFromSync(syncFn, kUsePromisesOrReq) {
 		// @TODO Don't return promise in this case
 		return promise.then(
 			(result) => {
-				kUsePromisesOrReq.oncomplete(null, result)
+				kUsePromisesOrReq.oncomplete(null, result);
 			},
 			(err) => {
-				kUsePromisesOrReq.oncomplete(err)
+				kUsePromisesOrReq.oncomplete(err);
 			}
-		)
-		return
+		);
+		return;
 	}
 
 	// Promise mode
-	return promise
+	return promise;
 }
 
 // Implement V8 internal functions in JavaScript
 function getOwnNonIndexProperties(obj, filter) {
 	if (typeof obj !== 'object' || obj === null) {
-		return []
+		return [];
 	}
 
-	const ALL_PROPERTIES = 0
-	const ONLY_WRITABLE = 1
-	const ONLY_ENUMERABLE = 2
-	const ONLY_CONFIGURABLE = 4
-	const SKIP_STRINGS = 8
-	const SKIP_SYMBOLS = 16
+	const ALL_PROPERTIES = 0;
+	const ONLY_WRITABLE = 1;
+	const ONLY_ENUMERABLE = 2;
+	const ONLY_CONFIGURABLE = 4;
+	const SKIP_STRINGS = 8;
+	const SKIP_SYMBOLS = 16;
 
-	let keys = []
+	let keys = [];
 
 	// Get string keys
 	if (!(filter & SKIP_STRINGS)) {
 		keys = keys.concat(
 			Object.getOwnPropertyNames(obj).filter((k) => {
 				// Skip numeric indices
-				const num = Number(k)
+				const num = Number(k);
 				if (Number.isInteger(num) && num >= 0 && String(num) === k) {
-					return false
+					return false;
 				}
-				return true
+				return true;
 			})
-		)
+		);
 	}
 
 	// Get symbol keys
 	if (!(filter & SKIP_SYMBOLS)) {
-		keys = keys.concat(Object.getOwnPropertySymbols(obj))
+		keys = keys.concat(Object.getOwnPropertySymbols(obj));
 	}
 
 	// Apply property filters
 	if (filter !== ALL_PROPERTIES) {
 		keys = keys.filter((key) => {
-			const desc = Object.getOwnPropertyDescriptor(obj, key)
-			if (!desc) return false
+			const desc = Object.getOwnPropertyDescriptor(obj, key);
+			if (!desc) return false;
 
-			if (filter & ONLY_WRITABLE && !desc.writable) return false
-			if (filter & ONLY_ENUMERABLE && !desc.enumerable) return false
-			if (filter & ONLY_CONFIGURABLE && !desc.configurable) return false
+			if (filter & ONLY_WRITABLE && !desc.writable) return false;
+			if (filter & ONLY_ENUMERABLE && !desc.enumerable) return false;
+			if (filter & ONLY_CONFIGURABLE && !desc.configurable) return false;
 
-			return true
-		})
+			return true;
+		});
 	}
 
-	return keys
+	return keys;
 }
 
 function getPromiseDetails(promise) {
 	// Return undefined if it's not a Promise
 	if (!(promise instanceof Promise)) {
-		return undefined
+		return undefined;
 	}
 
 	// We can't directly access promise state in JavaScript,
 	// but we can use a trick with Promise.race
-	const kPending = 0
-	const kFulfilled = 1
-	const kRejected = 2
+	const kPending = 0;
+	const kFulfilled = 1;
+	const kRejected = 2;
 
 	// This is a best-effort polyfill since JavaScript doesn't expose promise internals
 	// For synchronous inspection, we'd need to track promises ourselves
 	// Return pending state as fallback
-	return [kPending]
+	return [kPending];
 }
 
 function getProxyDetails(proxy, includeTarget = true) {
@@ -159,65 +157,65 @@ function getProxyDetails(proxy, includeTarget = true) {
 	// Unfortunately, JavaScript doesn't provide a way to detect if something is a Proxy
 	// or to extract its target and handler
 	// This is a limitation of the language
-	return undefined
+	return undefined;
 }
 
 function previewEntries(obj) {
 	// Preview entries for Maps, Sets, typed arrays etc
 	if (obj instanceof Map) {
-		const entries = Array.from(obj.entries()).slice(0, 100)
-		return [entries, entries.length < obj.size]
+		const entries = Array.from(obj.entries()).slice(0, 100);
+		return [entries, entries.length < obj.size];
 	}
 	if (obj instanceof Set) {
-		const entries = Array.from(obj.values()).slice(0, 100)
-		return [entries, entries.length < obj.size]
+		const entries = Array.from(obj.values()).slice(0, 100);
+		return [entries, entries.length < obj.size];
 	}
 	// For arrays and typed arrays
 	if (Array.isArray(obj) || ArrayBuffer.isView(obj)) {
-		const entries = Array.from(obj).slice(0, 100)
-		return [entries, entries.length < obj.length]
+		const entries = Array.from(obj).slice(0, 100);
+		return [entries, entries.length < obj.length];
 	}
-	return undefined
+	return undefined;
 }
 
 function internalGetConstructorName(obj) {
 	if (obj === null || obj === undefined) {
-		return ''
+		return '';
 	}
 	if (typeof obj !== 'object' && typeof obj !== 'function') {
-		return ''
+		return '';
 	}
 	// Get constructor name
 	if (obj.constructor && obj.constructor.name) {
-		return obj.constructor.name
+		return obj.constructor.name;
 	}
 	// Fallback to Object.prototype.toString
-	const str = Object.prototype.toString.call(obj)
-	const match = str.match(/^\[object (\w+)\]$/)
-	return match ? match[1] : 'Object'
+	const str = Object.prototype.toString.call(obj);
+	const match = str.match(/^\[object (\w+)\]$/);
+	return match ? match[1] : 'Object';
 }
 
 function getExternalValue(external) {
 	// External values are V8-specific and represent C++ pointers
 	// We can't truly polyfill this in JavaScript
 	// Return 0n as a placeholder
-	return 0n
+	return 0n;
 }
 
 function createDebugProxy(name, target) {
 	return new Proxy(target, {
 		get(obj, prop) {
-			const value = obj[prop]
+			const value = obj[prop];
 			if (value === undefined) {
 				console.log(
 					`${name} binding: undefined property '${String(
 						prop
 					)}' accessed`
-				)
+				);
 			}
-			return value
+			return value;
 		},
-	})
+	});
 }
 
 // Fill a provided stats array at a specific offset
@@ -225,92 +223,92 @@ function createDebugProxy(name, target) {
 // offset is in fields (18 fields per Stats instance)
 function fillStatsArray(arr, stats, useBigint, offset = 0) {
 	// Convert to appropriate type
-	const toType = useBigint ? BigInt : Number
+	const toType = useBigint ? BigInt : Number;
 
 	// File type constants (from Node.js constants)
-	const S_IFREG = 32768 // Regular file
-	const S_IFDIR = 16384 // Directory
-	const S_IFLNK = 40960 // Symbolic link
+	const S_IFREG = 32768; // Regular file
+	const S_IFDIR = 16384; // Directory
+	const S_IFLNK = 40960; // Symbolic link
 
 	// Combine file type bits with permission bits
-	let mode = stats.mode
+	let mode = stats.mode;
 	if (stats.type === 'file') {
-		mode = S_IFREG | stats.mode
+		mode = S_IFREG | stats.mode;
 	} else if (stats.type === 'dir') {
-		mode = S_IFDIR | stats.mode
+		mode = S_IFDIR | stats.mode;
 	} else if (stats.type === 'symlink') {
-		mode = S_IFLNK | stats.mode
+		mode = S_IFLNK | stats.mode;
 	}
 
 	// Fill array in the order expected by Node.js
 	// See FsStatsOffset in src/node_file.h
-	arr[offset + 0] = toType(0) // dev
-	arr[offset + 1] = toType(mode) // mode (with file type bits)
-	arr[offset + 2] = toType(1) // nlink
-	arr[offset + 3] = toType(0) // uid
-	arr[offset + 4] = toType(0) // gid
-	arr[offset + 5] = toType(0) // rdev
-	arr[offset + 6] = toType(4096) // blksize
-	arr[offset + 7] = toType(0) // ino
-	arr[offset + 8] = toType(stats.size) // size
-	arr[offset + 9] = toType(Math.ceil(stats.size / 512)) // blocks
+	arr[offset + 0] = toType(0); // dev
+	arr[offset + 1] = toType(mode); // mode (with file type bits)
+	arr[offset + 2] = toType(1); // nlink
+	arr[offset + 3] = toType(0); // uid
+	arr[offset + 4] = toType(0); // gid
+	arr[offset + 5] = toType(0); // rdev
+	arr[offset + 6] = toType(4096); // blksize
+	arr[offset + 7] = toType(0); // ino
+	arr[offset + 8] = toType(stats.size); // size
+	arr[offset + 9] = toType(Math.ceil(stats.size / 512)); // blocks
 
 	// Time values - split into seconds and nanoseconds
-	arr[offset + 10] = toType(Math.floor(stats.atimeMs / 1000)) // atimeSec
-	arr[offset + 11] = toType((stats.atimeMs % 1000) * 1000000) // atimeNsec
-	arr[offset + 12] = toType(Math.floor(stats.mtimeMs / 1000)) // mtimeSec
-	arr[offset + 13] = toType((stats.mtimeMs % 1000) * 1000000) // mtimeNsec
-	arr[offset + 14] = toType(Math.floor(stats.ctimeMs / 1000)) // ctimeSec
-	arr[offset + 15] = toType((stats.ctimeMs % 1000) * 1000000) // ctimeNsec
-	arr[offset + 16] = toType(Math.floor(stats.birthtimeMs / 1000)) // birthtimeSec
-	arr[offset + 17] = toType((stats.birthtimeMs % 1000) * 1000000) // birthtimeNsec
+	arr[offset + 10] = toType(Math.floor(stats.atimeMs / 1000)); // atimeSec
+	arr[offset + 11] = toType((stats.atimeMs % 1000) * 1000000); // atimeNsec
+	arr[offset + 12] = toType(Math.floor(stats.mtimeMs / 1000)); // mtimeSec
+	arr[offset + 13] = toType((stats.mtimeMs % 1000) * 1000000); // mtimeNsec
+	arr[offset + 14] = toType(Math.floor(stats.ctimeMs / 1000)); // ctimeSec
+	arr[offset + 15] = toType((stats.ctimeMs % 1000) * 1000000); // ctimeNsec
+	arr[offset + 16] = toType(Math.floor(stats.birthtimeMs / 1000)); // birthtimeSec
+	arr[offset + 17] = toType((stats.birthtimeMs % 1000) * 1000000); // birthtimeNsec
 }
-export class InternalFileHandle {
+class InternalFileHandle {
 	constructor(fd, fs) {
-		this.fd = fd
-		this.fs = fs
+		this.fd = fd;
+		this.fs = fs;
 	}
 
 	close() {
 		return new Promise((resolve, reject) => {
 			if (this.fd !== undefined) {
 				try {
-					this.fs.closeSync(this.fd)
-					this.fd = undefined
-					resolve()
+					this.fs.closeSync(this.fd);
+					this.fd = undefined;
+					resolve();
 				} catch (error) {
-					reject(error)
+					reject(error);
 				}
 			} else {
-				resolve()
+				resolve();
 			}
-		})
+		});
 	}
 
 	read(offset, length, position) {
 		if (this.fd === undefined) {
-			throw createFsError('EBADF', 'EBADF: bad file descriptor, read')
+			throw createFsError('EBADF', 'EBADF: bad file descriptor, read');
 		}
-		return this.fs.readSync(this.fd, length, position)
+		return this.fs.readSync(this.fd, length, position);
 	}
 
 	write(buffer, offset, length, position) {
-		throw new Error('Not implemented')
+		throw new Error('Not implemented');
 		if (this.fd === undefined) {
-			throw createFsError('EBADF', 'EBADF: bad file descriptor, write')
+			throw createFsError('EBADF', 'EBADF: bad file descriptor, write');
 		}
-		return this.fs.writeSync(this.fd, buffer, offset, length, position)
+		return this.fs.writeSync(this.fd, buffer, offset, length, position);
 	}
 
 	stat(bigint = false) {
 		if (this.fd === undefined) {
-			throw createFsError('EBADF', 'EBADF: bad file descriptor, fstat')
+			throw createFsError('EBADF', 'EBADF: bad file descriptor, fstat');
 		}
-		const openFile = this.fs.openFiles.get(this.fd)
+		const openFile = this.fs.openFiles.get(this.fd);
 		if (!openFile) {
-			throw createFsError('EBADF', 'EBADF: bad file descriptor, fstat')
+			throw createFsError('EBADF', 'EBADF: bad file descriptor, fstat');
 		}
-		return new Stats(openFile.node)
+		return new Stats(openFile.node);
 	}
 
 	truncate(len = 0) {
@@ -318,37 +316,37 @@ export class InternalFileHandle {
 			throw createFsError(
 				'EBADF',
 				'EBADF: bad file descriptor, ftruncate'
-			)
+			);
 		}
-		return this.fs.ftruncateSync(this.fd, len)
+		return this.fs.ftruncateSync(this.fd, len);
 	}
 
 	ftruncate(len = 0) {
 		// Alias for truncate - both do the same thing
-		return this.truncate(len)
+		return this.truncate(len);
 	}
 
 	utimes(atime, mtime) {
 		if (this.fd === undefined) {
-			throw createFsError('EBADF', 'EBADF: bad file descriptor, futimes')
+			throw createFsError('EBADF', 'EBADF: bad file descriptor, futimes');
 		}
-		return this.fs.futimesSync(this.fd, atime, mtime)
+		return this.fs.futimesSync(this.fd, atime, mtime);
 	}
 
 	chmod(mode) {
 		if (this.fd === undefined) {
-			throw createFsError('EBADF', 'EBADF: bad file descriptor, fchmod')
+			throw createFsError('EBADF', 'EBADF: bad file descriptor, fchmod');
 		}
-		const openFile = this.fs.openFiles.get(this.fd)
+		const openFile = this.fs.openFiles.get(this.fd);
 		if (!openFile) {
-			throw createFsError('EBADF', 'EBADF: bad file descriptor, fchmod')
+			throw createFsError('EBADF', 'EBADF: bad file descriptor, fchmod');
 		}
-		openFile.node.mode = mode
+		openFile.node.mode = mode;
 	}
 
 	chown(uid, gid) {
 		if (this.fd === undefined) {
-			throw createFsError('EBADF', 'EBADF: bad file descriptor, fchown')
+			throw createFsError('EBADF', 'EBADF: bad file descriptor, fchown');
 		}
 		// No-op in browser environment, but don't throw
 	}
@@ -358,26 +356,26 @@ export class InternalFileHandle {
 			throw createFsError(
 				'EBADF',
 				'EBADF: bad file descriptor, fdatasync'
-			)
+			);
 		}
 		// No-op in memory filesystem (always synced)
 	}
 
 	sync() {
 		if (this.fd === undefined) {
-			throw createFsError('EBADF', 'EBADF: bad file descriptor, fsync')
+			throw createFsError('EBADF', 'EBADF: bad file descriptor, fsync');
 		}
 		// No-op in memory filesystem (always synced)
 	}
 }
-export function promiseFromSync(syncFn) {
+function promiseFromSync(syncFn) {
 	return new Promise((resolve, reject) => {
 		try {
-			resolve(syncFn())
+			resolve(syncFn());
 		} catch (err) {
-			reject(err)
+			reject(err);
 		}
-	})
+	});
 }
 globalThis.internalModules = {
 	builtins: {
@@ -435,9 +433,9 @@ globalThis.internalModules = {
 		},
 		defineLazyProperties: (target, id, keys, writable = true) => {
 			for (let i = 0; i < keys.length; i++) {
-				const key = keys[i]
-				let value
-				let setterCalled = false
+				const key = keys[i];
+				let value;
+				let setterCalled = false;
 
 				// Create a getter that will lazy-load the module
 				const getter = new Function(
@@ -464,7 +462,7 @@ globalThis.internalModules = {
 					
 					return undefined;
 				`
-				)
+				);
 
 				Object.defineProperty(target, key, {
 					enumerable: true,
@@ -472,10 +470,10 @@ globalThis.internalModules = {
 					get: getter,
 					set: writable
 						? function (val) {
-								this[`__lazyValue_${key}`] = val
+								this[`__lazyValue_${key}`] = val;
 						  }
 						: undefined,
-				})
+				});
 			}
 		},
 		constants: {
@@ -519,30 +517,30 @@ globalThis.internalModules = {
 				{
 					get: (target, prop) => {
 						if (!(prop in target)) {
-							target[prop] = ''
+							target[prop] = '';
 						}
-						return target[prop]
+						return target[prop];
 					},
 				}
-			)
+			);
 		},
 		getCLIOptionsInfo: () => {
 			return {
 				options: [],
 				aliases: [],
-			}
+			};
 		},
 		getOptionsAsFlags: () => {
-			return []
+			return [];
 		},
 		getEmbedderOptions: () => {
-			return {}
+			return {};
 		},
 		getEnvOptionsInputType: () => {
-			return {}
+			return {};
 		},
 		getNamespaceOptionsInputType: () => {
-			return {}
+			return {};
 		},
 	},
 	config: {
@@ -550,8 +548,8 @@ globalThis.internalModules = {
 	},
 	contextify: createDebugProxy('contextify', {
 		containsModuleSyntax() {
-			console.warn('containsModuleSyntax called', { arguments })
-			return false
+			console.warn('containsModuleSyntax called', { arguments });
+			return false;
 		},
 		compileFunctionForCJSLoader: (
 			content,
@@ -561,27 +559,27 @@ globalThis.internalModules = {
 		) => {
 			// Remove up to two shebang lines if present
 			if (content.startsWith('#!')) {
-				let shebangCount = 0
-				const lines = content.split('\n')
+				let shebangCount = 0;
+				const lines = content.split('\n');
 				while (
 					lines[0].startsWith('#!') &&
 					lines.length > 0 &&
 					shebangCount < 2
 				) {
-					lines.shift()
-					shebangCount++
+					lines.shift();
+					shebangCount++;
 				}
-				content = lines.join('\n')
+				content = lines.join('\n');
 			}
 
 			content = globalThis.coreModules.module.Module.wrap(`
 				${content}
-			`)
-			let fn = ''
+			`);
+			let fn = '';
 			if (filename.endsWith('.json')) {
-				fn = () => JSON.parse(content)
+				fn = () => JSON.parse(content);
 			} else {
-				fn = eval(content)
+				fn = eval(content);
 			}
 			// if (content.includes('brotliDecompressSync')) {
 			// 	window.stableConsole.log('BROTLI DECOMPRESS SYNC', content);
@@ -591,16 +589,16 @@ globalThis.internalModules = {
 				sourceURL: '',
 				cachedDataRejected: false,
 				function: fn,
-			}
+			};
 		},
 		ContextifyContext: class ContextifyContext {
 			constructor() {
-				this.context = undefined
+				this.context = undefined;
 			}
 		},
 		ContextifyScript: class ContextifyScript {
 			constructor() {
-				this.context = undefined
+				this.context = undefined;
 			}
 		},
 	}),
@@ -615,24 +613,24 @@ globalThis.internalModules = {
 			try {
 				const parsed = JSON.parse(
 					globalFs.readFileSync(jsonPath, 'utf8')
-				)
+				);
 				const {
 					name = null,
 					main = null,
 					type = null,
 					imports: plainImports,
-				} = parsed
-				let exportsMain = parsed.main
+				} = parsed;
+				let exportsMain = parsed.main;
 				if (exportsMain) {
 					if (!exportsMain.startsWith('./')) {
-						exportsMain = './' + exportsMain
+						exportsMain = './' + exportsMain;
 					}
 					if (
 						!exportsMain.endsWith('.js') &&
 						!exportsMain.endsWith('.cjs') &&
 						!exportsMain.endsWith('.mjs')
 					) {
-						exportsMain += '.js'
+						exportsMain += '.js';
 					}
 				}
 				return [
@@ -642,56 +640,56 @@ globalThis.internalModules = {
 					plainImports ?? undefined,
 					exportsMain ?? undefined,
 					jsonPath,
-				]
+				];
 			} catch (error) {
 				console.warn(
 					`Failed to read package.json at ${jsonPath}:`,
 					error
-				)
-				return undefined
+				);
+				return undefined;
 			}
 		},
 		getNearestParentPackageJSONType(mainPath) {
 			// Start from the directory containing mainPath
-			let currentDir = globalThis.coreModules.path.dirname(mainPath)
+			let currentDir = globalThis.coreModules.path.dirname(mainPath);
 
 			// Traverse up the directory tree
 			while (currentDir !== '/' && currentDir !== '.') {
 				const packageJsonPath = globalThis.coreModules.path.join(
 					currentDir,
 					'package.json'
-				)
+				);
 
 				try {
 					// Check if package.json exists
 					if (globalFs.existsSync(packageJsonPath)) {
 						const packageJson = JSON.parse(
 							globalFs.readFileSync(packageJsonPath, 'utf8')
-						)
+						);
 
 						// Return the type field, defaulting to 'commonjs'
-						return packageJson.type || 'commonjs'
+						return packageJson.type || 'commonjs';
 					}
 				} catch (error) {
 					// If we can't read the package.json, continue searching up
 					console.warn(
 						`Failed to read package.json at ${packageJsonPath}:`,
 						error.message
-					)
+					);
 				}
 
 				// Move up one directory
 				const parentDir =
-					globalThis.coreModules.path.dirname(currentDir)
+					globalThis.coreModules.path.dirname(currentDir);
 				if (parentDir === currentDir) {
 					// We've reached the root
-					break
+					break;
 				}
-				currentDir = parentDir
+				currentDir = parentDir;
 			}
 
 			// Default to 'commonjs' if no package.json found
-			return 'commonjs'
+			return 'commonjs';
 		},
 	}),
 	fs: createDebugProxy(
@@ -700,20 +698,20 @@ globalThis.internalModules = {
 			kUsePromises: Symbol('kUsePromises'),
 			StatWatcher: class StatWatcher {
 				constructor() {
-					this.persistent = false
-					console.trace('StatWatcher constructor')
+					this.persistent = false;
+					console.trace('StatWatcher constructor');
 				}
 			},
 			FileHandle: class FileHandle {
 				constructor() {
-					this.persistent = false
-					console.trace('FileHandle constructor')
+					this.persistent = false;
+					console.trace('FileHandle constructor');
 				}
 			},
 			FSReqCallback: class FSReqCallback {
 				constructor() {
-					this.context = undefined
-					this.oncomplete = () => {}
+					this.context = undefined;
+					this.oncomplete = () => {};
 				}
 
 				// Called when the async operation completes
@@ -733,26 +731,31 @@ globalThis.internalModules = {
 				return maybePromiseFromSync(
 					() => globalFs.openSync(path, flags, mode),
 					reqOrPromise
-				)
+				);
 			},
 			openFileHandle(path, flags, mode, usePromises) {
-				if (usePromises !== undefined && typeof usePromises !== 'symbol') {
+				if (
+					usePromises !== undefined &&
+					typeof usePromises !== 'symbol'
+				) {
 					// @TODO: Remove this if everything is stable. I just wasn't sure if
 					//        that fourth argument is ever used in a different way.
-					throw new Error('openFileHandle fourt argument should be undefined or symbol');
+					throw new Error(
+						'openFileHandle fourt argument should be undefined or symbol'
+					);
 				}
 				if (usePromises) {
 					return promiseFromSync(() =>
 						this.openFileHandleSync(path, flags, mode)
-					)
+					);
 				}
-				return this.openFileHandleSync(path, flags, mode)
+				return this.openFileHandleSync(path, flags, mode);
 			},
 			openFileHandleSync(path, flags, mode) {
-				const FileHandle = globalThis.coreModules['fs'].FileHandle
-				const fd = globalFs.openSync(path, flags, mode)
-				const internalHandle = new InternalFileHandle(fd, globalFs)
-				return new FileHandle(internalHandle)
+				const FileHandle = globalThis.coreModules['fs'].FileHandle;
+				const fd = globalFs.openSync(path, flags, mode);
+				const internalHandle = new InternalFileHandle(fd, globalFs);
+				return new FileHandle(internalHandle);
 			},
 			// Used to speed up module loading.  Returns 0 if the path refers to
 			// a file, 1 when it's a directory or < 0 on error (usually -ENOENT.)
@@ -761,96 +764,104 @@ globalThis.internalModules = {
 			// Permission Model checks.
 			// @see node_file.cc
 			internalModuleStat(receiver /* unknown */, path /* string */) {
-				let stats
+				let stats;
 				try {
-					stats = globalFs.statSync(path ?? receiver)
+					stats = globalFs.statSync(path ?? receiver);
 				} catch (e) {
-					return -1
+					return -1;
 				}
-				return stats?.isDirectory() ? 1 : stats?.isFile() ? 0 : -1
+				return stats?.isDirectory() ? 1 : stats?.isFile() ? 0 : -1;
 			},
 			exists(path) {
 				console.log(
 					'Regular exists – how is it different from existsSync?'
-				)
-				return globalFs.existsSync(path)
+				);
+				return globalFs.existsSync(path);
 			},
 			existsSync(path) {
-				return globalFs.existsSync(path)
+				return globalFs.existsSync(path);
 			},
 			mkdir(path, options, recursive, kUsePromises) {
 				// Properly merge options and recursive parameter
-				let finalOptions = options
+				let finalOptions = options;
 				if (typeof options === 'number') {
 					// If options is a number, it's the mode
-					finalOptions = { mode: options, recursive: recursive }
+					finalOptions = { mode: options, recursive: recursive };
 				} else if (options && typeof options === 'object') {
 					// If options is an object, merge in the recursive parameter
-					finalOptions = { ...options, recursive: recursive }
+					finalOptions = { ...options, recursive: recursive };
 				} else if (recursive !== undefined) {
 					// If only recursive is provided
-					finalOptions = { recursive: recursive }
+					finalOptions = { recursive: recursive };
 				}
 
 				return maybePromiseFromSync(
 					() => globalFs.mkdirSync(path, finalOptions),
 					kUsePromises
-				)
+				);
 			},
 			close(fd, reqOrPromise) {
 				return maybePromiseFromSync(
 					() => globalFs.closeSync(fd),
 					reqOrPromise
-				)
+				);
 			},
 			read(fd, buffer, offset, length, position, reqOrPromise) {
-				return maybePromiseFromSync(
-					() => {
-						// Read data from the filesystem
-						const sourceBuffer = globalFs.readSync(fd, length, position)
-						
-						// Copy the data into the provided buffer at the specified offset
-						const bytesToCopy = Math.min(sourceBuffer.length, length)
-						if (bytesToCopy > 0) {
-							buffer.set(sourceBuffer.subarray(0, bytesToCopy), offset)
-						}
-						
-						// Return the number of bytes actually read
-						return bytesToCopy
-					},
-					reqOrPromise
-				)
+				return maybePromiseFromSync(() => {
+					// Read data from the filesystem
+					const sourceBuffer = globalFs.readSync(
+						fd,
+						length,
+						position
+					);
+
+					// Copy the data into the provided buffer at the specified offset
+					const bytesToCopy = Math.min(sourceBuffer.length, length);
+					if (bytesToCopy > 0) {
+						buffer.set(
+							sourceBuffer.subarray(0, bytesToCopy),
+							offset
+						);
+					}
+
+					// Return the number of bytes actually read
+					return bytesToCopy;
+				}, reqOrPromise);
 			},
 			readdir(path, encoding, withFileTypes, kUsePromises) {
 				return maybePromiseFromSync(
-					() => globalFs.readdirBinding(path, encoding, withFileTypes),
+					() =>
+						globalFs.readdirBinding(path, encoding, withFileTypes),
 					kUsePromises
-				)
+				);
 			},
 			readFileUtf8(path, flags) {
 				// readFileUtf8 is a synchronous optimized path for reading UTF-8 files
 				// It takes a path (string, Buffer, or file descriptor) and flags (number)
 				// Returns the file contents as a UTF-8 string
-				const usingFileDescriptor = typeof path === 'number'
+				const usingFileDescriptor = typeof path === 'number';
 				const normalizedFlags =
-					typeof flags === 'number' ? flags : undefined
+					typeof flags === 'number' ? flags : undefined;
 
 				// Fast path: delegate to the kernel's readFileSync whenever we have a string/URL
 				// path and default read-only flags. The kernel already returns complete UTF-8 data.
-				if (!usingFileDescriptor && (normalizedFlags === 0 || normalizedFlags === undefined)) {
-					return globalFs.readFileSync(path, 'utf8')
+				if (
+					!usingFileDescriptor &&
+					(normalizedFlags === 0 || normalizedFlags === undefined)
+				) {
+					return globalFs.readFileSync(path, 'utf8');
 				}
 
-				let fd = path
+				let fd = path;
 				if (!usingFileDescriptor) {
-					fd = globalFs.openSync(path, normalizedFlags ?? 0)
+					fd = globalFs.openSync(path, normalizedFlags ?? 0);
 				}
 
 				try {
-					return readUtf8FromFileDescriptor(fd)
+					return readUtf8FromFileDescriptor(fd);
 				} finally {
 					if (!usingFileDescriptor && typeof fd === 'number') {
-						globalFs.closeSync(fd)
+						globalFs.closeSync(fd);
 					}
 				}
 			},
@@ -858,16 +869,16 @@ globalThis.internalModules = {
 				return maybePromiseFromSync(
 					() => globalFs.readFileSync(path, options),
 					kUsePromises
-				)
+				);
 			},
 			writeFile(path, data, options, kUsePromises) {
 				return maybePromiseFromSync(
 					() => globalFs.writeFileSync(path, data, options),
 					kUsePromises
-				)
+				);
 			},
 			rmSync(path, maxRetries, recursive, retryDelay) {
-				return globalFs.rmSync(path, maxRetries, recursive, retryDelay)
+				return globalFs.rmSync(path, maxRetries, recursive, retryDelay);
 			},
 			cpSyncCheckPaths(src, dest, dereference, recursive) {
 				return globalFs.cpSyncCheckPaths(
@@ -875,10 +886,10 @@ globalThis.internalModules = {
 					dest,
 					dereference,
 					recursive
-				)
+				);
 			},
 			cpSync(src, dest, options) {
-				return globalFs.cpSync(src, dest, options)
+				return globalFs.cpSync(src, dest, options);
 			},
 			cpSyncCopyDir(
 				src,
@@ -899,144 +910,144 @@ globalThis.internalModules = {
 					preserveTimestamps,
 					recursive: true,
 					filter: null,
-				}
-				return globalFs.cpSync(src, dest, options)
+				};
+				return globalFs.cpSync(src, dest, options);
 			},
 			cpSyncOverrideFile(src, dest) {
 				// This is used to override a file during copy
 				// Just copy the file, overwriting if it exists
-				return globalFs.copyFileSync(src, dest, 0)
+				return globalFs.copyFileSync(src, dest, 0);
 			},
 			symlink(target, path, type, kUsePromises) {
 				return maybePromiseFromSync(
 					() => globalFs.symlinkSync(target, path, type),
 					kUsePromises
-				)
+				);
 			},
 			readBuffers(fd, buffers, position, kUsePromises) {
 				return maybePromiseFromSync(
 					() => globalFs.readBuffers(fd, buffers, position),
 					kUsePromises
-				)
+				);
 			},
 			mkdtemp(prefix, encoding, kUsePromises) {
 				return maybePromiseFromSync(
 					() => globalFs.mkdtemp(prefix, encoding),
 					kUsePromises
-				)
+				);
 			},
 			ftruncate(fd, len, kUsePromises) {
 				return maybePromiseFromSync(
 					() => globalFs.ftruncateSync(fd, len),
 					kUsePromises
-				)
+				);
 			},
 			truncate(path, len, kUsePromises) {
 				return maybePromiseFromSync(
 					() => globalFs.truncateSync(path, len),
 					kUsePromises
-				)
+				);
 			},
 			rename(oldPath, newPath, kUsePromises) {
 				return maybePromiseFromSync(
 					() => globalFs.renameSync(oldPath, newPath),
 					kUsePromises
-				)
+				);
 			},
 			rm(path, kUsePromises) {
 				// console.log('rm', path, kUsePromises, arguments);
 				return maybePromiseFromSync(
 					() => globalFs.rmSync(path),
 					kUsePromises
-				)
+				);
 			},
 			rmdir(path, kUsePromises) {
 				// console.log('rmdir', path, kUsePromises, arguments);
 				return maybePromiseFromSync(
 					() => globalFs.rmdirSync(path),
 					kUsePromises
-				)
+				);
 			},
 			stat(path, useBigint, kUsePromises, throwIfNoEntry) {
 				// Native binding populates global statValues/bigintStatValues arrays
 				// throwIfNoEntry defaults to true for backwards compatibility
 				return maybePromiseFromSync(() => {
 					try {
-						const stats = globalFs.statSync(path)
+						const stats = globalFs.statSync(path);
 						// Populate the global stat arrays
 						const targetArray = useBigint
 							? globalThis.internalModules.fs.bigintStatValues
-							: globalThis.internalModules.fs.statValues
-						fillStatsArray(targetArray, stats, useBigint, 0)
-						return targetArray
+							: globalThis.internalModules.fs.statValues;
+						fillStatsArray(targetArray, stats, useBigint, 0);
+						return targetArray;
 					} catch (err) {
 						// If throwIfNoEntry is false and error is ENOENT, return undefined
 						if (throwIfNoEntry === false && err.code === 'ENOENT') {
-							return undefined
+							return undefined;
 						}
-						throw err
+						throw err;
 					}
-				}, kUsePromises)
+				}, kUsePromises);
 			},
 			lstat(path, useBigint, kUsePromises, throwIfNoEntry) {
 				// Native binding populates global statValues/bigintStatValues arrays
 				return maybePromiseFromSync(() => {
 					try {
-						const stats = globalFs.lstatSync(path)
+						const stats = globalFs.lstatSync(path);
 						// Populate the global stat arrays
 						const targetArray = useBigint
 							? globalThis.internalModules.fs.bigintStatValues
-							: globalThis.internalModules.fs.statValues
-						fillStatsArray(targetArray, stats, useBigint, 0)
-						return targetArray
+							: globalThis.internalModules.fs.statValues;
+						fillStatsArray(targetArray, stats, useBigint, 0);
+						return targetArray;
 					} catch (err) {
 						// If throwIfNoEntry is false and error is ENOENT, return undefined
 						if (throwIfNoEntry === false && err.code === 'ENOENT') {
-							return undefined
+							return undefined;
 						}
-						throw err
+						throw err;
 					}
-				}, kUsePromises)
+				}, kUsePromises);
 			},
 			fstat(fd, useBigint, kUsePromises, throwIfNoEntry) {
 				// Native binding populates global statValues/bigintStatValues arrays
 				// throwIfNoEntry defaults to true for backwards compatibility
 				return maybePromiseFromSync(() => {
 					try {
-						const stats = globalFs.fstatSync(fd)
+						const stats = globalFs.fstatSync(fd);
 						// Populate the global stat arrays
 						const targetArray = useBigint
 							? globalThis.internalModules.fs.bigintStatValues
-							: globalThis.internalModules.fs.statValues
-						fillStatsArray(targetArray, stats, useBigint, 0)
-						return targetArray
+							: globalThis.internalModules.fs.statValues;
+						fillStatsArray(targetArray, stats, useBigint, 0);
+						return targetArray;
 					} catch (err) {
 						// If throwIfNoEntry is false and error is EBADF, return undefined
 						if (
 							throwIfNoEntry === false &&
 							(err.code === 'ENOENT' || err.code === 'EBADF')
 						) {
-							return undefined
+							return undefined;
 						}
-						throw err
+						throw err;
 					}
-				}, kUsePromises)
+				}, kUsePromises);
 			},
 			fsSync(path) {
-				return globalFs.fsSync(path)
+				return globalFs.fsSync(path);
 			},
 			unlink(path, kUsePromises) {
 				return maybePromiseFromSync(
 					() => globalFs.unlinkSync(path),
 					kUsePromises
-				)
+				);
 			},
 
 			symlink(existingPath, newPath, type, kUsePromises) {
 				return maybePromiseFromSync(
 					() => globalFs.symlinkSync(existingPath, newPath),
 					kUsePromises
-				)
+				);
 			},
 			writeBuffer(fd, buffer, offset, length, position, reqOrPromise) {
 				return maybePromiseFromSync(() => {
@@ -1046,54 +1057,54 @@ globalThis.internalModules = {
 						offset,
 						length,
 						position
-					)
-				}, reqOrPromise)
+					);
+				}, reqOrPromise);
 			},
 			writeString(fd, string, position, encoding, reqOrPromise) {
 				// Promise or sync pattern
 				return maybePromiseFromSync(() => {
-					return globalFs.writeSync(fd, string, position, encoding)
-				}, reqOrPromise)
+					return globalFs.writeSync(fd, string, position, encoding);
+				}, reqOrPromise);
 			},
 			writeBuffers(fd, buffers, position, kUsePromises) {
 				// Native binding for writing multiple buffers (writev)
 				return maybePromiseFromSync(() => {
-					return globalFs.writeBuffersSync(fd, buffers, position)
-				}, kUsePromises)
+					return globalFs.writeBuffersSync(fd, buffers, position);
+				}, kUsePromises);
 			},
 			writeFileUtf8(path, data, flags, mode, kUsePromises) {
 				return maybePromiseFromSync(
 					() => globalFs.writeFileUtf8(path, data, flags, mode),
 					kUsePromises
-				)
+				);
 			},
 			access(path, mode, kUsePromises) {
 				// Check file access permissions
 				return maybePromiseFromSync(() => {
-					const exists = globalFs.existsSync(path)
+					const exists = globalFs.existsSync(path);
 					if (!exists) {
 						const error = new Error(
 							`ENOENT: no such file or directory, access '${path}'`
-						)
-						error.code = 'ENOENT'
-						throw error
+						);
+						error.code = 'ENOENT';
+						throw error;
 					}
 					// In browser environment, all existing files are readable/writable
 					// mode parameter is ignored for simplicity
-					return undefined
-				}, kUsePromises)
+					return undefined;
+				}, kUsePromises);
 			},
 			copyFile(src, dest, mode, kUsePromises) {
 				return maybePromiseFromSync(
 					() => globalFs.copyFileSync(src, dest, mode),
 					kUsePromises
-				)
+				);
 			},
 			readlink(path, encoding, kUsePromises) {
 				return maybePromiseFromSync(
 					() => globalFs.readlinkSync(path, encoding),
 					kUsePromises
-				)
+				);
 			},
 			realpath(path, encoding, kUsePromises) {
 				// Return the absolute path if file exists, otherwise throw ENOENT
@@ -1104,90 +1115,90 @@ globalThis.internalModules = {
 					if (!globalFs.existsSync(path)) {
 						const error = new Error(
 							`ENOENT: no such file or directory, realpath '${path}'`
-						)
-						error.code = 'ENOENT'
-						throw error
+						);
+						error.code = 'ENOENT';
+						throw error;
 					}
 					// Return the path as-is since we don't have symlinks to resolve
 					// In a real filesystem, this would resolve symlinks and return canonical path
-					return path
-				}, kUsePromises)
+					return path;
+				}, kUsePromises);
 			},
 			utimes(path, atime, mtime, kUsePromises) {
 				return maybePromiseFromSync(
 					() => globalFs.utimesSync(path, atime, mtime),
 					kUsePromises
-				)
+				);
 			},
 			futimes(fd, atime, mtime, kUsePromises) {
 				return maybePromiseFromSync(
 					() => globalFs.futimesSync(fd, atime, mtime),
 					kUsePromises
-				)
+				);
 			},
 			lutimes(path, atime, mtime, kUsePromises) {
 				return maybePromiseFromSync(() => {
 					// Update timestamps on symlink itself if symlink; otherwise behave like utimes
-					const { node } = globalFs.walk(path)
+					const { node } = globalFs.walk(path);
 					if (!node) {
 						const error = new Error(
 							`ENOENT: no such file or directory, lutimes '${path}'`
-						)
-						error.code = 'ENOENT'
-						throw error
+						);
+						error.code = 'ENOENT';
+						throw error;
 					}
 					if (node.type !== 'symlink') {
 						// If not a symlink, match Node: apply to target file
-						return globalFs.utimesSync(path, atime, mtime)
+						return globalFs.utimesSync(path, atime, mtime);
 					}
 					// For symlink, store times on the link node
 					// Node.js binding receives UNIX timestamps in seconds, we store in milliseconds
 					node.atime =
 						typeof atime === 'number'
 							? atime * 1000
-							: atime.getTime()
+							: atime.getTime();
 					node.mtime =
 						typeof mtime === 'number'
 							? mtime * 1000
-							: mtime.getTime()
-					node.ctime = Date.now()
-				}, kUsePromises)
+							: mtime.getTime();
+					node.ctime = Date.now();
+				}, kUsePromises);
 			},
 			ftruncate(fd, len, kUsePromises) {
 				return maybePromiseFromSync(
 					() => globalFs.ftruncateSync(fd, len),
 					kUsePromises
-				)
+				);
 			},
 			chmod(path, mode, kUsePromises) {
 				// File permissions are simplified in browser environment
-				return maybePromiseFromSync(() => undefined, kUsePromises)
+				return maybePromiseFromSync(() => undefined, kUsePromises);
 			},
 			fchmod(fd, mode, kUsePromises) {
 				// File permissions are simplified in browser environment
-				return maybePromiseFromSync(() => undefined, kUsePromises)
+				return maybePromiseFromSync(() => undefined, kUsePromises);
 			},
 			chown(path, uid, gid, kUsePromises) {
 				// File ownership is not supported in browser environment
-				return maybePromiseFromSync(() => undefined, kUsePromises)
+				return maybePromiseFromSync(() => undefined, kUsePromises);
 			},
 			fchown(fd, uid, gid, kUsePromises) {
 				// File ownership is not supported in browser environment
-				return maybePromiseFromSync(() => undefined, kUsePromises)
+				return maybePromiseFromSync(() => undefined, kUsePromises);
 			},
 			fsync(fd, kUsePromises) {
 				// Always synced in memory filesystem
-				return maybePromiseFromSync(() => undefined, kUsePromises)
+				return maybePromiseFromSync(() => undefined, kUsePromises);
 			},
 			fdatasync(fd, kUsePromises) {
 				// Always synced in memory filesystem
-				return maybePromiseFromSync(() => undefined, kUsePromises)
+				return maybePromiseFromSync(() => undefined, kUsePromises);
 			},
 			link(existingPath, newPath, kUsePromises) {
 				return maybePromiseFromSync(
 					() => globalFs.linkSync(existingPath, newPath),
 					kUsePromises
-				)
+				);
 			},
 		},
 		'fs'
@@ -1221,7 +1232,7 @@ globalThis.internalModules = {
 					scriptResourceName: 'eval',
 					lineNumber: 1,
 					startColumn: 0,
-				}
+				};
 			},
 		},
 		'errors'
@@ -1246,15 +1257,15 @@ globalThis.internalModules = {
 			const encodingIndex =
 				encodingBuffer[
 					globalThis.internalModules.string_decoder.kEncodingField
-				]
+				];
 			const encoding =
 				globalThis.internalModules.string_decoder.encodings[
 					encodingIndex
-				] ?? 'utf-8'
-			return buffer.toString(encoding, options)
+				] ?? 'utf-8';
+			return buffer.toString(encoding, options);
 		},
 		flush: (buffer) => {
-			return buffer.toString()
+			return buffer.toString();
 		},
 	}),
 	// buffer: createDebugProxy('buffer', {
@@ -1265,36 +1276,36 @@ globalThis.internalModules = {
 				!(buf1 instanceof Uint8Array) ||
 				!(buf2 instanceof Uint8Array)
 			) {
-				throw new TypeError('Arguments must be Buffer or Uint8Array')
+				throw new TypeError('Arguments must be Buffer or Uint8Array');
 			}
 
-			const len = Math.min(buf1.length, buf2.length)
+			const len = Math.min(buf1.length, buf2.length);
 
 			// Byte-by-byte comparison
 			for (let i = 0; i < len; i++) {
 				if (buf1[i] !== buf2[i]) {
-					return buf1[i] < buf2[i] ? -1 : 1
+					return buf1[i] < buf2[i] ? -1 : 1;
 				}
 			}
 
 			// If all compared bytes are equal, compare lengths
 			// Normalize to -1, 0, or 1 as per Node.js behavior
 			if (buf1.length === buf2.length) {
-				return 0
+				return 0;
 			}
-			return buf1.length < buf2.length ? -1 : 1
+			return buf1.length < buf2.length ? -1 : 1;
 		},
 	},
 	types: createDebugProxy('types', {
 		isRegExp(value) {
-			return Object.prototype.toString.call(value) === '[object RegExp]'
+			return Object.prototype.toString.call(value) === '[object RegExp]';
 		},
 		isDate(value) {
-			return Object.prototype.toString.call(value) === '[object Date]'
+			return Object.prototype.toString.call(value) === '[object Date]';
 		},
 		isNativeError(value) {
 			if (value === null || value === undefined) {
-				return false
+				return false;
 			}
 			// Check if it's an instance of Error or one of the native error types
 			return (
@@ -1307,136 +1318,138 @@ globalThis.internalModules = {
 				value instanceof URIError ||
 				(typeof AggregateError !== 'undefined' &&
 					value instanceof AggregateError)
-			)
+			);
 		},
 		isPromise(value) {
-			return value instanceof Promise
+			return value instanceof Promise;
 		},
 		isProxy(value) {
 			// JavaScript doesn't provide a way to detect proxies reliably
 			// This is a limitation of the language
-			return false
+			return false;
 		},
 		isMap(value) {
-			return Object.prototype.toString.call(value) === '[object Map]'
+			return Object.prototype.toString.call(value) === '[object Map]';
 		},
 		isSet(value) {
-			return Object.prototype.toString.call(value) === '[object Set]'
+			return Object.prototype.toString.call(value) === '[object Set]';
 		},
 		isMapIterator(value) {
 			return (
 				Object.prototype.toString.call(value) ===
 				'[object Map Iterator]'
-			)
+			);
 		},
 		isSetIterator(value) {
 			return (
 				Object.prototype.toString.call(value) ===
 				'[object Set Iterator]'
-			)
+			);
 		},
 		isWeakMap(value) {
-			return Object.prototype.toString.call(value) === '[object WeakMap]'
+			return Object.prototype.toString.call(value) === '[object WeakMap]';
 		},
 		isWeakSet(value) {
-			return Object.prototype.toString.call(value) === '[object WeakSet]'
+			return Object.prototype.toString.call(value) === '[object WeakSet]';
 		},
 		isArrayBuffer(value) {
 			return (
 				Object.prototype.toString.call(value) === '[object ArrayBuffer]'
-			)
+			);
 		},
 		isDataView(value) {
-			return Object.prototype.toString.call(value) === '[object DataView]'
+			return (
+				Object.prototype.toString.call(value) === '[object DataView]'
+			);
 		},
 		isSharedArrayBuffer(value) {
 			return (
 				Object.prototype.toString.call(value) ===
 				'[object SharedArrayBuffer]'
-			)
+			);
 		},
 		isTypedArray(value) {
-			return ArrayBuffer.isView(value) && !(value instanceof DataView)
+			return ArrayBuffer.isView(value) && !(value instanceof DataView);
 		},
 		isUint8Array(value) {
 			return (
 				Object.prototype.toString.call(value) === '[object Uint8Array]'
-			)
+			);
 		},
 		isUint8ClampedArray(value) {
 			return (
 				Object.prototype.toString.call(value) ===
 				'[object Uint8ClampedArray]'
-			)
+			);
 		},
 		isUint16Array(value) {
 			return (
 				Object.prototype.toString.call(value) === '[object Uint16Array]'
-			)
+			);
 		},
 		isUint32Array(value) {
 			return (
 				Object.prototype.toString.call(value) === '[object Uint32Array]'
-			)
+			);
 		},
 		isInt8Array(value) {
 			return (
 				Object.prototype.toString.call(value) === '[object Int8Array]'
-			)
+			);
 		},
 		isInt16Array(value) {
 			return (
 				Object.prototype.toString.call(value) === '[object Int16Array]'
-			)
+			);
 		},
 		isInt32Array(value) {
 			return (
 				Object.prototype.toString.call(value) === '[object Int32Array]'
-			)
+			);
 		},
 		isFloat32Array(value) {
 			return (
 				Object.prototype.toString.call(value) ===
 				'[object Float32Array]'
-			)
+			);
 		},
 		isFloat64Array(value) {
 			return (
 				Object.prototype.toString.call(value) ===
 				'[object Float64Array]'
-			)
+			);
 		},
 		isBigInt64Array(value) {
 			return (
 				Object.prototype.toString.call(value) ===
 				'[object BigInt64Array]'
-			)
+			);
 		},
 		isBigUint64Array(value) {
 			return (
 				Object.prototype.toString.call(value) ===
 				'[object BigUint64Array]'
-			)
+			);
 		},
 		isGeneratorObject(value) {
 			return (
 				Object.prototype.toString.call(value) === '[object Generator]'
-			)
+			);
 		},
 		isGeneratorFunction(value) {
 			return (
 				Object.prototype.toString.call(value) ===
 				'[object GeneratorFunction]'
-			)
+			);
 		},
 		isAsyncFunction(value) {
 			return (
 				Object.prototype.toString.call(value) ===
 				'[object AsyncFunction]'
-			)
+			);
 		},
 		isArrayBufferView(value) {
-			return ArrayBuffer.isView(value)
+			return ArrayBuffer.isView(value);
 		},
 		isBoxedPrimitive(value) {
 			return (
@@ -1445,37 +1458,37 @@ globalThis.internalModules = {
 				value instanceof String ||
 				value instanceof Symbol ||
 				value instanceof BigInt
-			)
+			);
 		},
 		isAnyArrayBuffer(value) {
-			const tag = Object.prototype.toString.call(value)
+			const tag = Object.prototype.toString.call(value);
 			return (
 				tag === '[object ArrayBuffer]' ||
 				tag === '[object SharedArrayBuffer]'
-			)
+			);
 		},
 		isArgumentsObject(value) {
 			return (
 				Object.prototype.toString.call(value) === '[object Arguments]'
-			)
+			);
 		},
 		isBooleanObject(value) {
-			return Object.prototype.toString.call(value) === '[object Boolean]'
+			return Object.prototype.toString.call(value) === '[object Boolean]';
 		},
 		isNumberObject(value) {
-			return Object.prototype.toString.call(value) === '[object Number]'
+			return Object.prototype.toString.call(value) === '[object Number]';
 		},
 		isStringObject(value) {
-			return Object.prototype.toString.call(value) === '[object String]'
+			return Object.prototype.toString.call(value) === '[object String]';
 		},
 		isSymbolObject(value) {
-			return Object.prototype.toString.call(value) === '[object Symbol]'
+			return Object.prototype.toString.call(value) === '[object Symbol]';
 		},
 		isBigIntObject(value) {
-			return Object.prototype.toString.call(value) === '[object BigInt]'
+			return Object.prototype.toString.call(value) === '[object BigInt]';
 		},
 		isModuleNamespaceObject(value) {
-			return Object.prototype.toString.call(value) === '[object Module]'
+			return Object.prototype.toString.call(value) === '[object Module]';
 		},
 	}),
 	timers: createDebugProxy('timers', {
@@ -1484,7 +1497,7 @@ globalThis.internalModules = {
 	}),
 	trace_events: {
 		getCategoryEnabledBuffer() {
-			return [9]
+			return [9];
 		},
 		trace() {
 			// Do nothing
@@ -1493,7 +1506,7 @@ globalThis.internalModules = {
 	credentials: {
 		// ENV Variables
 		safeGetenv(key) {
-			return ''
+			return '';
 		},
 	},
 	performance: {
@@ -1503,86 +1516,88 @@ globalThis.internalModules = {
 	js_stream: createDebugProxy('js_stream', {
 		JSStream: class JSStream {
 			constructor() {
-				this.persistent = false
+				this.persistent = false;
 			}
 		},
 	}),
 	blob: createDebugProxy('blob', {
 		createBlob() {
-			throw new Error('Not implemented')
+			throw new Error('Not implemented');
 		},
 		createBlobFromFilePath() {
-			throw new Error('Not implemented')
+			throw new Error('Not implemented');
 		},
 		concat() {
-			throw new Error('Not implemented')
+			throw new Error('Not implemented');
 		},
 		getDataObject() {
-			throw new Error('Not implemented')
+			throw new Error('Not implemented');
 		},
 	}),
 	encoding_binding: createDebugProxy('encoding_binding', {
 		encodeIntoResults() {
-			throw new Error('Not implemented')
+			throw new Error('Not implemented');
 		},
 		encodeInto() {
-			throw new Error('Not implemented')
+			throw new Error('Not implemented');
 		},
 		encodeUtf8String() {
-			throw new Error('Not implemented')
+			throw new Error('Not implemented');
 		},
 		decodeUTF8() {
-			throw new Error('Not implemented')
+			throw new Error('Not implemented');
 		},
 		decodeLatin1() {
-			throw new Error('Not implemented')
+			throw new Error('Not implemented');
 		},
 		toASCII() {
-			throw new Error('Not implemented')
+			throw new Error('Not implemented');
 		},
 		toUnicode() {
-			throw new Error('Not implemented')
+			throw new Error('Not implemented');
 		},
 	}),
-	process_methods: createDebugProxy('process_methods', { hrtimeBuffer: {} }),
+	process_methods: createDebugProxy('process_methods', {
+		hrtimeBuffer: {},
+	}),
 	url_pattern: createDebugProxy('url_pattern', {
 		URLPattern: class URLPattern {
 			constructor(pattern) {
-				this.pattern = pattern
+				this.pattern = pattern;
 			}
 			test(input) {
-				throw new Error('URLPattern.test not implemented')
+				throw new Error('URLPattern.test not implemented');
 			}
 			exec(input) {
-				throw new Error('URLPattern.exec not implemented')
+				throw new Error('URLPattern.exec not implemented');
 			}
 		},
 	}),
 	url: createDebugProxy('url', {
 		pathToFileURL(filepath) {
 			if (typeof filepath !== 'string') {
-				throw new TypeError('Path must be a string')
+				throw new TypeError('Path must be a string');
 			}
 
 			// Handle trailing slashes - add back trailing slash if original had one
-			let resolved = filepath
-			const hadTrailingSlash = filepath.endsWith('/')
+			let resolved = filepath;
+			const hadTrailingSlash = filepath.endsWith('/');
 
 			// Encode the path for file URL
-			const encodedPath = this._encodePathForFileURL(resolved)
+			const encodedPath = this._encodePathForFileURL(resolved);
 
 			// Create and return the URL
-			return new URL(`file://${encodedPath}`)
+			return new URL(`file://${encodedPath}`);
 		},
 
 		fileURLToPath(input, options) {
-			const errorCodes = globalThis.internalModules?.errors?.codes ?? {}
+			const errorCodes = globalThis.internalModules?.errors?.codes ?? {};
 			const {
 				ERR_INVALID_ARG_TYPE,
 				ERR_INVALID_URL_SCHEME,
 				ERR_INVALID_FILE_URL_HOST,
 				ERR_INVALID_FILE_URL_PATH,
-			} = errorCodes
+			} = errorCodes;
 
 			const throwInvalidArgType = (value) => {
 				if (typeof ERR_INVALID_ARG_TYPE === 'function') {
@@ -1590,95 +1605,95 @@ globalThis.internalModules = {
 						'path',
 						['string', 'URL'],
 						value
-					)
+					);
 				}
 				const err = new TypeError(
 					'The "path" argument must be of type string or an instance of URL.'
-				)
-				err.code = 'ERR_INVALID_ARG_TYPE'
-				throw err
-			}
+				);
+				err.code = 'ERR_INVALID_ARG_TYPE';
+				throw err;
+			};
 
 			const throwInvalidScheme = () => {
 				if (typeof ERR_INVALID_URL_SCHEME === 'function') {
-					throw new ERR_INVALID_URL_SCHEME('file')
+					throw new ERR_INVALID_URL_SCHEME('file');
 				}
-				const err = new TypeError('The URL must be of scheme file:')
-				err.code = 'ERR_INVALID_URL_SCHEME'
-				throw err
-			}
+				const err = new TypeError('The URL must be of scheme file:');
+				err.code = 'ERR_INVALID_URL_SCHEME';
+				throw err;
+			};
 
 			const throwInvalidHost = (platform) => {
 				if (typeof ERR_INVALID_FILE_URL_HOST === 'function') {
-					throw new ERR_INVALID_FILE_URL_HOST(platform)
+					throw new ERR_INVALID_FILE_URL_HOST(platform);
 				}
 				const err = new TypeError(
 					'File URL host must be empty on POSIX.'
-				)
-				err.code = 'ERR_INVALID_FILE_URL_HOST'
-				throw err
-			}
+				);
+				err.code = 'ERR_INVALID_FILE_URL_HOST';
+				throw err;
+			};
 
 			const throwInvalidPath = (reason, urlObj) => {
 				if (typeof ERR_INVALID_FILE_URL_PATH === 'function') {
-					throw new ERR_INVALID_FILE_URL_PATH(reason, urlObj)
+					throw new ERR_INVALID_FILE_URL_PATH(reason, urlObj);
 				}
-				const err = new TypeError(`Invalid file URL path: ${reason}`)
-				err.code = 'ERR_INVALID_FILE_URL_PATH'
-				throw err
-			}
+				const err = new TypeError(`Invalid file URL path: ${reason}`);
+				err.code = 'ERR_INVALID_FILE_URL_PATH';
+				throw err;
+			};
 
-			let urlObj
+			let urlObj;
 			if (typeof input === 'string') {
-				urlObj = new URL(input)
+				urlObj = new URL(input);
 			} else if (input instanceof URL) {
-				urlObj = input
+				urlObj = input;
 			} else {
-				throwInvalidArgType(input)
+				throwInvalidArgType(input);
 			}
 
 			if (urlObj.protocol !== 'file:') {
-				throwInvalidScheme()
+				throwInvalidScheme();
 			}
 
-			const windowsOption = options?.windows
+			const windowsOption = options?.windows;
 			const isWindows =
 				windowsOption !== undefined
 					? windowsOption
-					: globalThis.process?.platform === 'win32'
+					: globalThis.process?.platform === 'win32';
 
 			const decodeHostname = (hostname) => {
 				const domainToUnicode =
 					globalThis.coreModules?.url?.domainToUnicode ??
-					globalThis.internalModules?.url?.domainToUnicode
+					globalThis.internalModules?.url?.domainToUnicode;
 				if (typeof domainToUnicode === 'function') {
 					try {
-						return domainToUnicode(hostname)
+						return domainToUnicode(hostname);
 					} catch {
 						// Fall back to the raw hostname if conversion fails.
 					}
 				}
-				return hostname
-			}
+				return hostname;
+			};
 
 			const ensureNoEncodedSeparators = (pathname, sequences) => {
 				for (let i = 0; i < pathname.length; i++) {
 					if (pathname[i] !== '%' || i + 2 >= pathname.length)
-						continue
-					const second = pathname[i + 1]
-					const third = pathname[i + 2].toLowerCase()
+						continue;
+					const second = pathname[i + 1];
+					const third = pathname[i + 2].toLowerCase();
 					for (const seq of sequences) {
 						if (second === seq[0] && third === seq[1]) {
-							return false
+							return false;
 						}
 					}
 				}
-				return true
-			}
+				return true;
+			};
 
 			if (isWindows) {
 				const winPathFromURL = (urlInstance) => {
-					let pathname = urlInstance.pathname
+					let pathname = urlInstance.pathname;
 					if (
 						!ensureNoEncodedSeparators(pathname, [
 							['2', 'f'],
@@ -1688,55 +1703,55 @@ globalThis.internalModules = {
 						throwInvalidPath(
 							'must not include encoded \\ or / characters',
 							urlInstance
-						)
+						);
 					}
-					pathname = pathname.replace(/\//g, '\\')
-					pathname = decodeURIComponent(pathname)
+					pathname = pathname.replace(/\//g, '\\');
+					pathname = decodeURIComponent(pathname);
 					if (urlInstance.hostname) {
-						const host = decodeHostname(urlInstance.hostname)
-						return `\\\\${host}${pathname}`
+						const host = decodeHostname(urlInstance.hostname);
+						return `\\\\${host}${pathname}`;
 					}
-					const letter = pathname.charCodeAt(1)
-					const sep = pathname[2]
+					const letter = pathname.charCodeAt(1);
+					const sep = pathname[2];
 					if (
 						!letter ||
 						(letter | 0x20) < 97 ||
 						(letter | 0x20) > 122 ||
 						sep !== ':'
 					) {
-						throwInvalidPath('must be absolute', urlInstance)
+						throwInvalidPath('must be absolute', urlInstance);
 					}
-					return pathname.slice(1)
-				}
+					return pathname.slice(1);
+				};
 
-				return winPathFromURL(urlObj)
+				return winPathFromURL(urlObj);
 			}
 
 			const posixPathFromURL = (urlInstance) => {
 				if (urlInstance.hostname) {
-					const platform = globalThis.process?.platform ?? 'posix'
-					throwInvalidHost(platform)
+					const platform = globalThis.process?.platform ?? 'posix';
+					throwInvalidHost(platform);
 				}
-				const { pathname } = urlInstance
+				const { pathname } = urlInstance;
 				if (!ensureNoEncodedSeparators(pathname, [['2', 'f']])) {
 					throwInvalidPath(
 						'must not include encoded / characters',
 						urlInstance
-					)
+					);
 				}
-				return decodeURIComponent(pathname)
-			}
+				return decodeURIComponent(pathname);
+			};
 
-			return posixPathFromURL(urlObj)
+			return posixPathFromURL(urlObj);
 		},
 
 		_encodePathForFileURL(path) {
 			// Encode the path for use in a file:// URL
-			let encoded = ''
+			let encoded = '';
 
 			for (let i = 0; i < path.length; i++) {
-				const char = path[i]
-				const code = path.charCodeAt(i)
+				const char = path[i];
+				const code = path.charCodeAt(i);
 
 				// Percent-encode characters that are not safe in file URLs
 				if (
@@ -1747,16 +1762,16 @@ globalThis.internalModules = {
 					char === '\r' ||
 					char === '\t'
 				) {
-					encoded += encodeURIComponent(char)
+					encoded += encodeURIComponent(char);
 				} else if (code < 32 || code > 126) {
 					// Control characters and non-ASCII characters
-					encoded += encodeURIComponent(char)
+					encoded += encodeURIComponent(char);
 				} else {
-					encoded += char
+					encoded += char;
 				}
 			}
 
-			return encoded
+			return encoded;
 		},
 	}),
 	permission: createDebugProxy('permission', {}),
@@ -1766,10 +1781,10 @@ globalThis.internalModules = {
 			// Implement Dir class with async iterator support
 			class Dir {
 				constructor(handle, path, options) {
-					this.handle = handle
-					this.path = path
-					this.options = options || { encoding: 'utf8' }
-					this.closed = false
+					this.handle = handle;
+					this.path = path;
+					this.options = options || { encoding: 'utf8' };
+					this.closed = false;
 				}
 
 				read(encodingOrCallback, bufferSize, kUsePromises) {
@@ -1778,11 +1793,11 @@ globalThis.internalModules = {
 						encodingOrCallback,
 						bufferSize,
 						kUsePromises,
-					})
+					});
 					return maybePromiseFromSync(
 						() => this.readSync(encodingOrCallback, bufferSize),
 						kUsePromises
-					)
+					);
 				}
 
 				readSync(
@@ -1790,19 +1805,19 @@ globalThis.internalModules = {
 					bufferSize = 32
 				) {
 					if (this.closed) {
-						const err = new Error('Dir is closed')
-						err.code = 'ERR_DIR_CLOSED'
-						throw err
+						const err = new Error('Dir is closed');
+						err.code = 'ERR_DIR_CLOSED';
+						throw err;
 					}
 					const entry = this.handle.read(
 						encodingOrCallback,
 						bufferSize
-					)
+					);
 					if (entry === null) {
-						return null
+						return null;
 					}
 					// entry is { name, type } from the handle
-					const { name, type } = entry
+					const { name, type } = entry;
 					// Return a Dirent-like object
 					return {
 						name,
@@ -1813,84 +1828,84 @@ globalThis.internalModules = {
 						isSymbolicLink: () => type === 'symlink',
 						isFIFO: () => false,
 						isSocket: () => false,
-					}
+					};
 				}
 
 				close(kUsePromises) {
 					return maybePromiseFromSync(
 						() => this.closeSync(),
 						kUsePromises
-					)
+					);
 				}
 
 				closeSync() {
 					if (this.closed) {
-						const err = new Error('Dir is already closed')
-						err.code = 'ERR_DIR_CLOSED'
-						throw err
+						const err = new Error('Dir is already closed');
+						err.code = 'ERR_DIR_CLOSED';
+						throw err;
 					}
-					this.handle.close()
-					this.closed = true
+					this.handle.close();
+					this.closed = true;
 				}
 
 				// Async iterator support
 				async *entries() {
 					try {
 						while (true) {
-							const entry = await this.read()
+							const entry = await this.read();
 							if (entry == null) {
-								break
+								break;
 							}
-							yield entry
+							yield entry;
 						}
 					} finally {
-						await this.close()
+						await this.close();
 					}
 				}
 
 				// Make this async iterable
 				[Symbol.asyncIterator]() {
-					return this.entries()
+					return this.entries();
 				}
 			}
 
 			return {
 				Dir,
 				opendirSync(path, options) {
-					const handle = globalFs.opendirSync(path)
-					return new Dir(handle, path, options)
+					const handle = globalFs.opendirSync(path);
+					return new Dir(handle, path, options);
 				},
 				opendir(path, encoding, kUsePromises) {
 					return maybePromiseFromSync(() => {
-						const handle = globalFs.opendirSync(path)
-						return new Dir(handle, path, { encoding })
-					}, kUsePromises)
+						const handle = globalFs.opendirSync(path);
+						return new Dir(handle, path, { encoding });
+					}, kUsePromises);
 				},
-			}
+			};
 		})(),
 		'fs_dir'
 	),
 	cares_wrap: {
 		ChannelWrap: class ChannelWrap {
 			constructor() {
-				this.persistent = false
+				this.persistent = false;
 			}
 		},
 	},
 	stream_wrap: createDebugProxy('stream_wrap', {
 		StreamWrap: class StreamWrap {
 			constructor() {
-				this.persistent = false
+				this.persistent = false;
 			}
 		},
 		ShutdownWrap: class ShutdownWrap {
 			constructor() {
-				this.persistent = false
+				this.persistent = false;
 			}
 		},
 		WriteWrap: class WriteWrap {
 			constructor() {
-				this.persistent = false
+				this.persistent = false;
 			}
 		},
 		kReadBytesOrError: 0,
@@ -1902,12 +1917,12 @@ globalThis.internalModules = {
 	pipe_wrap: createDebugProxy('pipe_wrap', {
 		Pipe: class Pipe {
 			constructor() {
-				this.persistent = false
+				this.persistent = false;
 			}
 		},
 		PipeConnectWrap: class PipeConnectWrap {
 			constructor() {
-				this.persistent = false
+				this.persistent = false;
 			}
 		},
 		constants: {
@@ -1932,7 +1947,7 @@ globalThis.internalModules = {
 		kStackSizeMb: 1024,
 		kTotalResourceLimitCount: 1024,
 		getEnvMessagePort() {
-			throw new Error('Not implemented')
+			throw new Error('Not implemented');
 		},
 	}),
 	locks: createDebugProxy('locks', {}),
@@ -1940,19 +1955,19 @@ globalThis.internalModules = {
 	tls_wrap: createDebugProxy('tls_wrap', {
 		TLSWrap: class TLSWrap {
 			constructor() {
-				this.persistent = false
+				this.persistent = false;
 			}
 		},
 	}),
 	http_parser: createDebugProxy('http_parser', {
 		HTTPParser: class HTTPParser {
 			constructor() {
-				this.persistent = false
+				this.persistent = false;
 			}
 		},
 		ConnectionsList: class ConnectionsList {
 			constructor() {
-				this.connections = []
+				this.connections = [];
 			}
 		},
 		methods: [],
@@ -1961,12 +1976,12 @@ globalThis.internalModules = {
 	tcp_wrap: createDebugProxy('tcp_wrap', {
 		TCP: class TCP {
 			constructor() {
-				this.persistent = false
+				this.persistent = false;
 			}
 		},
 		TCPConnectWrap: class TCPConnectWrap {
 			constructor() {
-				this.persistent = false
+				this.persistent = false;
 			}
 		},
 		constants: {
@@ -1983,24 +1998,24 @@ globalThis.internalModules = {
 		},
 		UDP: class UDP {
 			constructor() {
-				this.persistent = false
+				this.persistent = false;
 			}
 		},
 	},
 	tty_wrap: {
 		isTTY() {
-			return false
+			return false;
 		},
 		Tty: class Tty {
 			constructor() {
-				this.persistent = false
+				this.persistent = false;
 			}
 		},
 	},
 	fs_event_wrap: {
 		FSEvent: class FSEvent {
 			constructor() {
-				this.persistent = false
+				this.persistent = false;
 			}
 		},
 	},
@@ -2024,10 +2039,10 @@ globalThis.internalModules = {
 						user: 252020,
 					},
 				},
-			]
+			];
 		},
 		arch() {
-			return 'x64'
+			return 'x64';
 		},
 		cpus() {
 			return [
@@ -2042,13 +2057,13 @@ globalThis.internalModules = {
 						irq: 0,
 					},
 				},
-			]
+			];
 		},
 		hostname() {
-			return 'localhost'
+			return 'localhost';
 		},
 		machine() {
-			return 'x86_64'
+			return 'x86_64';
 		},
 		networkInterfaces() {
 			return {
@@ -2062,101 +2077,101 @@ globalThis.internalModules = {
 						cidr: '127.0.0.1/8',
 					},
 				],
-			}
+			};
 		},
 		platform() {
-			return 'linux'
+			return 'linux';
 		},
 		release() {
-			return '5.4.0'
+			return '5.4.0';
 		},
 		setPriority(pidOrPriority, priority) {
 			// No-op in browser environment
 		},
 		tmpdir() {
-			return '/tmp'
+			return '/tmp';
 		},
 		totalmem() {
-			return 8589934592 // 8GB
+			return 8589934592; // 8GB
 		},
 		type() {
-			return 'Linux'
+			return 'Linux';
 		},
 		uptime() {
-			return Math.floor(performance.now() / 1000)
+			return Math.floor(performance.now() / 1000);
 		},
 		version() {
-			return '#1 SMP Thu Oct 6 16:21:56 UTC 2022'
+			return '#1 SMP Thu Oct 6 16:21:56 UTC 2022';
 		},
 		getOSInformation() {
-			return ['Linux', '5.4.0', '5.4.0']
+			return ['Linux', '5.4.0', '5.4.0'];
 		},
 		isBigEndian() {
-			return false
+			return false;
 		},
 		getAvailableParallelism() {
-			return navigator.hardwareConcurrency || 10
+			return navigator.hardwareConcurrency || 10;
 		},
 		getFreeMem() {
 			// Estimate 2GB free memory (browser environments don't expose this)
-			return 2147483648
+			return 2147483648;
 		},
 		getHostname() {
-			return 'localhost'
+			return 'localhost';
 		},
 		getOSVersion() {
-			return '#1 SMP Thu Oct 6 16:21:56 UTC 2022'
+			return '#1 SMP Thu Oct 6 16:21:56 UTC 2022';
 		},
 		getOSType() {
-			return 'Linux'
+			return 'Linux';
 		},
 		getOSRelease() {
-			return '5.4.0'
+			return '5.4.0';
 		},
 		getMachine() {
-			return 'x86_64'
+			return 'x86_64';
 		},
 		getHomeDirectory() {
-			return '/home/user'
+			return '/home/user';
 		},
 		getTotalMem() {
-			return 8589934592 // 8GB
+			return 8589934592; // 8GB
 		},
 		getUptime() {
-			return Math.floor(performance.now() / 1000)
+			return Math.floor(performance.now() / 1000);
 		},
 		homedir() {
-			return '/home/user'
+			return '/home/user';
 		},
 		getPriority(pid) {
-			return 0
+			return 0;
 		},
 		getInterfaceAddresses() {
-			return []
+			return [];
 		},
 		getLoadAvg() {
-			return [0, 0, 0]
+			return [0, 0, 0];
 		},
 		getOSVersion() {
-			return '5.4.0'
+			return '5.4.0';
 		},
 		getOSType() {
-			return 'Linux'
+			return 'Linux';
 		},
 		getOSRelease() {
-			return '5.4.0'
+			return '5.4.0';
 		},
 		getMachine() {
-			return 'x86_64'
+			return 'x86_64';
 		},
 		getHomeDirectory() {
-			return '/home/user'
+			return '/home/user';
 		},
 		getTotalMem() {
-			return 8589934592 // 8GB
+			return 8589934592; // 8GB
 		},
 		getUptime() {
-			return Math.floor(performance.now() / 1000)
+			return Math.floor(performance.now() / 1000);
 		},
 		getUserInfo(options) {
 			return {
@@ -2165,7 +2180,7 @@ globalThis.internalModules = {
 				username: 'user',
 				homedir: '/home/user',
 				shell: '/bin/bash',
-			}
+			};
 		},
 		setPriority(pidOrPriority, priority) {
 			// No-op in browser environment
@@ -2174,34 +2189,34 @@ globalThis.internalModules = {
 	zlib: createDebugProxy('zlib', {
 		Zlib: class Zlib {
 			constructor() {
-				this.persistent = false
+				this.persistent = false;
 			}
 		},
 		crc32() {
-			console.trace('zlib crc32')
-			return 0
+			console.trace('zlib crc32');
+			return 0;
 		},
 	}),
 	messaging: {
 		MessagePort: class MessagePort {
 			constructor() {
-				this.persistent = false
+				this.persistent = false;
 			}
 		},
 		MessageChannel: class MessageChannel {
 			constructor() {
-				this.persistent = false
+				this.persistent = false;
 			}
 		},
 		broadcastChannel: class broadcastChannel {
 			constructor() {
-				this.persistent = false
+				this.persistent = false;
 			}
 		},
 		DOMException: class DOMException {
 			constructor(message) {
-				console.trace('DOMException', { arguments })
-				this.message = message
+				console.trace('DOMException', { arguments });
+				this.message = message;
 			}
 		},
 	},
@@ -2216,14 +2231,14 @@ globalThis.internalModules = {
 		{
 			StreamPipe: class StreamPipe {
 				constructor() {
-					this.persistent = false
+					this.persistent = false;
 				}
 			},
 		},
 		{
 			get(target, prop) {
-				console.log('stream get', prop)
-				return target[prop]
+				console.log('stream get', prop);
+				return target[prop];
 			},
 		}
 	),
@@ -2971,7 +2986,7 @@ globalThis.internalModules = {
 	module_wrap: {
 		ModuleWrap: class ModuleWrap {
 			constructor() {
-				this.exports = {}
+				this.exports = {};
 			}
 		},
 	},
@@ -2979,23 +2994,23 @@ globalThis.internalModules = {
 		schemelessBlockList: new Set([]),
 		BlockList: class BlockList {
 			constructor() {
-				this.schemelessBlockList = new Set([])
+				this.schemelessBlockList = new Set([]);
 			}
 		},
 	},
-}
+};
 
 Object.assign(
 	globalThis.internalModules.constants,
 	globalThis.internalModules.constants.fs
-)
+);
 
 globalThis.internalModules.os.constants =
-	globalThis.internalModules.constants.os
-globalThis.internalModules.os.default = globalThis.internalModules.os
-console.log(globalThis.internalModules)
+	globalThis.internalModules.constants.os;
+globalThis.internalModules.os.default = globalThis.internalModules.os;
+console.log(globalThis.internalModules);
 
-await import('../../dist/primordials.js')
+await import('../../dist/primordials.js');
 // import * as myPrimordials from "./src/this-is-imported-directly/primordials.js";
 // globalThis.primordials = { ...myPrimordials, ...globalThis.primordials };
 // console.log(globalThis.primordials);
@@ -3004,31 +3019,31 @@ globalThis.getInternalBinding = globalThis.internalBinding = function (
 	moduleName
 ) {
 	if (globalThis.internalModules[moduleName]) {
-		const module = globalThis.internalModules[moduleName]
+		const module = globalThis.internalModules[moduleName];
 		if (moduleName === 'errors') {
-			return { ...module, exitCodes: module.codes }
+			return { ...module, exitCodes: module.codes };
 		}
-		return module
+		return module;
 	}
-	throw new Error(`Unknown module "${moduleName}"`)
-}
-globalThis.coreModules = {}
+	throw new Error(`Unknown module "${moduleName}"`);
+};
+globalThis.coreModules = {};
 
-const process = (await import('../../dist/process.js')).default
-globalThis.process = { ...process }
-globalThis.coreModules.process = globalThis.process
+const process = (await import('../../dist/process.js')).default;
+globalThis.process = { ...process };
+globalThis.coreModules.process = globalThis.process;
 
-const types = await import('../../dist/internal/types.js')
+const types = await import('../../dist/internal/types.js');
 globalThis.internalModules.util = {
 	types: { ...types },
 	...globalThis.internalModules.util,
-}
+};
 globalThis.internalModules.types = {
 	...globalThis.internalModules.types,
 	...types,
-}
+};
 
-const internalConstants = await import('../../dist/internal/constants.js')
+const internalConstants = await import('../../dist/internal/constants.js');
 globalThis.internalModules.constants = {
 	...globalThis.internalModules.constants,
 	...internalConstants,
@@ -3050,99 +3065,99 @@ globalThis.internalModules.constants = {
 			ECONNRESET: 54,
 		},
 	},
-}
-globalThis.coreModules.constants = globalThis.internalModules.constants
+};
+globalThis.coreModules.constants = globalThis.internalModules.constants;
 globalThis.internalModules.util = {
 	constants: { ...internalConstants },
 	...globalThis.internalModules.util,
-}
+};
 
-const CryptoInternal = await import('../../dist/crypto.js')
+const CryptoInternal = await import('../../dist/crypto.js');
 globalThis.internalModules.crypto = {
 	startLoadingCertificatesOffThread() {
-		return
+		return;
 	}, // throw new Error('Not implemented')},
 	createNativeKeyObjectClass() {
-		return [null, null, null, null]
+		return [null, null, null, null];
 	},
 	...globalThis.internalModules.crypto,
 	...CryptoInternal.default,
-}
-const buffer = await import('../../dist/buffer.js')
+};
+const buffer = await import('../../dist/buffer.js');
 globalThis.internalModules.buffer = {
 	buffer: { ...buffer },
 	...globalThis.internalModules.buffer,
-}
-globalThis.coreModules.buffer = buffer
-globalThis.buffer = buffer.Buffer
-globalThis.Buffer = buffer.Buffer
+};
+globalThis.coreModules.buffer = buffer;
+globalThis.buffer = buffer.Buffer;
+globalThis.Buffer = buffer.Buffer;
 
-const stringDecoder = await import('../../dist/string_decoder.js')
+const stringDecoder = await import('../../dist/string_decoder.js');
 globalThis.internalModules.string_decoder = {
 	stringDecoder: { ...stringDecoder },
 	...globalThis.internalModules.string_decoder,
-}
-globalThis.coreModules.string_decoder = stringDecoder.default
+};
+globalThis.coreModules.string_decoder = stringDecoder.default;
 
-const inspect = await import('../../dist/util/inspect.js')
+const inspect = await import('../../dist/util/inspect.js');
 globalThis.internalModules.util = {
 	inspect: { ...inspect },
 	...globalThis.internalModules.util,
-}
+};
 
-const util = await import('../../dist/util.js')
+const util = await import('../../dist/util.js');
 globalThis.internalModules.util = {
 	...globalThis.internalModules.util,
 	...util,
 	encodingsMap: globalThis.internalModules.string_decoder.encodings,
-}
-globalThis.coreModules.util = util.default
+};
+globalThis.coreModules.util = util.default;
 globalThis.coreModules.util.encodingsMap =
-	globalThis.internalModules.string_decoder.encodings
+	globalThis.internalModules.string_decoder.encodings;
 
-const errors = await import('../../dist/errors.js')
+const errors = await import('../../dist/errors.js');
 globalThis.internalModules.errors = {
 	...globalThis.internalModules.errors,
 	...errors.default,
 	codes: errors.default.codes,
-}
-console.log(globalThis.internalModules.errors)
+};
+console.log(globalThis.internalModules.errors);
 
-const realm = await import('../../dist/realm.js')
-globalThis.realm = { ...realm }
+const realm = await import('../../dist/realm.js');
+globalThis.realm = { ...realm };
 
-const path = await import('../../dist/path.js')
-console.log(path.default.join('a', 'b', 'c'))
-globalThis.coreModules.path = path.default
+const path = await import('../../dist/path.js');
+console.log(path.default.join('a', 'b', 'c'));
+globalThis.coreModules.path = path.default;
 
-const stream = await import('../../dist/stream.js')
-globalThis.coreModules.stream = stream.default
+const stream = await import('../../dist/stream.js');
+globalThis.coreModules.stream = stream.default;
 
-const asyncHooks = await import('../../dist/async_hooks.js')
-globalThis.coreModules.async_hooks = asyncHooks.default
-console.log('asyncHooks', asyncHooks)
+const asyncHooks = await import('../../dist/async_hooks.js');
+globalThis.coreModules.async_hooks = asyncHooks.default;
+console.log('asyncHooks', asyncHooks);
 
-const debuglog = await import('../../dist/internal/util/debuglog.js')
+const debuglog = await import('../../dist/internal/util/debuglog.js');
 globalThis.internalModules.util = {
 	...globalThis.internalModules.util,
 	debuglog: debuglog.default,
-}
-console.log('debuglog', debuglog)
-debuglog.default.initializeDebugEnv('debug')
+};
+console.log('debuglog', debuglog);
+debuglog.default.initializeDebugEnv('debug');
 
-console.log('Setting stdout etc.')
-globalThis.coreModules.os = globalThis.internalModules.os
+console.log('Setting stdout etc.');
+globalThis.coreModules.os = globalThis.internalModules.os;
 
 // Node Response class has an abort method.
 // globalThis.Response.prototype.abort = () => {
 // 	// do nothing
 // };
 
-const blob = await import('../../dist/blob.js')
-globalThis.coreModules.blob = blob.default
+const blob = await import('../../dist/blob.js');
+globalThis.coreModules.blob = blob.default;
 
-const fs = await import('../../dist/fs.js')
-console.log('fs', fs)
+const fs = await import('../../dist/fs.js');
+console.log('fs', fs);
 
 // Register internal/fs/dir module for lazy loading
 // Use the Dir class we implemented in fs_dir binding
@@ -3150,108 +3165,109 @@ globalThis.__moduleRegistry.set('internal/fs/dir', {
 	Dir: globalThis.internalModules.fs_dir.Dir,
 	opendir: fs.default.opendir,
 	opendirSync: fs.default.opendirSync,
-})
+});
 
 // Also expose in internalModules for other code that might need it
 globalThis.internalModules.fs_dir_exports =
-	globalThis.__moduleRegistry.get('internal/fs/dir')
+	globalThis.__moduleRegistry.get('internal/fs/dir');
 
-globalThis.coreModules.fs = fs.default
+globalThis.coreModules.fs = fs.default;
 
-const fsPromises = await import('../../dist/fs/promises.js')
-globalThis.coreModules['fs/promises'] = fsPromises.default.exports
-globalThis.coreModules['fs'].FileHandle = fsPromises.default.FileHandle
+const fsPromises = await import('../../dist/fs/promises.js');
+globalThis.coreModules['fs/promises'] = fsPromises.default.exports;
+globalThis.coreModules['fs'].FileHandle = fsPromises.default.FileHandle;
 
 // Make fs.promises.opendir usable directly in for await...of by returning
 // a thenable that is also async-iterable
 {
-	const fsp = globalThis.coreModules['fs/promises']
-	const originalOpendir = fsp && fsp.opendir
+	const fsp = globalThis.coreModules['fs/promises'];
+	const originalOpendir = fsp && fsp.opendir;
 	if (typeof originalOpendir === 'function') {
 		fsp.opendir = function (...args) {
-			return globalThis.internalModules.fs_dir.opendir(...args)
-		}
+			return globalThis.internalModules.fs_dir.opendir(...args);
+		};
 	}
 }
 
-const events = await import('../../dist/events.js')
-globalThis.coreModules.events = events.default
+const events = await import('../../dist/events.js');
+globalThis.coreModules.events = events.default;
 
-const http = await import('../../dist/http.js')
-globalThis.coreModules.http = http.default
+const http = await import('../../dist/http.js');
+globalThis.coreModules.http = http.default;
 
 // Recycle http module for http2
-const http2 = await import('../../dist/http2.js')
+const http2 = await import('../../dist/http2.js');
 globalThis.coreModules.http2 = {
 	// For HTTP2 constants
 	// ...http2.default,
 	constants: http2.default.constants,
 	// For actual requests
 	...http2.default,
-}
+};
 
-const crypto = await import('../../dist/crypto.js')
-globalThis.coreModules.crypto = crypto.default
-console.log('globalThis.coreModules.crypto', crypto)
+const crypto = await import('../../dist/crypto.js');
+globalThis.coreModules.crypto = crypto.default;
+console.log('globalThis.coreModules.crypto', crypto);
 
-const https = await import('../../dist/https.js')
-globalThis.coreModules.https = https.default
+const https = await import('../../dist/https.js');
+globalThis.coreModules.https = https.default;
 
-const tls = await import('../../dist/tls.js')
-globalThis.coreModules.tls = tls.default
+const tls = await import('../../dist/tls.js');
+globalThis.coreModules.tls = tls.default;
 
-const net = await import('../../dist/net.js')
-globalThis.coreModules.net = net.default
+const net = await import('../../dist/net.js');
+globalThis.coreModules.net = net.default;
 
-const url = await import('../../dist/url.js')
+const url = await import('../../dist/url.js');
 globalThis.coreModules.url = {
 	...url.default,
 	pathToFileURL: globalThis.internalModules.url.pathToFileURL,
 	fileURLToPath: globalThis.internalModules.url.fileURLToPath,
-}
-console.log('URL', globalThis.coreModules.url)
+};
+console.log('URL', globalThis.coreModules.url);
 
-const zlib = await import('../../dist/zlib.js')
-globalThis.coreModules.zlib = zlib.default
+const zlib = await import('../../dist/zlib.js');
+globalThis.coreModules.zlib = zlib.default;
 
-const dns = await import('../../dist/dns.js')
-globalThis.coreModules.dns = dns.default
+const dns = await import('../../dist/dns.js');
+globalThis.coreModules.dns = dns.default;
 
-const readline = await import('../../dist/readline.js')
-globalThis.coreModules.readline = readline.default
+const readline = await import('../../dist/readline.js');
+globalThis.coreModules.readline = readline.default;
 
-const querystring = await import('../../dist/querystring.js')
-globalThis.coreModules.querystring = querystring.default
+const querystring = await import('../../dist/querystring.js');
+globalThis.coreModules.querystring = querystring.default;
 
-const console2 = await import('../../dist/console.js')
-globalThis.coreModules.console = console2.default
+const console2 = await import('../../dist/console.js');
+globalThis.coreModules.console = console2.default;
 
-const tty = await import('../../dist/tty.js')
-globalThis.coreModules.tty = tty.default
+const tty = await import('../../dist/tty.js');
+globalThis.coreModules.tty = tty.default;
 
-const assert = await import('../../dist/assert.js')
-globalThis.coreModules.assert = assert.default
+const assert = await import('../../dist/assert.js');
+globalThis.coreModules.assert = assert.default;
 
-const assertStrict = await import('../../dist/assert/strict.js')
-globalThis.coreModules['assert/strict'] = assertStrict.default
+const assertStrict = await import('../../dist/assert/strict.js');
+globalThis.coreModules['assert/strict'] = assertStrict.default;
 
-const timers = await import('../../dist/timers.js')
-globalThis.coreModules.timers = timers.default
+const timers = await import('../../dist/timers.js');
+globalThis.coreModules.timers = timers.default;
 
-const timersPromises = await import('../../dist/timers/promises.js')
-globalThis.coreModules['timers/promises'] = timersPromises.default
+const timersPromises = await import('../../dist/timers/promises.js');
+globalThis.coreModules['timers/promises'] = timersPromises.default;
 
-const childProcess = await import('../../dist/child_process.js')
-globalThis.coreModules.child_process = childProcess.default
+const childProcess = await import('../../dist/child_process.js');
+globalThis.coreModules.child_process = childProcess.default;
 
-const vm = await import('../../dist/vm.js')
-globalThis.coreModules.vm = vm.default
+const vm = await import('../../dist/vm.js');
+globalThis.coreModules.vm = vm.default;
 
-const v8 = await import('../../dist/v8.js')
-globalThis.coreModules.v8 = { ...v8 }
+const v8 = await import('../../dist/v8.js');
+globalThis.coreModules.v8 = { ...v8 };
 
-import { spawnNodeProcess } from '../../dist/app/spawn-node-process.js'
-globalThis.internalModules.worker.Worker = class WorkerImplementation extends events.default.EventEmitter {
+globalThis.internalModules.worker.Worker = class WorkerImplementation extends (
+	events.default.EventEmitter
+) {
 	constructor(
 		url,
 		envVariables,
@@ -3261,21 +3277,20 @@ globalThis.internalModules.worker.Worker = class WorkerImplementation extends ev
 		isInternal,
 		name
 	) {
-		super()
+		super();
 
-		const fs = globalThis.coreModules.fs
-		this.spawnedNodeProcess = spawnNodeProcess(argv, {
-			env: envVariables,
-			cwd: '/',
-			columns: 80,
-			rows: 24,
-			name: name,
-		});
-
-		// @TODO: Need to support messagePort etc.
-		// this.messagePort 
+		const fs = globalThis.coreModules.fs;
+		throw new Error('Workers not implemented yet');
+		// @TODO: Use kernel-based spawning
+		// this.spawnedNodeProcess = spawnNodeProcess(argv, {
+		// 	env: envVariables,
+		// 	cwd: '/',
+		// 	columns: 80,
+		// 	rows: 24,
+		// 	name: name,
+		// });
 	}
-}
+};
 
 /**
  * It's important to load worker_threads after the WorkerImplementation.
@@ -3283,18 +3298,18 @@ globalThis.internalModules.worker.Worker = class WorkerImplementation extends ev
  * whatever reference is there at the time. By the time the worker_threads import is finished,
  * it's too late to polyfill the 'worker' internal binding.
  */
-const workerThreads = await import('../../dist/worker_threads.js')
-globalThis.coreModules.worker_threads = workerThreads.default
+const workerThreads = await import('../../dist/worker_threads.js');
+globalThis.coreModules.worker_threads = workerThreads.default;
 
-const Module = await import('./module.js')
+const Module = await import('./module.js');
 globalThis.coreModules.module = {
 	...Module,
 	runMain: (args) => Module.Module.runMain(args),
-}
+};
 
 // realm.BuiltinModule
 for (const key in globalThis.coreModules) {
-	realm.default.BuiltinModule.allowRequireByUsers(key)
+	realm.default.BuiltinModule.allowRequireByUsers(key);
 	realm.default.BuiltinModule.map.set(key, {
 		exports: globalThis.coreModules[key],
 		filename: key,
@@ -3302,11 +3317,10 @@ for (const key in globalThis.coreModules) {
 		loaded: true,
 		loading: false,
 		compileForPublicLoader() {},
-	})
+	});
 }
 
-globalThis.internalModules.natives = Object.keys(globalThis.internalModules)
-
+globalThis.internalModules.natives = Object.keys(globalThis.internalModules);
 
 // const ModuleCJSLoader = await import("../../dist/internal/modules/cjs/loader.js");
 // console.log({ ModuleCJSLoader })
@@ -3319,78 +3333,76 @@ globalThis.internalModules.natives = Object.keys(globalThis.internalModules)
 
 function normalizeArgv(argv) {
 	if (!Array.isArray(argv)) {
-		return null
+		return null;
 	}
 	return argv.map((value) => {
 		if (value == null) {
-			return ''
+			return '';
 		}
-		return String(value)
-	})
+		return String(value);
+	});
 }
 
 function ensureEntryFromArgv(argv) {
 	if (!Array.isArray(argv)) {
-		return ''
+		return '';
 	}
-	const candidate = argv.length > 1 ? argv[1] : argv[0]
-	return typeof candidate === 'string' && candidate.length
-		? candidate
-		: ''
+	const candidate = argv.length > 1 ? argv[1] : argv[0];
+	return typeof candidate === 'string' && candidate.length ? candidate : '';
 }
 
 export function runMain(input) {
-	const isArrayInput = Array.isArray(input)
+	const isArrayInput = Array.isArray(input);
 	const isObjectInput =
-		typeof input === 'object' && input !== null && !isArrayInput
+		typeof input === 'object' && input !== null && !isArrayInput;
 
 	let argv = isArrayInput
 		? normalizeArgv(input)
-		: normalizeArgv(isObjectInput ? input.argv : null)
+		: normalizeArgv(isObjectInput ? input.argv : null);
 
-	let entry = typeof input === 'string' ? input : ''
+	let entry = typeof input === 'string' ? input : '';
 
 	const code =
-		isObjectInput && typeof input.code === 'string' ? input.code : null
+		isObjectInput && typeof input.code === 'string' ? input.code : null;
 
 	if (code) {
-		globalFs.mkdirSync('/tmp', { recursive: true })
-		const tempPath = `/tmp/file-${Date.now()}.cjs`
-		globalFs.writeFileSync(tempPath, code)
-		entry = tempPath
+		globalFs.mkdirSync('/tmp', { recursive: true });
+		const tempPath = `/tmp/file-${Date.now()}.cjs`;
+		globalFs.writeFileSync(tempPath, code);
+		entry = tempPath;
 		if (!argv) {
-			argv = ['node', tempPath]
+			argv = ['node', tempPath];
 		} else if (argv.length === 0) {
-			argv = ['node', tempPath]
+			argv = ['node', tempPath];
 		} else if (argv.length === 1) {
-			argv = [argv[0], tempPath]
+			argv = [argv[0], tempPath];
 		} else {
-			argv[1] = tempPath
+			argv[1] = tempPath;
 		}
 	}
 
 	if (!entry && argv) {
-		entry = ensureEntryFromArgv(argv)
+		entry = ensureEntryFromArgv(argv);
 	}
 
 	if (!entry) {
-		throw new Error('runMain: unable to determine entry script path.')
+		throw new Error('runMain: unable to determine entry script path.');
 	}
 
 	if (argv) {
-		const processObj = globalThis.process
+		const processObj = globalThis.process;
 		if (processObj && Array.isArray(processObj.argv)) {
-			processObj.argv = [...argv]
+			processObj.argv = [...argv];
 		}
 	}
 
-	globalThis.coreModules.module.initializeCJS(entry)
-	return globalThis.coreModules.module.Module.runMain(entry)
+	globalThis.coreModules.module.initializeCJS(entry);
+	return globalThis.coreModules.module.Module.runMain(entry);
 }
 
-globalThis.setImmediate = setTimeout
+globalThis.setImmediate = setTimeout;
 
-globalThis.coreModules.fs.realpath.native = globalThis.coreModules.fs.realpath //globalThis.internalModules.fs.realpathSync;
+globalThis.coreModules.fs.realpath.native = globalThis.coreModules.fs.realpath; //globalThis.internalModules.fs.realpathSync;
 globalThis.coreModules.fs.lutimes = function (
 	path,
 	atime,
@@ -3399,107 +3411,177 @@ globalThis.coreModules.fs.lutimes = function (
 ) {
 	return maybePromiseFromSync(() => {
 		// Update timestamps on symlink itself if symlink; otherwise behave like utimes
-		const { node } = globalFs.walk(path)
+		const { node } = globalFs.walk(path);
 		if (!node) {
 			const error = new Error(
 				`ENOENT: no such file or directory, lutimes '${path}'`
-			)
-			error.code = 'ENOENT'
-			throw error
+			);
+			error.code = 'ENOENT';
+			throw error;
 		}
 		if (node.type !== 'symlink') {
 			// If not a symlink, match Node: apply to target file
-			return globalFs.utimesSync(path, atime, mtime)
+			return globalFs.utimesSync(path, atime, mtime);
 		}
 		// For symlink, store times on the link node
-		node.atime = atime
-		node.mtime = mtime
-		node.ctime = Date.now()
-	}, kUsePromises)
-}
+		node.atime = atime;
+		node.mtime = mtime;
+		node.ctime = Date.now();
+	}, kUsePromises);
+};
 
-const timeouts = new Map()
-const originalSetTimeout = globalThis.setTimeout
-const originalClearTimeout = globalThis.clearTimeout
+const timeouts = new Map();
+const originalSetTimeout = globalThis.setTimeout;
+const originalClearTimeout = globalThis.clearTimeout;
 
 globalThis.setTimeout = (callback, after, ...args) => {
 	// Start the timeout immediately
-	const timeoutId = originalSetTimeout(callback, after, ...args)
+	const timeoutId = originalSetTimeout(callback, after, ...args);
 
 	// Create a timeout object that mimics Node.js behavior
 	const timeoutObj = {
 		_id: timeoutId,
 		_unrefd: false,
 		unref() {
-			this._unrefd = true
-			return this
+			this._unrefd = true;
+			return this;
 		},
 		ref() {
-			this._unrefd = false
-			return this
+			this._unrefd = false;
+			return this;
 		},
 		hasRef() {
-			return !this._unrefd
+			return !this._unrefd;
 		},
-	}
+	};
 
 	// Store the mapping for clearTimeout
-	timeouts.set(timeoutObj, timeoutId)
+	timeouts.set(timeoutObj, timeoutId);
 
-	return timeoutObj
-}
+	return timeoutObj;
+};
 
 globalThis.clearTimeout = (timeout) => {
 	if (timeout && typeof timeout === 'object' && timeouts.has(timeout)) {
 		// Handle our custom timeout objects
-		const timeoutId = timeouts.get(timeout)
-		timeouts.delete(timeout)
-		return originalClearTimeout(timeoutId)
+		const timeoutId = timeouts.get(timeout);
+		timeouts.delete(timeout);
+		return originalClearTimeout(timeoutId);
 	} else {
 		// Handle regular timeout IDs (for compatibility)
-		return originalClearTimeout(timeout)
+		return originalClearTimeout(timeout);
 	}
-}
+};
 
-const intervals = new Map()
-const originalSetInterval = globalThis.setInterval
-const originalClearInterval = globalThis.clearInterval
+const intervals = new Map();
+const originalSetInterval = globalThis.setInterval;
+const originalClearInterval = globalThis.clearInterval;
 
 globalThis.setInterval = (callback, interval, ...args) => {
 	// Start the interval immediately
-	const intervalId = originalSetInterval(callback, interval, ...args)
+	const intervalId = originalSetInterval(callback, interval, ...args);
 
 	// Create an interval object that mimics Node.js behavior
 	const intervalObj = {
 		_id: intervalId,
 		_unrefd: false,
 		unref() {
-			this._unrefd = true
-			return this
+			this._unrefd = true;
+			return this;
 		},
 		ref() {
-			this._unrefd = false
-			return this
+			this._unrefd = false;
+			return this;
 		},
 		hasRef() {
-			return !this._unrefd
+			return !this._unrefd;
 		},
-	}
+	};
 
 	// Store the mapping for clearInterval
-	intervals.set(intervalObj, intervalId)
+	intervals.set(intervalObj, intervalId);
 
-	return intervalObj
-}
+	return intervalObj;
+};
 
 globalThis.clearInterval = (interval) => {
 	if (interval && typeof interval === 'object' && intervals.has(interval)) {
 		// Handle our custom interval objects
-		const intervalId = intervals.get(interval)
-		intervals.delete(interval)
-		return originalClearInterval(intervalId)
+		const intervalId = intervals.get(interval);
+		intervals.delete(interval);
+		return originalClearInterval(intervalId);
 	} else {
 		// Handle regular interval IDs (for compatibility)
-		return originalClearInterval(interval)
+		return originalClearInterval(interval);
 	}
+};
+
+// Instantiate the process global
+const streamModule = globalThis.coreModules?.stream;
+if (!streamModule) {
+	throw new Error('stream module is not available');
 }
+// @TODO: A better way of connecting a TTY stream
+const { Writable, Readable } = streamModule;
+
+const stdin = new Readable();
+stdin.fd = 0;
+processController.stdin.on('data', (chunk) => {
+	try {
+		stdin.write(chunk);
+	} catch (error) {
+		console.error('Error writing to stdin:', error);
+	}
+});
+processController.stdin.on('end', () => {
+	stdin.end();
+});
+
+const stdout = new (class Stdout extends Writable {
+	constructor() {
+		super();
+		this.fd = 1;
+	}
+	write(chunk) {
+		try {
+			processController.stdout.write(chunk);
+		} catch (error) {
+			console.error('Error writing to stdout:', error);
+		}
+	}
+})();
+
+stdout.on('finish', () => {
+	processController.stdout.end();
+});
+
+const stderr = new (class Stderr extends Writable {
+	constructor() {
+		super();
+		this.fd = 2;
+	}
+	write(chunk) {
+		setTimeout(() => {
+			try {
+				processController.stderr.write(chunk);
+			} catch (error) {
+				console.error('Error writing to stderr:', error);
+			}
+		});
+	}
+})();
+
+stderr.on('finish', () => {
+	processController.stderr.end();
+});
+
+globalThis.process.initProcess({
+	args: processController.argv(),
+	cwd: processController.cwd(),
+	exit: (code) => {
+		globalThis.processController.exit(code);
+	},
+	stdin,
+	stdout,
+	stderr,
+});

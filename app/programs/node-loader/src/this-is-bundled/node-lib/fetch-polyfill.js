@@ -1,4 +1,4 @@
-import undici from '../../../../deps/undici/undici.js';
+import undici from '../../../node/deps/undici/undici.js';
 
 const {
     Request: NodeRequest,

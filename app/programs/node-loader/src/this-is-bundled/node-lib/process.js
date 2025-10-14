@@ -19,15 +19,8 @@ const execPath = '/bin/node';
 // ESM exports for process methods
 const exit = (code) => {
 	console.log('exit', { code });
-	let message = '';
-	if (code instanceof Error) {
-		message = code.message;
-	} else {
-		message = `process.exit(${code ?? 0}) called code ${code ?? 0}`;
-	}
 	emit('exit', code ?? 0);
-	console.log(message);
-	self.close();
+	exitFn(code ?? 0);
 };
 
 const abort = () => {
@@ -188,6 +181,9 @@ const emit = (event, ...args) => {
 			listener(...args);
 		} catch (e) {
 			console.error(`Error in ${event} listener:`, e);
+			console.trace(e);
+			console.log(...args)
+			debugger;
 		}
 	});
 	return listeners.length > 0;
@@ -307,12 +303,14 @@ const features = {
 	openssl_is_boringssl: false,
 }
 
+let exitFn = () => {};
 const initProcess = ({
 	args,
 	cwd,
 	stdin,
 	stdout,
 	stderr,
+	exit,
 }) => {
 	module.exports.argv = [...args];
 	module.exports.argc = args.length;
@@ -322,6 +320,7 @@ const initProcess = ({
 	module.exports.stdin.setEncoding("utf-8");
 	module.exports.stdin.resume();
 	currentDirectory = cwd;
+	exitFn = exit;
 };
 
 function binding(name) {

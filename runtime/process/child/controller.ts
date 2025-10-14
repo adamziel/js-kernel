@@ -26,6 +26,22 @@ import {
 	type SpawnSyncClient,
 } from '../spawn-sync/client.ts'
 
+
+// Error handling
+// Preserve the original console for easier debugging and error logging.
+// @TODO: How to balance having stderr with direct console access?
+globalThis.originalConsole = globalThis.console
+// Handle uncaught exceptions
+globalThis.addEventListener('error', (errorEvent) => {
+	globalThis.originalConsole.error('uncaughtException', errorEvent)
+});
+
+// Handle unhandled promise rejections
+globalThis.addEventListener('unhandledrejection', (rejectionEvent) => {
+	globalThis.originalConsole.error(rejectionEvent);
+});
+
+
 export type { StdioMode } from '../spawn-options.ts'
 
 // Request kernel message ports from parent
@@ -494,23 +510,26 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 		fs: fsClient!.async,
 		fsSync: fsClient!.sync,
 		exit(code: number) {
-			if (controlPort) {
-				try {
-					controlPort.postMessage({
-						type: CONTROL_MESSAGE_PROCESS_EXIT,
-						pid: childProcessState?.pid ?? 0,
-						code,
-					})
-				} catch {
-					// Ignore failures when notifying kernel about exit.
+			// Give all the streams and async actions chance to flush.
+			setTimeout(() => {
+				if (controlPort) {
+					try {
+						controlPort.postMessage({
+							type: CONTROL_MESSAGE_PROCESS_EXIT,
+							pid: childProcessState?.pid ?? 0,
+							code,
+						})
+					} catch {
+						// Ignore failures when notifying kernel about exit.
+					}
 				}
-			}
 
-			cleanupControlPort('process exiting')
-			stdioStreams?.stdout.end()
-			stdioStreams?.stderr.end()
-			self.postMessage({ type: 'exit', data: code })
-			self.close()
+				cleanupControlPort('process exiting')
+				stdioStreams?.stdout.end()
+				stdioStreams?.stderr.end()
+				self.postMessage({ type: 'exit', data: code })
+				self.close()
+			});
 		},
 	}
 
@@ -521,8 +540,6 @@ export function redirectConsoleToStdio(isDebug: boolean) {
 	if (!stdioStreams) {
 		throw new Error('installStdIo called before initChildProcess')
 	}
-
-	const originalConsole = globalThis.console
 
 	;(globalThis as any).__webPolyfillsOriginalConsole = originalConsole
 
