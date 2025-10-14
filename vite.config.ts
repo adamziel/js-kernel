@@ -14,6 +14,9 @@ export default defineConfig({
 			'Cross-Origin-Opener-Policy': 'same-origin',
 			'Cross-Origin-Embedder-Policy': 'require-corp',
 		},
+		fs: {
+			allow: ['../'],
+		},
 	},
 	preview: {
 		headers: {
@@ -27,6 +30,15 @@ export default defineConfig({
 		},
 		extensions: ['.ts', '.js'],
 	},
+	assetsInclude: [/\.dat$/, /\.wasm$/],
+	optimizeDeps: {
+		esbuildOptions: {
+			loader: {
+				'.dat': 'file',
+				'.wasm': 'file',
+			},
+		},
+	},
 	worker: {
 		format: 'es',
 	},
@@ -34,8 +46,17 @@ export default defineConfig({
 		target: 'esnext',
 	},
 	build: {
+		outDir: path.resolve(workspaceRoot, 'dist'),
 		target: 'esnext',
 		sourcemap: true,
+		emptyOutDir: true,
+		rollupOptions: {
+			input: {
+				index: path.resolve(appRoot, 'index.html'),
+				'main-app': path.resolve(appRoot, 'main-app.ts'),
+				'php-loader': path.resolve(appRoot, 'programs/php-loader.ts'),
+			},
+		},
 	},
 })
 

@@ -667,7 +667,7 @@ const startProgram = async (options: ChildProcessInitOptions) => {
 		 * 
 		 * Let's go with import() and re-evaluate this decision later if needed
 		 */
-		await import(dataUrl)
+		await import(/* @vite-ignore */dataUrl)
 	} catch (error) {
 		reportProgramError(error)
 	} finally {
