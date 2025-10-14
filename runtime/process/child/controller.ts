@@ -510,6 +510,7 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 		fs: fsClient!.async,
 		fsSync: fsClient!.sync,
 		exit(code: number) {
+			console.log('processController.exit', { code })
 			// Give all the streams and async actions chance to flush.
 			setTimeout(() => {
 				if (controlPort) {

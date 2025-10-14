@@ -254,9 +254,6 @@ const versions = {
 	libheif: '1.16.2',
 	libopenjpeg: '2.5.0',
 	libraw: '0.21.1',
-	libheif: '1.16.2',
-	libopenjpeg: '2.5.0',
-	libraw: '0.21.1',
 };
 
 on('output.standard', (data) => {

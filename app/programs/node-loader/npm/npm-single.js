@@ -93793,11 +93793,8 @@ var require_npm2 = __commonJS({
           process.env.npm_command = this.command;
         }
         if (this.config.get("usage")) {
-          console.log('exec 1()');
           return output.standard(command.usage);
         }
-        console.log('exec 2()');
-        debugger;
         let execWorkspaces = false;
         const hasWsConfig = this.config.get("workspaces") || this.config.get("workspace").length;
         const implicitWs = this.config.get("workspace", "default").length;

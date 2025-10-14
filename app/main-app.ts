@@ -42,6 +42,7 @@ kernel.writeFileSync('/bin/node_modules/node-gyp/bin/node-gyp.js', '', { mode: 0
 // 	console.log('Hello from Node.js inside the kernel, here is the list of top-level files:');
 // 	const fs = require('fs');
 // 	console.log(fs.readdirSync('/'));
+//  process.exit(0);
 // 	`,
 // 	{ mode: 0o755 }
 // )

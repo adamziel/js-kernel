@@ -3280,15 +3280,17 @@ globalThis.internalModules.worker.Worker = class WorkerImplementation extends (
 		super();
 
 		// TODO: pass through all the events etc
-		console.log("SPAWNING NODE PROCESS");
-		this.spawnedNodeProcess = globalThis.processController.spawnNodeProcess({
-			argv,
-			env: envVariables,
-			cwd: '/',
-			columns: 80,
-			rows: 24,
-			name: name,
-		});
+		console.log('SPAWNING NODE PROCESS');
+		this.spawnedNodeProcess = globalThis.processController.spawnNodeProcess(
+			{
+				argv,
+				env: envVariables,
+				cwd: '/',
+				columns: 80,
+				rows: 24,
+				name: name,
+			}
+		);
 	}
 };
 
@@ -3480,29 +3482,32 @@ if (!streamModule) {
 // @TODO: A better way of connecting a TTY stream
 const { Writable, Readable } = streamModule;
 
-const stdin = new Readable();
-stdin.fd = 0;
-processController.stdin.on('data', (chunk) => {
-	try {
-		stdin.write(chunk);
-	} catch (error) {
-		console.error('Error writing to stdin:', error);
+const stdin = new (class extends Readable {
+	constructor() {
+		super({ objectMode: true });
+		this.fd = 0;
+		processController.stdin.on('end', () => {
+			this.end();
+		});
 	}
-});
-processController.stdin.on('end', () => {
-	stdin.end();
-});
+	read(size) {
+		console.log('read', size);
+		return processController.stdin.read(size);
+	}
+})();
 
 const stdout = new (class Stdout extends Writable {
 	constructor() {
-		super();
+		super({ objectMode: true });
 		this.fd = 1;
 	}
-	write(chunk) {
+	_write(chunk, encoding, callback) {
 		try {
 			processController.stdout.write(chunk);
+			callback();
 		} catch (error) {
 			console.error('Error writing to stdout:', error);
+			callback(error);
 		}
 	}
 })();
@@ -3513,17 +3518,17 @@ stdout.on('finish', () => {
 
 const stderr = new (class Stderr extends Writable {
 	constructor() {
-		super();
+		super({ objectMode: true });
 		this.fd = 2;
 	}
-	write(chunk) {
-		setTimeout(() => {
-			try {
-				processController.stderr.write(chunk);
-			} catch (error) {
-				console.error('Error writing to stderr:', error);
-			}
-		});
+	_write(chunk, encoding, callback) {
+		try {
+			processController.stderr.write(chunk);
+			callback();
+		} catch (error) {
+			console.error('Error writing to stderr:', error);
+			callback(error);
+		}
 	}
 })();
 

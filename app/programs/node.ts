@@ -26,16 +26,19 @@ const createProgramSource = (): string => {
 				/* @vite-ignore */ urls.nodeLoaderUrl
 			)
 			const runtime = await loadNode()
-			const argv =
-				typeof processController.argv === 'function'
-					? processController.argv()
-					: []
 			await runtime.runMain()
-			exitSafely(0)
+			// We can't just exit for the process – this would kill it
+			// even when it starts async work, e.g. npm install.
+			// We also can't not exit for the process – this would keep it
+			// running even when there's no more work to do.
+			// @TODO: How can we ensure all the Node scripts exit at the
+			//        end once there's no more pending timers or sockets?
+			// exitSafely(0)
 		} catch (error) {
 			console.trace(error);
 			writeStderr(`node: <internal>: ${errorToString(error)}`)
-			exitSafely(1)
+			// See above.
+			// exitSafely(1)
 		}
 	}
 

@@ -56,6 +56,7 @@ interface WritableEvents {
 }
 
 export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents> {
+	private buffer: KernelStdioChunk[] = []
 	private readonly handleMessage = (event: MessageEvent) => {
 		const payload = event.data
 		if (!payload || typeof payload !== 'object') {
@@ -63,6 +64,7 @@ export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents>
 		}
 		if (payload.type === 'data') {
 			this.emit('data', payload.payload)
+			this.buffer.push(payload.payload)
 		} else if (payload.type === 'end') {
 			this.emit('end', undefined as unknown as void)
 			this.close()
@@ -77,6 +79,17 @@ export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents>
 		super()
 		port.addEventListener('message', this.handleMessage)
 		port.start()
+	}
+
+	/**
+	 * @TODO: Implement a blocking read() method that will wait for the next
+	 *        stdin chunk or the end of the stream.
+	 */
+	read() {
+		if(!this.buffer.length) {
+			return null;
+		}
+		return this.buffer.shift()
 	}
 
 	close() {
