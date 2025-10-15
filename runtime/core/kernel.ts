@@ -38,6 +38,9 @@ export interface SpawnOptions {
 	name: string
 	debug?: boolean
 	stdio?: SpawnStdioOptions
+	ipcPort?: MessagePort | null
+	workerThreadId?: number
+	workerThreadName?: string
 }
 
 export const enum ExitCode {
@@ -72,6 +75,10 @@ interface PreparedSpawnResources {
 		kernelPort: MessagePort
 		processPort: MessagePort
 	}
+	message?: {
+		parentPort: MessagePort | null
+		workerPort: MessagePort | null
+	}
 }
 
 interface KernelProcessRecord {
@@ -81,6 +88,9 @@ interface KernelProcessRecord {
 	controlPort: MessagePort
 	fsPort: MessagePort
 	spawnSyncPort: MessagePort
+	messagePort?: MessagePort | null
+	threadId?: number
+	threadName?: string
 	children: Set<number>
 	hostType: 'kernel' | 'process'
 	hostPid: number | null
@@ -103,6 +113,9 @@ export interface KernelSubprocessExtras {
 	stdin?: MessagePortWritableStream
 	stdout?: MessagePortReadableStream
 	stderr?: MessagePortReadableStream
+	messagePort?: MessagePort | null
+	threadId?: number
+	threadName?: string
 	onExit(listener: ExitListener): void
 	offExit(listener: ExitListener): void
 	kill(): void
@@ -249,12 +262,22 @@ export class Kernel extends InMemoryFileSystem {
 
 		const controlChannel = new MessageChannel()
 		const fsChannel = new MessageChannel()
-		const spawnSyncChannel = new MessageChannel()
+	const spawnSyncChannel = new MessageChannel()
+	let parentMessagePort: MessagePort | null = null
+	let workerMessagePort: MessagePort | null = null
 
-		return {
-			pid,
-			programPath: program.executablePath,
-			programSource: program.programSource,
+	if (options.ipcPort) {
+		workerMessagePort = options.ipcPort
+	} else {
+		const messageChannel = new MessageChannel()
+		parentMessagePort = messageChannel.port1
+		workerMessagePort = messageChannel.port2
+	}
+
+	return {
+		pid,
+		programPath: program.executablePath,
+		programSource: program.programSource,
 			stdio,
 			control: {
 				kernelPort: controlChannel.port1,
@@ -268,8 +291,15 @@ export class Kernel extends InMemoryFileSystem {
 				kernelPort: spawnSyncChannel.port1,
 				processPort: spawnSyncChannel.port2,
 			},
-		}
+			message:
+				workerMessagePort
+					? {
+							parentPort: options.ipcPort ? null : parentMessagePort,
+							workerPort: workerMessagePort,
+					  }
+					: undefined,
 	}
+}
 
 	private createKernelHostedProcess(
 		options: SpawnOptions,
@@ -314,16 +344,26 @@ export class Kernel extends InMemoryFileSystem {
 			}
 		}
 
-		const worker = createProcessWorker()
+		if (resources.message?.workerPort) {
+			transferList.push(resources.message.workerPort)
+		}
 
-		let exitCode: number | null = null
-		const exitListeners = new Set<ExitListener>()
+	const worker = createProcessWorker()
 
-		const subprocess = Object.assign(worker, {
-			pid: resources.pid,
-			stdin: parentStdin,
-			stdout: parentStdout,
-			stderr: parentStderr,
+	const threadId = options.workerThreadId ?? resources.pid
+	const threadName = options.workerThreadName ?? options.name ?? `worker-${resources.pid}`
+
+	let exitCode: number | null = null
+	const exitListeners = new Set<ExitListener>()
+
+	const subprocess = Object.assign(worker, {
+		pid: resources.pid,
+		stdin: parentStdin,
+		stdout: parentStdout,
+		stderr: parentStderr,
+		messagePort: resources.message?.parentPort ?? null,
+		threadId,
+		threadName,
 			onExit: (listener: ExitListener) => {
 				exitListeners.add(listener)
 			},
@@ -338,13 +378,16 @@ export class Kernel extends InMemoryFileSystem {
 			},
 		}) as KernelSubprocess
 
-		const record: KernelProcessRecord = {
-			pid: resources.pid,
-			parentPid: null,
-			name: options.name,
-			controlPort: resources.control.kernelPort,
-			fsPort: resources.fs.kernelPort,
-			spawnSyncPort: resources.spawnSync.kernelPort,
+	const record: KernelProcessRecord = {
+		pid: resources.pid,
+		parentPid: null,
+		name: options.name,
+		controlPort: resources.control.kernelPort,
+		fsPort: resources.fs.kernelPort,
+		spawnSyncPort: resources.spawnSync.kernelPort,
+		messagePort: resources.message?.parentPort ?? null,
+		threadId,
+		threadName,
 			children: new Set<number>(),
 			hostType: 'kernel',
 			hostPid: null,
@@ -369,26 +412,29 @@ export class Kernel extends InMemoryFileSystem {
 		record.fsCleanup = this.installProcessFs(record)
 		record.spawnSyncCleanup = this.installProcessSpawnSync(record)
 
-		const initMessage = {
-			type: '__kernel_internal__/initChildProcess',
-			payload: {
-				pid: resources.pid,
-				argv: [...options.argv],
-				env: { ...options.env },
-				cwd: options.cwd,
-				debug: Boolean(options.debug),
-				stdio: resources.stdio.map((descriptor) => ({
-					fd: descriptor.fd,
-					mode: descriptor.mode,
-					port: descriptor.workerPort,
-				})),
-				programPath: resources.programPath,
-				programSource: resources.programSource,
-				controlPort: resources.control.processPort,
-				fsPort: resources.fs.processPort,
-				spawnSyncPort: resources.spawnSync.processPort,
-			},
-		}
+	const initMessage = {
+		type: '__kernel_internal__/initChildProcess',
+		payload: {
+			pid: resources.pid,
+			argv: [...options.argv],
+			env: { ...options.env },
+			cwd: options.cwd,
+			debug: Boolean(options.debug),
+			stdio: resources.stdio.map((descriptor) => ({
+				fd: descriptor.fd,
+				mode: descriptor.mode,
+				port: descriptor.workerPort,
+			})),
+			programPath: resources.programPath,
+			programSource: resources.programSource,
+			controlPort: resources.control.processPort,
+			fsPort: resources.fs.processPort,
+			spawnSyncPort: resources.spawnSync.processPort,
+			messagePort: resources.message?.workerPort ?? null,
+			threadId,
+			threadName,
+		},
+	}
 
 		worker.postMessage(initMessage, transferList)
 
@@ -870,13 +916,16 @@ export class Kernel extends InMemoryFileSystem {
 			parentRecord.pid
 		)
 
-		const record: KernelProcessRecord = {
-			pid: resources.pid,
-			parentPid: parentRecord.pid,
-			name: options.name,
-			controlPort: resources.control.kernelPort,
-			fsPort: resources.fs.kernelPort,
-			spawnSyncPort: resources.spawnSync.kernelPort,
+	const record: KernelProcessRecord = {
+		pid: resources.pid,
+		parentPid: parentRecord.pid,
+		name: options.name,
+		controlPort: resources.control.kernelPort,
+		fsPort: resources.fs.kernelPort,
+		spawnSyncPort: resources.spawnSync.kernelPort,
+		messagePort: null,
+		threadId: options.workerThreadId,
+		threadName: options.workerThreadName,
 			children: new Set<number>(),
 			hostType: 'process',
 			hostPid: parentRecord.pid,
@@ -892,14 +941,17 @@ export class Kernel extends InMemoryFileSystem {
 		record.fsCleanup = this.installProcessFs(record)
 		record.spawnSyncCleanup = this.installProcessSpawnSync(record)
 
-		const response = {
-			type: CONTROL_MESSAGE_SPAWN_RESULT,
-			requestId,
-			result: {
-				pid: resources.pid,
-				programPath: resources.programPath,
-				programSource: resources.programSource,
-				stdio: resources.stdio.map((descriptor) => ({
+	const response = {
+		type: CONTROL_MESSAGE_SPAWN_RESULT,
+		requestId,
+		result: {
+			pid: resources.pid,
+			programPath: resources.programPath,
+			programSource: resources.programSource,
+			threadId: options.workerThreadId ?? resources.pid,
+			threadName:
+				options.workerThreadName ?? options.name ?? `worker-${resources.pid}`,
+			stdio: resources.stdio.map((descriptor) => ({
 					fd: descriptor.fd,
 					mode: descriptor.mode,
 					workerPort: descriptor.workerPort ?? null,
@@ -911,6 +963,12 @@ export class Kernel extends InMemoryFileSystem {
 				controlPort: resources.control.processPort,
 				fsPort: resources.fs.processPort,
 				spawnSyncPort: resources.spawnSync.processPort,
+				messagePort: resources.message
+					? {
+							workerPort: resources.message.workerPort ?? null,
+							parentPort: resources.message.parentPort ?? null,
+					  }
+					: undefined,
 			},
 		}
 
@@ -934,6 +992,12 @@ export class Kernel extends InMemoryFileSystem {
 					resources.pid
 				)
 			}
+		}
+		if (resources.message?.workerPort) {
+			transferList.push(resources.message.workerPort)
+		}
+		if (resources.message?.parentPort) {
+			transferList.push(resources.message.parentPort)
 		}
 
 		try {
@@ -969,11 +1033,17 @@ export class Kernel extends InMemoryFileSystem {
 		record.exitCode = code
 		record.setExitCode?.(code)
 
-		record.controlCleanup()
-		record.fsCleanup()
-		record.spawnSyncCleanup()
+	record.controlCleanup()
+	record.fsCleanup()
+	record.spawnSyncCleanup()
 
-		this.processes.delete(pid)
+	try {
+		record.messagePort?.close()
+	} catch {
+		// Ignore message port cleanup failures.
+	}
+
+	this.processes.delete(pid)
 
 		if (record.parentPid !== null) {
 			const parentRecord = this.processes.get(record.parentPid)

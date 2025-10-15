@@ -92,6 +92,9 @@ interface ChildProcessInitOptions {
 	controlPort: MessagePort
 	fsPort: MessagePort
 	spawnSyncPort: MessagePort
+	messagePort: MessagePort | null
+	threadId?: number
+	threadName?: string
 }
 
 interface ProcessControllerSpawnOptions {
@@ -106,6 +109,9 @@ interface ProcessControllerSpawnOptions {
 		stderr?: StdioMode
 	}
 	timeout?: number
+	ipcPort?: MessagePort
+	workerThreadId?: number
+	workerThreadName?: string
 }
 
 interface SpawnPlanMessage {
@@ -121,6 +127,12 @@ interface SpawnPlanMessage {
 	controlPort: MessagePort
 	fsPort: MessagePort
 	spawnSyncPort: MessagePort
+	messagePort?: {
+		workerPort: MessagePort | null
+		parentPort: MessagePort | null
+	}
+	threadId?: number
+	threadName?: string
 }
 
 type ExitListener = (code: number) => void
@@ -130,6 +142,9 @@ interface ChildProcessHandle {
 	stdin?: MessagePortWritableStream
 	stdout?: MessagePortReadableStream
 	stderr?: MessagePortReadableStream
+	messagePort?: MessagePort | null
+	threadId?: number
+	threadName?: string
 	onExit(listener: ExitListener): void
 	offExit(listener: ExitListener): void
 	kill(): void
@@ -426,6 +441,9 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 		...options,
 		argv: [...options.argv],
 		env: { ...options.env },
+		messagePort: options.messagePort,
+		threadId: options.threadId,
+		threadName: options.threadName,
 	}
 
 	stdioStreams?.stdin.destroy()
@@ -507,6 +525,13 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 		stdin: stdioStreams.stdin,
 		stdout: stdioStreams.stdout,
 		stderr: stdioStreams.stderr,
+		messagePort: options.messagePort ?? null,
+		threadId() {
+			return clonedOptions.threadId ?? null
+		},
+		threadName() {
+			return clonedOptions.threadName ?? null
+		},
 		fs: fsClient!.async,
 		fsSync: fsClient!.sync,
 		exit(code: number) {
@@ -535,6 +560,12 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 	}
 
 	;(globalThis as any).processController = processController
+	;(globalThis as any).__kernelProcessMessagePort =
+		options.messagePort ?? null
+	;(globalThis as any).__kernelProcessThreadId =
+		typeof options.threadId === 'number' ? options.threadId : null
+	;(globalThis as any).__kernelProcessThreadName =
+		typeof options.threadName === 'string' ? options.threadName : null
 }
 
 export function redirectConsoleToStdio(isDebug: boolean) {
@@ -717,11 +748,18 @@ function requestSpawnFromKernel(
 		pendingSpawnRequests.set(requestId, { options, resolve, reject })
 
 		try {
-			controlPort.postMessage({
-				type: CONTROL_MESSAGE_SPAWN_REQUEST,
-				requestId,
-				options,
-			})
+			const transferList: MessagePort[] = []
+			if (options.ipcPort) {
+				transferList.push(options.ipcPort)
+			}
+			controlPort.postMessage(
+				{
+					type: CONTROL_MESSAGE_SPAWN_REQUEST,
+					requestId,
+					options,
+				},
+				transferList
+			)
 		} catch (error) {
 			pendingSpawnRequests.delete(requestId)
 			reject(
@@ -771,6 +809,20 @@ function createChildProcessHandle(
 		}
 	}
 
+	if (plan.messagePort?.workerPort) {
+		transferList.push(plan.messagePort.workerPort)
+	}
+
+	const parentMessagePort =
+		plan.messagePort?.parentPort ?? null
+
+	const threadId =
+		options.workerThreadId ?? plan.threadId ?? plan.pid
+	const threadName =
+		options.workerThreadName ??
+		plan.threadName ??
+		`worker-${threadId}`
+
 	const worker = createProcessWorker()
 
 	const exitListeners = new Set<ExitListener>()
@@ -781,6 +833,9 @@ function createChildProcessHandle(
 		stdin: parentStdin,
 		stdout: parentStdout,
 		stderr: parentStderr,
+		messagePort: parentMessagePort ?? undefined,
+		threadId,
+		threadName,
 		onExit(listener: ExitListener) {
 			exitListeners.add(listener)
 		},
@@ -875,6 +930,9 @@ function createChildProcessHandle(
 			controlPort: plan.controlPort,
 			fsPort: plan.fsPort,
 			spawnSyncPort: plan.spawnSyncPort,
+			messagePort: plan.messagePort?.workerPort ?? null,
+			threadId,
+			threadName,
 		},
 	}
 
