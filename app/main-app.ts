@@ -58,9 +58,8 @@ const defaultInputCode = await defaultInputResponse.text()
 kernel.writeFileSync('/bin/default-input.js', defaultInputCode, { mode: 0o755 })
 
 // await runProgram(['node', '/bin/npm'])
-await runProgram(['node', '/bin/npm', 'install', 'cowsay'])
-// await runProgram(['cat', '/bin/package-lock.json'])
-
+await runProgram(['node', '/bin/npm', 'install', 'pnpm'])
+await runProgram(['node', '/bin/node_modules/pnpm/bin/pnpm.cjs', 'install', 'cowsay'])
 
 function runProgram(argv: string[]) {
 	const worker = kernel.spawn({

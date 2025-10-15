@@ -2197,29 +2197,7 @@ globalThis.internalModules = {
 			return 0;
 		},
 	}),
-	messaging: {
-		MessagePort: class MessagePort {
-			constructor() {
-				this.persistent = false;
-			}
-		},
-		MessageChannel: class MessageChannel {
-			constructor() {
-				this.persistent = false;
-			}
-		},
-		broadcastChannel: class broadcastChannel {
-			constructor() {
-				this.persistent = false;
-			}
-		},
-		DOMException: class DOMException {
-			constructor(message) {
-				console.trace('DOMException', { arguments });
-				this.message = message;
-			}
-		},
-	},
+	messaging: {},
 	async_wrap: {
 		constants: {},
 	},
@@ -3185,6 +3163,311 @@ globalThis.coreModules['fs'].FileHandle = fsPromises.default.FileHandle;
 const events = await import('../../dist/events.js');
 globalThis.coreModules.events = events.default;
 
+const setupMessagingBinding = () => {
+	const { EventEmitter } = events.default;
+	const symbols = globalThis.internalModules.symbols ?? {};
+	const noMessageSymbol =
+		symbols.no_message ?? Symbol.for('nodejs.internal.no_message');
+
+	const nativePortSymbol = Symbol('nativePort');
+	const startedSymbol = Symbol('started');
+	const pendingSymbol = Symbol('pendingMessages');
+	const refSymbol = Symbol('refed');
+	const closedSymbol = Symbol('closed');
+	const onMessageSymbol = Symbol('onMessageHandler');
+	const onMessageErrorSymbol = Symbol('onMessageErrorHandler');
+
+	const wrapperForNativePort = new WeakMap();
+
+	const toNativePort = (value) =>
+		value && value[nativePortSymbol] ? value[nativePortSymbol] : value;
+
+	const sanitizeTransferList = (list) => {
+		if (!Array.isArray(list)) {
+			return undefined;
+		}
+		return list
+			.map((item) => toNativePort(item))
+			.filter((item) => item != null);
+	};
+
+	class MessagePortImpl extends EventEmitter {
+		constructor(nativePort) {
+			super();
+			if (typeof globalThis.MessageChannel !== 'function') {
+				throw new Error(
+					'MessagePort is not supported in this environment'
+				);
+			}
+
+			const port =
+				nativePort instanceof globalThis.MessagePort
+					? nativePort
+					: new globalThis.MessageChannel().port1;
+
+			this[nativePortSymbol] = port;
+			this[startedSymbol] = false;
+			this[refSymbol] = true;
+			this[closedSymbol] = false;
+			this[pendingSymbol] = [];
+
+			this[onMessageSymbol] = (event) => {
+				const data = event?.data;
+				if (this[startedSymbol]) {
+					(
+						globalThis.queueMicrotask ??
+						((fn) => Promise.resolve().then(fn))
+					)(() => this.emit('message', data));
+				} else {
+					this[pendingSymbol].push({ type: 'message', data });
+				}
+			};
+			this[onMessageErrorSymbol] = (event) => {
+				const data = event?.data;
+				if (this[startedSymbol]) {
+					(
+						globalThis.queueMicrotask ??
+						((fn) => Promise.resolve().then(fn))
+					)(() => this.emit('messageerror', data));
+				} else {
+					this[pendingSymbol].push({ type: 'messageerror', data });
+				}
+			};
+
+			port.addEventListener('message', this[onMessageSymbol]);
+			port.addEventListener('messageerror', this[onMessageErrorSymbol]);
+			if (typeof port.start === 'function') {
+				port.start();
+			}
+
+			wrapperForNativePort.set(port, this);
+		}
+
+		start() {
+			if (this[closedSymbol]) {
+				return;
+			}
+			if (this[startedSymbol]) {
+				return;
+			}
+			this[startedSymbol] = true;
+			const pending = this[pendingSymbol].splice(0);
+			for (const entry of pending) {
+				(
+					globalThis.queueMicrotask ??
+					((fn) => Promise.resolve().then(fn))
+				)(() => this.emit(entry.type, entry.data));
+			}
+		}
+
+		postMessage(value, transferList) {
+			if (this[closedSymbol]) {
+				throw new Error('Cannot postMessage() on a closed MessagePort');
+			}
+			const nativeTransfer = sanitizeTransferList(transferList);
+			this[nativePortSymbol].postMessage(value, nativeTransfer);
+		}
+
+		close() {
+			if (this[closedSymbol]) {
+				return;
+			}
+			this[closedSymbol] = true;
+			try {
+				this[nativePortSymbol].removeEventListener(
+					'message',
+					this[onMessageSymbol]
+				);
+				this[nativePortSymbol].removeEventListener(
+					'messageerror',
+					this[onMessageErrorSymbol]
+				);
+			} catch {
+				// Ignore listener cleanup failures.
+			}
+			try {
+				this[nativePortSymbol].close();
+			} catch {
+				// Ignore close failures.
+			}
+			this.emit('close');
+		}
+
+		ref() {
+			this[refSymbol] = true;
+			return this;
+		}
+
+		unref() {
+			this[refSymbol] = false;
+			return this;
+		}
+
+		hasRef() {
+			return Boolean(this[refSymbol]);
+		}
+
+		drain() {
+			this.start();
+		}
+
+		stop() {
+			this[startedSymbol] = false;
+		}
+
+		dequeue() {
+			const entry = this[pendingSymbol].shift();
+			return entry ? entry.data : undefined;
+		}
+	}
+
+	const ensurePort = (port) => {
+		if (!port) {
+			throw new TypeError('MessagePort expected');
+		}
+		if (port instanceof MessagePortImpl) {
+			return port;
+		}
+		if (port instanceof globalThis.MessagePort) {
+			const existing = wrapperForNativePort.get(port);
+			return existing ?? new MessagePortImpl(port);
+		}
+		throw new TypeError('Unsupported MessagePort implementation');
+	};
+
+	class MessageChannelImpl {
+		constructor() {
+			if (typeof globalThis.MessageChannel !== 'function') {
+				throw new Error(
+					'MessageChannel is not supported in this environment'
+				);
+			}
+			const channel = new globalThis.MessageChannel();
+			this.port1 = ensurePort(channel.port1);
+			this.port2 = ensurePort(channel.port2);
+		}
+	}
+
+	class BroadcastChannelWrapper extends EventEmitter {
+		constructor(name) {
+			super();
+			if (typeof globalThis.BroadcastChannel !== 'function') {
+				throw new Error(
+					'BroadcastChannel is not supported in this environment'
+				);
+			}
+			this._channel = new globalThis.BroadcastChannel(String(name));
+			this._refed = true;
+			this._onMessage = (event) => this.emit('message', event?.data);
+			this._onMessageError = (event) =>
+				this.emit('messageerror', event?.data);
+			this._channel.addEventListener('message', this._onMessage);
+			this._channel.addEventListener(
+				'messageerror',
+				this._onMessageError
+			);
+		}
+
+		postMessage(value) {
+			this._channel.postMessage(value);
+		}
+
+		close() {
+			try {
+				this._channel.removeEventListener('message', this._onMessage);
+				this._channel.removeEventListener(
+					'messageerror',
+					this._onMessageError
+				);
+			} catch {
+				// Ignore cleanup failures.
+			}
+			this._channel.close();
+		}
+
+		ref() {
+			this._refed = true;
+			return this;
+		}
+
+		unref() {
+			this._refed = false;
+			return this;
+		}
+	}
+
+	const broadcastChannelFactory = (name) => new BroadcastChannelWrapper(name);
+
+	let deserializerFactory = null;
+
+	const setDeserializerCreateObjectFunction = (fn) => {
+		deserializerFactory = typeof fn === 'function' ? fn : null;
+	};
+
+	const structuredCloneImpl = (value, options) => {
+		const transfer = Array.isArray(options?.transfer)
+			? sanitizeTransferList(options.transfer)
+			: undefined;
+		if (typeof globalThis.structuredClone === 'function') {
+			return globalThis.structuredClone(
+				value,
+				transfer ? { transfer } : undefined
+			);
+		}
+		return JSON.parse(JSON.stringify(value));
+	};
+
+	const receiveMessageOnPortImpl = (port) => {
+		const wrapper = ensurePort(port);
+		const value = wrapper.dequeue();
+		return value === undefined ? noMessageSymbol : value;
+	};
+
+	const drainMessagePortImpl = (port) => {
+		ensurePort(port).drain();
+	};
+
+	const stopMessagePortImpl = (port) => {
+		ensurePort(port).stop();
+	};
+
+	const moveMessagePortToContextImpl = (port) => ensurePort(port);
+
+	const exposeLazyDOMExceptionProperty = (target) => {
+		if (!target || typeof target !== 'object') {
+			return;
+		}
+		if (
+			!('DOMException' in target) &&
+			typeof globalThis.DOMException === 'function'
+		) {
+			Object.defineProperty(target, 'DOMException', {
+				configurable: true,
+				enumerable: false,
+				get() {
+					return globalThis.DOMException;
+				},
+			});
+		}
+	};
+
+	return {
+		MessagePort: MessagePortImpl,
+		MessageChannel: MessageChannelImpl,
+		broadcastChannel: broadcastChannelFactory,
+		drainMessagePort: drainMessagePortImpl,
+		stopMessagePort: stopMessagePortImpl,
+		receiveMessageOnPort: receiveMessageOnPortImpl,
+		moveMessagePortToContext: moveMessagePortToContextImpl,
+		setDeserializerCreateObjectFunction,
+		structuredClone: structuredCloneImpl,
+		DOMException: globalThis.DOMException,
+		exposeLazyDOMExceptionProperty,
+	};
+};
+
+globalThis.internalModules.messaging = setupMessagingBinding();
+
 const http = await import('../../dist/http.js');
 globalThis.coreModules.http = http.default;
 
@@ -3274,14 +3557,21 @@ globalThis.internalModules.worker.Worker = class WorkerImplementation extends (
 		console.log('SPAWNING NODE PROCESS');
 		this.spawnedNodeProcess = globalThis.processController.spawnNodeProcess(
 			{
-				argv,
+				argv: [url.pathname, ...(argv ?? [])],
 				env: envVariables,
-				cwd: '/',
-				columns: 80,
-				rows: 24,
+				cwd: globalThis.processController.cwd(),
 				name: name,
 			}
 		);
+		const { port1, port2 } = new globalThis.internalModules.messaging.MessageChannel();
+		this.messagePort = port1;
+		this.messagePort.onmessage = (event) => {
+			console.log('MESSAGE FROM NODE PROCESS', event);
+		};
+		this.messagePort.postMessage({
+			type: 'message',
+			message: 'Hello from the worker thread!',
+		});
 	}
 };
 
@@ -3537,17 +3827,22 @@ globalThis.process.stdin.resume();
 const originalFetch = globalThis.fetch;
 globalThis.fetch = async (input, init) => {
 	// Check if the URL is cross-origin and needs proxying
-	let url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-	
+	let url =
+		typeof input === 'string'
+			? input
+			: input instanceof URL
+			? input.href
+			: input.url;
+
 	if (url && typeof url === 'string') {
 		try {
 			const parsedUrl = new URL(url, globalThis.location?.href);
 			const currentOrigin = globalThis.location?.origin;
-			
+
 			// If it's a cross-origin request, proxy it through our CORS proxy
 			if (currentOrigin && parsedUrl.origin !== currentOrigin) {
 				const proxyUrl = `/proxy/?url=${encodeURIComponent(url)}`;
-				
+
 				if (typeof input === 'string') {
 					input = proxyUrl;
 				} else if (input instanceof URL) {
@@ -3561,7 +3856,6 @@ globalThis.fetch = async (input, init) => {
 			console.warn('Failed to parse URL for proxy check:', error);
 		}
 	}
-	
-	return originalFetch(input, init);
 
+	return originalFetch(input, init);
 };

@@ -62,6 +62,7 @@ export type SpawnedNodeProcessHandle = {
 }
 
 export type SpawnNodeProcessOptions = {
+	argv?: string[]
 	env?: Record<string, string>
 	cwd?: string
 	columns?: number
@@ -106,7 +107,7 @@ async function bootstrapNodeRuntime(): Promise<NodeRuntime> {
 		)
 	}
 
-	ensureSpawnNodeProcess(controller)
+	globalThis.processController.spawnNodeProcess = createSpawnNodeProcess(controller);
 
 	let module;
 	try {
@@ -127,16 +128,6 @@ async function bootstrapNodeRuntime(): Promise<NodeRuntime> {
 	}
 }
 
-function ensureSpawnNodeProcess(controller: ProcessControllerLike) {
-	if (spawnProcessInitialized) {
-		return
-	}
-	if (typeof (globalThis as { spawnNodeProcess?: unknown }).spawnNodeProcess !== 'function') {
-		;(globalThis as { spawnNodeProcess: unknown }).spawnNodeProcess =
-			createSpawnNodeProcess(controller)
-	}
-	spawnProcessInitialized = true
-}
 
 function createSpawnNodeProcess(controller: ProcessControllerLike) {
 	let counter = 0
@@ -146,7 +137,7 @@ function createSpawnNodeProcess(controller: ProcessControllerLike) {
 		options: SpawnNodeProcessOptions = {}
 	): Promise<SpawnedNodeProcessHandle> {
 		try {
-			const argv = sanitizeArgv(options?.argvInput)
+			const argv = sanitizeArgv(options?.argv)
 			if (argv.length === 0) {
 				throw new Error(
 					'spawnNodeProcess: argv must be a non-empty array of strings'
