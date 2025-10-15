@@ -22,6 +22,42 @@ kernel.mkdirSync('/bin/node_modules/node-gyp/bin', { recursive: true })
 kernel.writeFileSync('/bin/node_modules/node-gyp/package.json', '{}', { mode: 0o755 })
 kernel.writeFileSync('/bin/node_modules/node-gyp/bin/node-gyp.js', '', { mode: 0o755 })
 
+// Shell fun
+
+const worker = await kernel.spawn({
+	argv: ['tty-shell'],
+	env: {},
+	cwd: '/bin',
+	name: 'tty-shell',
+	stdio: {
+		stdin: 'pipe',
+		stdout: 'pipe',
+		stderr: 'pipe',
+	},
+	debug: true,
+});
+console.log({worker})
+if(typeof worker === 'number') {
+	throw new Error('Failed to spawn program');
+}
+self.addEventListener('message', (event) => {
+	if (event.data.type === 'stdin') {
+		console.log('input', event.data.data)
+		worker.stdin!.write(event.data.data);
+	}
+});
+worker.stdout!.on('data', (data) => {
+	self.postMessage({ type: 'stdout', data: data });
+});
+worker.stderr!.on('data', (data) => {
+	self.postMessage({ type: 'stderr', data: data });
+});
+worker.onExit((code) => {
+	self.postMessage({ type: 'exit', data: code });
+});
+
+
+
 // kernel.writeFileSync(
 // 	`/my-script.sh`,
 // 	// `echo "Hello, world from a script!"`,
@@ -57,7 +93,6 @@ const defaultInputResponse = await fetch('/programs/node-loader/npm/default-inpu
 const defaultInputCode = await defaultInputResponse.text()
 kernel.writeFileSync('/bin/default-input.js', defaultInputCode, { mode: 0o755 })
 
-// await runProgram(['node', '/bin/npm'])
 await runProgram(['node', '/bin/npm', 'install', 'pnpm'])
 await runProgram(['node', '/bin/node_modules/pnpm/bin/pnpm.cjs', 'install', 'cowsay'])
 

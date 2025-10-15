@@ -15,6 +15,7 @@ import { cdProgramSource } from './cd.ts'
 import { shProgramSource } from './sh.ts'
 import { type Kernel } from '../index.ts'
 import { joinPaths } from '../util/paths.ts'
+import { ttyShellProgramSource } from './tty-shell.ts'
 
 export const busyboxPrograms: Record<string, string> = {
 	ls: lsProgramSource,
@@ -32,6 +33,7 @@ export const busyboxPrograms: Record<string, string> = {
 	pwd: pwdProgramSource,
 	cd: cdProgramSource,
 	sh: shProgramSource,
+	'tty-shell': ttyShellProgramSource,
 }
 
 export type BusyboxProgramName = keyof typeof busyboxPrograms

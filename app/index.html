@@ -4,25 +4,105 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Kernel Demo</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #000;
+            font-family: monospace;
+        }
+        #terminal {
+            width: 100vw;
+            height: 100vh;
+        }
+    </style>
 </head>
 <body>
-    <h1>Kernel Demo</h1>
-    <div id="output"></div>
+    <div id="terminal"></div>
     
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
     <script type="module">
+        // Initialize xterm.js
+        const term = new Terminal({
+            cursorBlink: true,
+            fontSize: 14,
+            fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+            theme: {
+                background: '#1e1e1e',
+                foreground: '#d4d4d4',
+                cursor: '#ffffff',
+                black: '#000000',
+                red: '#cd3131',
+                green: '#0dbc79',
+                yellow: '#e5e510',
+                blue: '#2472c8',
+                magenta: '#bc3fbc',
+                cyan: '#11a8cd',
+                white: '#e5e5e5',
+                brightBlack: '#666666',
+                brightRed: '#f14c4c',
+                brightGreen: '#23d18b',
+                brightYellow: '#f5f543',
+                brightBlue: '#3b8eea',
+                brightMagenta: '#d670d6',
+                brightCyan: '#29b8db',
+                brightWhite: '#e5e5e5'
+            }
+        });
+        
+        term.open(document.getElementById('terminal'));
+        
+        // Initialize worker
         const worker = new Worker('./main-app.ts', {
             type: 'module'
         });
         
+        // Callback for every keystroke - raw input sent directly to shell
+        term.onData((data) => {
+            // Send raw keystroke to worker's stdin
+            worker.postMessage({ 
+                type: 'stdin', 
+                data: data 
+            });
+        });
+        
+        // Handle messages from worker
         worker.addEventListener('message', (event) => {
-            console.log('Worker message:', event.data);
+            const { type, data } = event.data;
+            
+            if (type === 'stdout') {
+                // Raw terminal output from shell - write directly
+                console.log('Raw terminal output:', {data});
+                term.write(data);
+            } else if (type === 'stderr') {
+                // Command submitted for execution
+                console.log('Command to execute:', data);
+                // TODO: Execute command and send results back
+                // For now, just acknowledge
+                worker.postMessage({ 
+                    type: 'stdout', 
+                    data: `Executed: ${data}\r\n` 
+                });
+            }
         });
         
         worker.addEventListener('error', (error) => {
             console.error('Worker error:', error);
+            term.write(`\r\n\x1b[31mError: ${error.message}\x1b[0m\r\n`);
         });
         
+        // Start the worker
         worker.postMessage({ type: 'start' });
+        
+        // API for feeding shell responses
+        window.writeToShell = (data) => {
+            worker.postMessage({ type: 'stdout', data });
+        };
+        
+        // Make terminal and worker available globally for debugging
+        window.term = term;
+        window.worker = worker;
     </script>
 </body>
 </html>
