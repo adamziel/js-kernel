@@ -80,7 +80,7 @@ class TestCases {
 			const worker = new Worker('/worker.js');
 			console.log('Hello 2 from script');
 			worker.on('message', (message) => {
-				console.log('message', message);
+				console.log('parent message listener:', message);
 			});
 			worker.on('error', (error) => {
 				console.log('error', error);
@@ -88,10 +88,13 @@ class TestCases {
 			setTimeout(() => {
 				worker.postMessage('Message from the parent – after 100ms');
 			}, 100);
+			setTimeout(() => {
+				worker.postMessage('Message from the parent – after 500ms');
+			}, 500);
 			worker.postMessage('Message from the parent');
 			setTimeout(() => {
 				process.exit(0);
-			}, 1000);
+			}, 2000);
 			`,
 			{ mode: 0o755 }
 		);
@@ -102,13 +105,13 @@ class TestCases {
 			console.log('Hello from worker');
 			const { parentPort } = require('worker_threads');
 			parentPort.on('message', (message) => {
-				console.log('message', message);
+				console.log('worker message listener: ', message);
 			});
-			// parentPort.postMessage('Message from the worker');
+			parentPort.postMessage('Message from the worker');
 			console.log('Hello 2 from worker');
 			setTimeout(() => {
 				process.exit(0);
-			}, 2000);
+			}, 4000);
 			`,
 			{ mode: 0o755 }
 		);

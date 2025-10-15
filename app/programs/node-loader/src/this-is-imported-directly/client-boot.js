@@ -4002,10 +4002,18 @@ const createWorkerThreadsPolyfill = () => {
 			}
 			return result;
 		};
+		const extractMessagePayload = (event) => {
+			if (event && typeof event === 'object' && 'data' in event) {
+				// DOM MessageEvent-style payload
+				return event.data;
+			}
+			// Node-style EventEmitter payload passes the value directly
+			return event;
+		};
 		const handleMessage = (event) =>
-			emitter.emit('message', wrapIncoming(event?.data));
+			emitter.emit('message', wrapIncoming(extractMessagePayload(event)));
 		const handleMessageError = (event) =>
-			emitter.emit('messageerror', event?.data);
+			emitter.emit('messageerror', extractMessagePayload(event));
 		nativePort.addEventListener?.('message', handleMessage);
 		nativePort.addEventListener?.('messageerror', handleMessageError);
 		nativePort.start?.();
@@ -4439,16 +4447,40 @@ if (!streamModule) {
 // @TODO: A better way of connecting a TTY stream
 const { Writable, Readable } = streamModule;
 
-const stdin = new (class extends Readable {
+const stdin = new (class Stdin extends Readable {
+	#detachData = null;
+	#detachEnd = null;
+	#detachClose = null;
 	constructor() {
 		super({ objectMode: true });
 		this.fd = 0;
-		processController.stdin.on('end', () => {
-			this.end();
+		const source = processController.stdin;
+		if (!source || typeof source.on !== 'function') {
+			queueMicrotask(() => this.push(null));
+			return;
+		}
+		this.#detachData = source.on('data', (chunk) => {
+			this.push(chunk);
+		});
+		this.#detachEnd = source.on('end', () => {
+			this.push(null);
+		});
+		this.#detachClose = source.on('close', () => {
+			this.destroy();
 		});
 	}
-	read(size) {
-		return processController.stdin.read(size);
+	_read(_size) {
+		// Data is pushed via processController stdin events.
+	}
+	_destroy(err, callback) {
+		try {
+			this.#detachData?.();
+			this.#detachEnd?.();
+			this.#detachClose?.();
+		} catch {
+			// ignore
+		}
+		callback(err);
 	}
 })();
 
