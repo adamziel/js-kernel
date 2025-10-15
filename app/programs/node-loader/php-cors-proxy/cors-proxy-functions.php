@@ -429,3 +429,145 @@ function should_respond_with_cors_headers($host, $origin) {
         true
     );
 }
+
+/**
+ * Generate a cache key for the request
+ *
+ * @param string $url The target URL
+ * @param string $method The HTTP method
+ * @param array $headers Request headers
+ * @return string Cache key (SHA-256 hash)
+ */
+function get_cache_key($url, $method, $headers = []) {
+    // Create a deterministic string from the request parameters
+    $cache_data = [
+        'url' => $url,
+        'method' => $method,
+        'headers' => $headers
+    ];
+    return hash('sha256', json_encode($cache_data));
+}
+
+/**
+ * Get the cache directory path
+ *
+ * @return string Path to the cache directory
+ */
+function get_cache_dir() {
+    return __DIR__ . '/.httpcache';
+}
+
+/**
+ * Ensure the cache directory exists
+ *
+ * @return bool True if directory exists or was created successfully
+ */
+function ensure_cache_dir() {
+    $cache_dir = get_cache_dir();
+    if (!is_dir($cache_dir)) {
+        return mkdir($cache_dir, 0755, true);
+    }
+    return true;
+}
+
+/**
+ * Get the path to a cached response file
+ *
+ * @param string $cache_key The cache key
+ * @return string Path to the cache file
+ */
+function get_cache_file_path($cache_key) {
+    return get_cache_dir() . '/' . $cache_key . '.cache';
+}
+
+/**
+ * Get the path to a cached response headers file
+ *
+ * @param string $cache_key The cache key
+ * @return string Path to the cache headers file
+ */
+function get_cache_headers_file_path($cache_key) {
+    return get_cache_dir() . '/' . $cache_key . '.headers';
+}
+
+/**
+ * Check if a cached response exists
+ *
+ * @param string $cache_key The cache key
+ * @return bool True if cache exists
+ */
+function has_cached_response($cache_key) {
+    $cache_file = get_cache_file_path($cache_key);
+    $headers_file = get_cache_headers_file_path($cache_key);
+    return file_exists($cache_file) && file_exists($headers_file);
+}
+
+/**
+ * Serve a cached response
+ *
+ * @param string $cache_key The cache key
+ */
+function serve_cached_response($cache_key) {
+    $cache_file = get_cache_file_path($cache_key);
+    $headers_file = get_cache_headers_file_path($cache_key);
+    
+    // Read and send headers
+    $cached_headers = json_decode(file_get_contents($headers_file), true);
+    if ($cached_headers) {
+        // Set HTTP response code
+        if (isset($cached_headers['http_code'])) {
+            http_response_code($cached_headers['http_code']);
+        }
+        
+        // Send headers
+        if (isset($cached_headers['headers'])) {
+            foreach ($cached_headers['headers'] as $header) {
+                header($header, false);
+            }
+        }
+        
+        // Add cache indicator header
+        header('X-Cache: HIT');
+    }
+    
+    // Stream the cached response
+    $handle = fopen($cache_file, 'rb');
+    if ($handle) {
+        while (!feof($handle)) {
+            echo fread($handle, 8192);
+            @ob_flush();
+            @flush();
+        }
+        fclose($handle);
+    }
+}
+
+/**
+ * Save a response to cache
+ *
+ * @param string $cache_key The cache key
+ * @param string $response_data The response body
+ * @param int $http_code The HTTP response code
+ * @param array $headers Array of headers to cache
+ */
+function save_to_cache($cache_key, $response_data, $http_code, $headers) {
+    if (!ensure_cache_dir()) {
+        return false;
+    }
+    
+    $cache_file = get_cache_file_path($cache_key);
+    $headers_file = get_cache_headers_file_path($cache_key);
+    
+    // Save response body
+    file_put_contents($cache_file, $response_data);
+    
+    // Save headers and metadata
+    $cache_metadata = [
+        'http_code' => $http_code,
+        'headers' => $headers,
+        'cached_at' => time()
+    ];
+    file_put_contents($headers_file, json_encode($cache_metadata));
+    
+    return true;
+}

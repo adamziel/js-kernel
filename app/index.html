@@ -103,6 +103,10 @@
         // Make terminal and worker available globally for debugging
         window.term = term;
         window.worker = worker;
+
+        globalThis.runProgram = async (argv) => {
+            worker.postMessage({ type: 'runProgram', argv });
+        };
     </script>
 </body>
 </html>

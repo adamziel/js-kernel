@@ -78,19 +78,36 @@ define(
     get_current_script_uri($targetUrl, $_SERVER['REQUEST_URI'])
 );
 
+// Generate cache key based on request
+$requestMethod = $_SERVER['REQUEST_METHOD'];
+$cache_key = get_cache_key($targetUrl, $requestMethod, getallheaders());
+
+// Check cache for GET requests only
+if ($requestMethod === 'GET' && has_cached_response($cache_key)) {
+    serve_cached_response($cache_key);
+    exit;
+}
+
 $ch = curl_init($targetUrl);
 
 $is_chunked_response = false;
 $http_code_sent = false;
+$response_buffer = '';
+$response_headers = [];
+$response_http_code = 200;
 
-$relay_http_code_and_initial_headers_if_not_already_sent = function () use ($ch, &$http_code_sent) {
+$relay_http_code_and_initial_headers_if_not_already_sent = function () use ($ch, &$http_code_sent, &$response_http_code) {
     if (!$http_code_sent) {
         // Set the response code from the target server
         $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $response_http_code = $http_code;
         http_response_code($http_code);
 
         // For now, let's clearly avoid the possibility of stale, cached responses.
         header('Cache-Control: no-cache');
+        
+        // Add cache indicator for non-cached responses
+        header('X-Cache: MISS');
 
         $http_code_sent = true;
     }
@@ -188,7 +205,8 @@ curl_setopt(
     ) use (
         $targetUrl,
         $relay_http_code_and_initial_headers_if_not_already_sent,
-        &$is_chunked_response
+        &$is_chunked_response,
+        &$response_headers
     ) {
         @$relay_http_code_and_initial_headers_if_not_already_sent();
 
@@ -215,6 +233,7 @@ curl_setopt(
         if ($name === 'transfer-encoding' && stripos($value, 'chunked') !== false) {
             $is_chunked_response = true;
             header($header, false);
+            $response_headers[] = $header;
             return $len;
         }
 
@@ -227,6 +246,7 @@ curl_setopt(
                 CURRENT_SCRIPT_URI
             );
             header('Location: ' . $newLocation, true);
+            $response_headers[] = 'Location: ' . $newLocation;
         } else if (
             // Safari fails with "Cannot connect to the server" if we let
             // the HTTP/2 line be relayed. This proxy doesn't support HTTP/2,
@@ -248,18 +268,23 @@ curl_setopt(
             stripos($header, 'Access-Control-Allow-Headers:') !== 0
         ) {
             header($header, false);
+            $response_headers[] = $header;
         }
         return $len;
     }
 );
 
-curl_setopt($ch, CURLOPT_WRITEFUNCTION, function($curl, $data) use (&$is_chunked_response) {
+curl_setopt($ch, CURLOPT_WRITEFUNCTION, function($curl, $data) use (&$is_chunked_response, &$response_buffer, $requestMethod) {
+    // For GET requests, buffer the response for potential caching
+    if ($requestMethod === 'GET') {
+        $response_buffer .= $data;
+    }
+    
     send_response_chunk($data, $is_chunked_response);
     return strlen($data);
 });
 
-// Handle request method and data
-$requestMethod = $_SERVER['REQUEST_METHOD'];
+// Set request method
 curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $requestMethod);
 
 if ($requestMethod !== 'GET' && $requestMethod !== 'HEAD' && $requestMethod !== 'OPTIONS') {
@@ -276,6 +301,12 @@ if (!curl_exec($ch)) {
 } else {
     @$relay_http_code_and_initial_headers_if_not_already_sent();
 }
+
+// Cache the response if it's a GET request and >= 1MB
+if ($requestMethod === 'GET' && strlen($response_buffer) >= (1 * 1024 * 1024)) {
+    save_to_cache($cache_key, $response_buffer, $response_http_code, $response_headers);
+}
+
 // Close cURL session
 curl_close($ch);
 

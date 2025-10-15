@@ -3278,9 +3278,12 @@ const setupMessagingBinding = () => {
 			.filter((item) => item != null);
 	};
 
-	class MessagePortImpl extends globalThis.internalModules.event_target.EventTarget {
+	class MessagePortImpl extends events.default.EventEmitter {
 		constructor(nativePort) {
 			super();
+			this.addEventListener = this.addEventListener.bind(this);
+			this.removeEventListener = this.removeEventListener.bind(this);
+			this.dispatchEvent = this.dispatchEvent.bind(this);
 			if (typeof globalThis.MessageChannel !== 'function') {
 				throw new Error(
 					'MessagePort is not supported in this environment'
@@ -3328,6 +3331,22 @@ const setupMessagingBinding = () => {
 			}
 
 			wrapperForNativePort.set(port, this);
+		}
+
+		addEventListener(type, listener) {
+			return this.on(type, listener);
+		}
+
+		removeEventListener(type, listener) {
+			return this.off(type, listener);
+		}
+
+		dispatchEvent(event) {
+			if (!event || typeof event.type !== 'string') {
+				return false;
+			}
+			this.emit(event.type, event);
+			return true;
 		}
 
 		start() {
@@ -3908,233 +3927,329 @@ const allocateWorkerThreadId = () => {
 	return current;
 };
 
-let workerMessagingModulePromise = null;
-const loadWorkerMessagingModule = () => {
-	if (!workerMessagingModulePromise) {
-		workerMessagingModulePromise = import('../../dist/internal/worker/messaging.js');
+const workerDataFromEnv = () => {
+	if (workerBindingContext.isMainThread) {
+		return undefined;
 	}
-	return workerMessagingModulePromise;
+	try {
+		const raw = process?.env?.__KERNEL_WORKER_DATA;
+		if (raw) {
+			delete process.env.__KERNEL_WORKER_DATA;
+			return JSON.parse(raw);
+		}
+	} catch {
+		// Ignore workerData parsing issues.
+	}
+	return undefined;
 };
 
-let workerMessagingInitialized = false;
-async function initializeWorkerMessaging() {
-	if (workerBindingContext.isMainThread || workerMessagingInitialized) {
-		return;
-	}
-	const envPort = workerBindingContext.messagePort;
-	console.log({ envPort })
-	if (!envPort) {
-		workerMessagingInitialized = true;
-		return;
-	}
-	try {
-		envPort.start?.();
-	} catch {
-		// ignore environments without explicit start
-	}
-	const messaging = await loadWorkerMessagingModule();
-	const setupMainThreadPort =
-		messaging?.setupMainThreadPort ?? messaging?.default?.setupMainThreadPort;
-	if (typeof setupMainThreadPort === 'function') {
-		setupMainThreadPort(envPort);
-		workerMessagingInitialized = true;
-	}
-}
+const createWorkerThreadsPolyfill = () => {
+	let workerIdCounter =
+		workerBindingContext.threadId && workerBindingContext.threadId > 0
+			? workerBindingContext.threadId + 1
+			: 1;
 
-class WorkerImplementation extends events.default.EventEmitter {
-	#handle = null;
-	#handlePromise;
-	#pendingOperations = [];
-	#started = false;
-	#terminated = false;
-	#onExit = null;
-	#threadId;
-	#threadName;
+	const isMainThread = workerBindingContext.isMainThread;
 
-	constructor(
-		url,
-		envVariables,
-		argv,
-		resourceLimits,
-		trackUnmanagedFds,
-		isInternal,
-		name
-	) {
-		super();
-		if (
-			!globalThis.processController ||
-			typeof globalThis.processController.spawnNodeProcess !== 'function'
-		) {
-			throw new Error('worker_threads is not available in this environment');
+	const kNativePort = Symbol('nodeWorkerNativePort');
+	const portWrapperCache = new WeakMap();
+
+	const wrapMessagePortForUser = (port) => {
+		if (!port) {
+			return null;
 		}
-
-		this.invalidExecArgv = null;
-		this.invalidNodeOptions = null;
-		this.resourceLimits =
-			resourceLimits && typeof resourceLimits === 'object'
-				? { ...resourceLimits }
-				: {};
-		this.isInternal = Boolean(isInternal);
-
-		this.#threadId = allocateWorkerThreadId();
-		this.#threadName =
-			typeof name === 'string' && name.length
-				? String(name)
-				: `worker-${this.#threadId}`;
-		this.threadId = this.#threadId;
-		this.threadName = this.#threadName;
-
-		const channel = new globalThis.MessageChannel();
-		this.messagePort = ensureNodeMessagePort(channel.port1);
-		try {
-			this.messagePort.unref();
-		} catch {
-			// Ignore environments where ref/unref are no-ops.
+		const nativePort = port[kNativePort] ?? port;
+		if (portWrapperCache.has(nativePort)) {
+			return portWrapperCache.get(nativePort);
 		}
-		if (typeof this.messagePort.start === 'function') {
-			try {
-				this.messagePort.start();
-			} catch {
-				// Ignore failures to explicitly start the port.
+		const emitter = new events.default.EventEmitter();
+		const wrapIncoming = (value) => {
+			if (!value || typeof value !== 'object') {
+				return value;
 			}
-		}
-	console.log('argv', ['/bin/node', ...(argv || [])]);
-		const spawnOptions = {
-			argvInput: ['/bin/node', url.pathname, ...(argv || [])],
-			argv: ['/bin/node', url.pathname, ...(argv || [])],
-			env: envVariables || {},
-			cwd:
-				typeof globalThis.processController.cwd === 'function'
-					? globalThis.processController.cwd()
-					: '/',
-			name: this.threadName,
-			debug: Boolean(trackUnmanagedFds),
-			messagePort: channel.port2,
-			workerThreadId: this.#threadId,
-			workerThreadName: this.#threadName,
-			onExit: (info) => {
-				this.#handleExit(info.code ?? 0, null, null);
-			},
-			onError: (error) => {
-				queueMicrotask(() => this.emit('error', error));
-			},
+			if (value && value[kNativePort]) {
+				return wrapMessagePortForUser(value[kNativePort]);
+			}
+			if (typeof MessagePort !== 'undefined' && value instanceof MessagePort) {
+				return wrapMessagePortForUser(value);
+			}
+			if (Array.isArray(value)) {
+				return value.map(wrapIncoming);
+			}
+			const result = { ...value };
+			for (const key of Object.keys(result)) {
+				result[key] = wrapIncoming(result[key]);
+			}
+			return result;
 		};
 
-	this.#handlePromise = globalThis.processController
-		.spawnNodeProcess(spawnOptions)
-		.then((handle) => {
-			this.#handle = handle;
-			this.#flushPendingOperations(handle);
-			return handle;
-		})
-			.catch((error) => {
-				queueMicrotask(() => this.emit('error', error));
-				throw error;
+		const unwrapOutgoing = (value) => {
+			if (!value || typeof value !== 'object') {
+				return value;
+			}
+			if (value && value[kNativePort]) {
+				return value[kNativePort];
+			}
+			if (typeof MessagePort !== 'undefined' && value instanceof MessagePort) {
+				return value;
+			}
+			if (Array.isArray(value)) {
+				return value.map(unwrapOutgoing);
+			}
+			const result = { ...value };
+			for (const key of Object.keys(result)) {
+				result[key] = unwrapOutgoing(result[key]);
+			}
+			return result;
+		};
+		const handleMessage = (event) =>
+			emitter.emit('message', wrapIncoming(event?.data));
+		const handleMessageError = (event) =>
+			emitter.emit('messageerror', event?.data);
+		nativePort.addEventListener?.('message', handleMessage);
+		nativePort.addEventListener?.('messageerror', handleMessageError);
+		nativePort.start?.();
+		emitter.postMessage = (value, transferList) => {
+			const nativeTransfers = Array.isArray(transferList)
+				? transferList.map((item) =>
+					item && item[kNativePort] ? item[kNativePort] : item)
+				: undefined;
+			nativePort.postMessage(unwrapOutgoing(value), nativeTransfers);
+		};
+		emitter.close = () => {
+			try {
+				nativePort.removeEventListener?.('message', handleMessage);
+				nativePort.removeEventListener?.('messageerror', handleMessageError);
+			} catch {
+				// ignore
+			}
+			try {
+				nativePort.close?.();
+			} catch {
+				// ignore
+			}
+			emitter.emit('close');
+		};
+		emitter.start = () => nativePort.start?.();
+		emitter.ref = () => emitter;
+		emitter.unref = () => emitter;
+		emitter[kNativePort] = nativePort;
+		portWrapperCache.set(nativePort, emitter);
+		return emitter;
+	};
+
+	const parentPort = isMainThread
+		? null
+		: wrapMessagePortForUser(workerBindingContext.messagePort);
+
+	const workerData = workerDataFromEnv();
+	const SHARE_ENV = Symbol.for('nodejs.worker_threads.SHARE_ENV');
+
+	class Worker extends events.default.EventEmitter {
+		#port;
+		#handle = null;
+		#readyPromise;
+		#closed = false;
+		threadId;
+		threadName;
+
+		constructor(filename, options = {}) {
+			super();
+			if (typeof filename !== 'string' || filename.length === 0) {
+				throw new Error('Worker filename must be a non-empty string');
+			}
+
+			if (
+				!globalThis.processController ||
+				typeof globalThis.processController.spawnNodeProcess !== 'function'
+			) {
+				throw new Error('worker_threads is not available in this environment');
+			}
+
+			const resolvedName =
+				typeof options.name === 'string' && options.name.length
+					? options.name
+					: `worker-${workerIdCounter++}`;
+
+			const { port1, port2 } = new MessageChannel();
+			this.#port = wrapMessagePortForUser(port1);
+			this.#port.on('message', (value) => this.emit('message', value));
+			this.#port.on('messageerror', (value) =>
+				this.emit('messageerror', value)
+			);
+			this.#port.on('close', () => {
+				if (this.#closed) {
+					return;
+				}
+				this.#closed = true;
+				this.emit('exit', 0);
 			});
-	}
 
-	#flushPendingOperations(handle) {
-		for (const operation of this.#pendingOperations.splice(0)) {
-			try {
-				operation(handle);
-			} catch (error) {
-				queueMicrotask(() => this.emit('error', error));
+			const spawnEnv = {
+				...(options.env ?? {}),
+			};
+			if ('workerData' in options) {
+				try {
+					spawnEnv.__KERNEL_WORKER_DATA = JSON.stringify(options.workerData);
+				} catch {
+					// Ignore serialization errors.
+				}
 			}
-		}
-	}
 
-	#withHandle(callback) {
-		if (this.#handle) {
-			try {
-				callback(this.#handle);
-			} catch (error) {
-				queueMicrotask(() => this.emit('error', error));
+			const cwd =
+				typeof options.cwd === 'string' && options.cwd.length
+					? options.cwd
+					: typeof globalThis.processController.cwd === 'function'
+					? globalThis.processController.cwd()
+					: '/';
+
+			const stdio = {
+				stdin: options.stdin ? 'pipe' : 'ignore',
+				stdout:
+					options.stdout === false
+						? 'ignore'
+						: options.stdout === 'inherit'
+						? 'inherit'
+						: 'pipe',
+				stderr:
+					options.stderr === false
+						? 'ignore'
+						: options.stderr === 'inherit'
+						? 'inherit'
+						: 'pipe',
+			};
+
+			this.threadId = allocateWorkerThreadId();
+			this.threadName = resolvedName;
+
+			this.#readyPromise = globalThis.processController
+				.spawnNodeProcess({
+					argv: ['node', filename],
+					env: spawnEnv,
+					cwd,
+					name: resolvedName,
+					debug: Boolean(options.debug),
+					stdio,
+					messagePort: port2,
+					workerThreadId: this.threadId,
+					workerThreadName: this.threadName,
+					onExit: ({ code }) => {
+						if (this.#closed) {
+							return;
+						}
+						this.#closed = true;
+						this.emit('exit', typeof code === 'number' ? code : 0);
+					},
+					onError: (error) => {
+						queueMicrotask(() => this.emit('error', error));
+					},
+					onReady: () => {
+						queueMicrotask(() => this.emit('online'));
+					},
+				})
+				.then((handle) => {
+					this.#handle = handle;
+					this.stdin = handle.stdin ?? null;
+					this.stdout = handle.stdout ?? null;
+					this.stderr = handle.stderr ?? null;
+					return handle;
+				})
+				.catch((error) => {
+					queueMicrotask(() => this.emit('error', error));
+					throw error;
+				});
+		}
+
+		postMessage(value, transferList) {
+			this.#port.postMessage(value, transferList);
+		}
+
+		async terminate() {
+			if (this.#closed) {
+				return 0;
 			}
-			return;
-		}
-		this.#pendingOperations.push(callback);
-	}
-
-	#handleExit(code, customErr, customErrReason) {
-		if (this.#terminated) {
-			return;
-		}
-		this.#terminated = true;
-		const handler = this.#onExit;
-		if (typeof handler === 'function') {
+			this.#closed = true;
+			const exitPromise = new Promise((resolve) => {
+				this.once('exit', (code) => {
+					resolve(typeof code === 'number' ? code : 0);
+				});
+			});
 			try {
-				handler(code, customErr ?? null, customErrReason ?? null);
-			} catch (error) {
-				queueMicrotask(() => this.emit('error', error));
-			}
-		}
-	try {
-		this.messagePort?.close();
-	} catch {
-		// Ignore close failures during shutdown.
-	}
-	this.emit('exit', code);
-	}
-
-	startThread() {
-		this.#started = true;
-	}
-
-	stopThread() {
-		this.#withHandle((handle) => {
-			try {
-				handle.terminate();
+				const handle = await this.#readyPromise;
+				handle?.terminate?.();
 			} catch {
 				// Ignore termination errors.
 			}
-		});
-	}
+			return exitPromise;
+		}
 
-	terminate() {
-		this.stopThread();
-	}
+		ref() {
+			this.#port.ref?.();
+			return this;
+		}
 
-	ref() {
-		try {
-			this.messagePort?.ref();
-		} catch {
-			// ignore
+		unref() {
+			this.#port.unref?.();
+			return this;
 		}
 	}
 
-	unref() {
-		try {
-			this.messagePort?.unref();
-		} catch {
-			// ignore
+	class NodeMessageChannel {
+		constructor() {
+			const native = new MessageChannel();
+			this.port1 = wrapMessagePortForUser(native.port1);
+			this.port2 = wrapMessagePortForUser(native.port2);
 		}
 	}
 
-	get onexit() {
-		return this.#onExit;
+	function MessagePortCtor() {
+		throw new Error('MessagePort cannot be constructed directly');
 	}
+	MessagePortCtor.prototype = events.default.EventEmitter.prototype;
+	Object.defineProperty(MessagePortCtor, 'prototype', { writable: false });
 
-	set onexit(listener) {
-		this.#onExit = typeof listener === 'function' ? listener : null;
-	}
-}
+	return {
+		Worker,
+		isMainThread,
+		parentPort,
+		workerData,
+		threadId: workerBindingContext.threadId ?? 0,
+		SHARE_ENV,
+		MessageChannel: NodeMessageChannel,
+		MessagePort: MessagePortCtor,
+		BroadcastChannel: globalThis.BroadcastChannel,
+		receiveMessageOnPort: messagingBinding.receiveMessageOnPort,
+		moveMessagePortToContext: messagingBinding.moveMessagePortToContext,
+	};
+};
 
-const workerBinding = {
+const workerThreadsPolyfill = createWorkerThreadsPolyfill();
+workerThreadsPolyfill.default = workerThreadsPolyfill;
+globalThis.coreModules.worker_threads = workerThreadsPolyfill;
+globalThis.coreModules['node:worker_threads'] = workerThreadsPolyfill;
+globalThis.internalModules.worker_threads = workerThreadsPolyfill;
+globalThis.internalModules.worker = {
 	ownsProcessState: false,
-	get isMainThread() {
-		return workerBindingContext.isMainThread;
+	isMainThread: workerBindingContext.isMainThread,
+	isInternalThread: false,
+	resourceLimits: {},
+	threadId: workerBindingContext.threadId ?? 0,
+	threadName: workerBindingContext.threadName ?? 'WorkerThread',
+	createMainThreadPort() {
+		const { port1, port2 } = new MessageChannel();
+		try {
+			port1.start?.();
+		} catch {
+			// ignore
+		}
+		return port2;
 	},
-	get isInternalThread() {
-		return false;
-	},
-	get resourceLimits() {
-		return {};
-	},
-	get threadId() {
-		return workerBindingContext.threadId ?? 0;
-	},
-	get threadName() {
-		return workerBindingContext.threadName ?? 'WorkerThread';
+	destroyMainThreadPort(port) {
+		try {
+			port?.close?.();
+		} catch {
+			// ignore
+		}
 	},
 	getEnvMessagePort() {
 		if (!workerBindingContext.messagePort) {
@@ -4142,24 +4257,8 @@ const workerBinding = {
 		}
 		return workerBindingContext.messagePort;
 	},
-	kMaxYoungGenerationSizeMb: 1024,
-	kMaxOldGenerationSizeMb: 1024,
-	kCodeRangeSizeMb: 1024,
-	kStackSizeMb: 1024,
-	kTotalResourceLimitCount: 1024,
-	Worker: WorkerImplementation,
+	Worker: workerThreadsPolyfill.Worker,
 };
-
-globalThis.internalModules.worker = workerBinding;
-
-/**
- * It's important to load worker_threads after the WorkerImplementation.
- * It destructures the 'worker' internal binding at the top level and stores
- * whatever reference is there at the time. By the time the worker_threads import is finished,
- * it's too late to polyfill the 'worker' internal binding.
- */
-const workerThreads = await import('../../dist/worker_threads.js');
-globalThis.coreModules.worker_threads = workerThreads.default;
 
 const Module = await import('./module.js');
 globalThis.coreModules.module = {
@@ -4211,8 +4310,7 @@ function ensureEntryFromArgv(argv) {
 	return typeof candidate === 'string' && candidate.length ? candidate : '';
 }
 
-export async function runMain() {
-	await initializeWorkerMessaging();
+export function runMain() {
 	globalThis.coreModules.module.initializeCJS();
 	return globalThis.coreModules.module.Module.runMain();
 }
