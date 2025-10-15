@@ -3163,6 +3163,9 @@ globalThis.coreModules['fs'].FileHandle = fsPromises.default.FileHandle;
 const events = await import('../../dist/events.js');
 globalThis.coreModules.events = events.default;
 
+const event_target = await import('../../dist/internal/event_target.js');
+globalThis.internalModules.event_target = event_target.default;
+
 const setupMessagingBinding = () => {
 	const { EventEmitter } = events.default;
 	const symbols = globalThis.internalModules.symbols ?? {};
@@ -3179,6 +3182,90 @@ const setupMessagingBinding = () => {
 
 	const wrapperForNativePort = new WeakMap();
 
+	function isPlainObject(value) {
+		if (!value || typeof value !== 'object') {
+			return false;
+		}
+		const proto = Object.getPrototypeOf(value);
+		return proto === Object.prototype || proto === null;
+	}
+
+	function unwrapPortValue(value, seen = new WeakMap()) {
+		if (!value || typeof value !== 'object') {
+			return value;
+		}
+
+		if (value[nativePortSymbol]) {
+			return value[nativePortSymbol];
+		}
+
+		if (value instanceof globalThis.MessagePort) {
+			return value;
+		}
+
+		if (seen.has(value)) {
+			return seen.get(value);
+		}
+
+		if (Array.isArray(value)) {
+			const result = [];
+			seen.set(value, result);
+			for (let i = 0; i < value.length; i++) {
+				result[i] = unwrapPortValue(value[i], seen);
+			}
+			return result;
+		}
+
+		if (isPlainObject(value)) {
+			const result = {};
+			seen.set(value, result);
+			for (const [key, entry] of Object.entries(value)) {
+				result[key] = unwrapPortValue(entry, seen);
+			}
+			return result;
+		}
+
+		return value;
+	}
+
+	function wrapPortValue(value, seen = new WeakMap()) {
+		if (!value || typeof value !== 'object') {
+			return value;
+		}
+
+		if (value instanceof MessagePortImpl) {
+			return value;
+		}
+
+		if (value instanceof globalThis.MessagePort) {
+			return ensurePort(value);
+		}
+
+		if (seen.has(value)) {
+			return seen.get(value);
+		}
+
+		if (Array.isArray(value)) {
+			const result = [];
+			seen.set(value, result);
+			for (let i = 0; i < value.length; i++) {
+				result[i] = wrapPortValue(value[i], seen);
+			}
+			return result;
+		}
+
+		if (isPlainObject(value)) {
+			const result = {};
+			seen.set(value, result);
+			for (const [key, entry] of Object.entries(value)) {
+				result[key] = wrapPortValue(entry, seen);
+			}
+			return result;
+		}
+
+		return value;
+	}
+
 	const toNativePort = (value) =>
 		value && value[nativePortSymbol] ? value[nativePortSymbol] : value;
 
@@ -3191,7 +3278,7 @@ const setupMessagingBinding = () => {
 			.filter((item) => item != null);
 	};
 
-	class MessagePortImpl extends EventEmitter {
+	class MessagePortImpl extends globalThis.internalModules.event_target.EventTarget {
 		constructor(nativePort) {
 			super();
 			if (typeof globalThis.MessageChannel !== 'function') {
@@ -3212,7 +3299,7 @@ const setupMessagingBinding = () => {
 			this[pendingSymbol] = [];
 
 			this[onMessageSymbol] = (event) => {
-				const data = event?.data;
+				const data = wrapPortValue(event?.data);
 				if (this[startedSymbol]) {
 					(
 						globalThis.queueMicrotask ??
@@ -3223,7 +3310,7 @@ const setupMessagingBinding = () => {
 				}
 			};
 			this[onMessageErrorSymbol] = (event) => {
-				const data = event?.data;
+				const data = wrapPortValue(event?.data);
 				if (this[startedSymbol]) {
 					(
 						globalThis.queueMicrotask ??
@@ -3265,7 +3352,8 @@ const setupMessagingBinding = () => {
 				throw new Error('Cannot postMessage() on a closed MessagePort');
 			}
 			const nativeTransfer = sanitizeTransferList(transferList);
-			this[nativePortSymbol].postMessage(value, nativeTransfer);
+			const payload = unwrapPortValue(value);
+			this[nativePortSymbol].postMessage(payload, nativeTransfer);
 		}
 
 		close() {
@@ -3820,6 +3908,39 @@ const allocateWorkerThreadId = () => {
 	return current;
 };
 
+let workerMessagingModulePromise = null;
+const loadWorkerMessagingModule = () => {
+	if (!workerMessagingModulePromise) {
+		workerMessagingModulePromise = import('../../dist/internal/worker/messaging.js');
+	}
+	return workerMessagingModulePromise;
+};
+
+let workerMessagingInitialized = false;
+async function initializeWorkerMessaging() {
+	if (workerBindingContext.isMainThread || workerMessagingInitialized) {
+		return;
+	}
+	const envPort = workerBindingContext.messagePort;
+	console.log({ envPort })
+	if (!envPort) {
+		workerMessagingInitialized = true;
+		return;
+	}
+	try {
+		envPort.start?.();
+	} catch {
+		// ignore environments without explicit start
+	}
+	const messaging = await loadWorkerMessagingModule();
+	const setupMainThreadPort =
+		messaging?.setupMainThreadPort ?? messaging?.default?.setupMainThreadPort;
+	if (typeof setupMainThreadPort === 'function') {
+		setupMainThreadPort(envPort);
+		workerMessagingInitialized = true;
+	}
+}
+
 class WorkerImplementation extends events.default.EventEmitter {
 	#handle = null;
 	#handlePromise;
@@ -3877,9 +3998,10 @@ class WorkerImplementation extends events.default.EventEmitter {
 				// Ignore failures to explicitly start the port.
 			}
 		}
-
+	console.log('argv', ['/bin/node', ...(argv || [])]);
 		const spawnOptions = {
-			argvInput: ['node'],
+			argvInput: ['/bin/node', url.pathname, ...(argv || [])],
+			argv: ['/bin/node', url.pathname, ...(argv || [])],
 			env: envVariables || {},
 			cwd:
 				typeof globalThis.processController.cwd === 'function'
@@ -3898,13 +4020,13 @@ class WorkerImplementation extends events.default.EventEmitter {
 			},
 		};
 
-		this.#handlePromise = globalThis.processController
-			.spawnNodeProcess(spawnOptions)
-			.then((handle) => {
-				this.#handle = handle;
-				this.#flushPendingOperations(handle);
-				return handle;
-			})
+	this.#handlePromise = globalThis.processController
+		.spawnNodeProcess(spawnOptions)
+		.then((handle) => {
+			this.#handle = handle;
+			this.#flushPendingOperations(handle);
+			return handle;
+		})
 			.catch((error) => {
 				queueMicrotask(() => this.emit('error', error));
 				throw error;
@@ -3946,12 +4068,12 @@ class WorkerImplementation extends events.default.EventEmitter {
 				queueMicrotask(() => this.emit('error', error));
 			}
 		}
-		try {
-			this.messagePort?.close();
-		} catch {
-			// Ignore close failures during shutdown.
-		}
-		this.emit('exit', code);
+	try {
+		this.messagePort?.close();
+	} catch {
+		// Ignore close failures during shutdown.
+	}
+	this.emit('exit', code);
 	}
 
 	startThread() {
@@ -4089,7 +4211,8 @@ function ensureEntryFromArgv(argv) {
 	return typeof candidate === 'string' && candidate.length ? candidate : '';
 }
 
-export function runMain() {
+export async function runMain() {
+	await initializeWorkerMessaging();
 	globalThis.coreModules.module.initializeCJS();
 	return globalThis.coreModules.module.Module.runMain();
 }

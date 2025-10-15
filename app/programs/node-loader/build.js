@@ -68,6 +68,8 @@ const entryPoints = {
 	stream: './node/lib/stream.js',
 	string_decoder: './node/lib/string_decoder.js',
 	diagnostics_channel: './node/lib/diagnostics_channel.js',
+	'internal/worker/messaging': './node/lib/internal/worker/messaging.js',
+	'internal/event_target': './node/lib/internal/event_target.js',
 	timers: './node/lib/timers.js',
 	'timers/promises': './node/lib/timers/promises.js',
 	tty: './node/lib/tty.js',

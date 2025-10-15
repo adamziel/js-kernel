@@ -82,7 +82,7 @@ const createProgramSource = (): string => {
                                 }
                         }
                         
-                        writeStdout(output, { appendNewline: true })
+                        writeStdout(output, { appendNewline: false })
                 }
 
                 const clampCursor = (index: number) => {
@@ -446,7 +446,7 @@ const createProgramSource = (): string => {
                         let entries = result.entries
                         if (!entries.length) {
                                 // Bell/beep for no matches
-                                writeStdout('\x07', { appendNewline: true })
+                                writeStdout('\x07', { appendNewline: false })
                                 return
                         }
 
@@ -473,7 +473,7 @@ const createProgramSource = (): string => {
                                 }
                         } else if (result.entries.length > 1 && shared === result.baseToken) {
                                 // Show matches if we can't complete further
-                                writeStdout('\r\n', { appendNewline: true })
+                                writeStdout('\r\n', { appendNewline: false })
                                 const displays = entries.map((entry) => entry.display)
                                 for (let i = 0; i < displays.length; i += 1) {
                                         writeStdout(displays[i], { appendNewline: false })
@@ -481,7 +481,7 @@ const createProgramSource = (): string => {
                                                 writeStdout('  ', { appendNewline: false })
                                         }
                                 }
-                                writeStdout('\r\n', { appendNewline: true })
+                                writeStdout('\r\n', { appendNewline: false })
                                 render()
                         }
                 }
@@ -527,7 +527,7 @@ const createProgramSource = (): string => {
                 const handleSubmit = () => {
                         const line = buffer
                         // Echo the command and newline
-                        writeStdout('\r\n', { appendNewline: true })
+                        writeStdout('\r\n', { appendNewline: false })
                         // Output the command for execution
                         writeStderr(line + '\n')
                         if (line.trim()) {
@@ -541,7 +541,7 @@ const createProgramSource = (): string => {
                 }
 
                 const handleInterrupt = () => {
-                        writeStdout('^C\r\n', { appendNewline: true })
+                        writeStdout('^C\r\n', { appendNewline: false })
                         buffer = ''
                         cursor = 0
                         ignoreNextLineFeed = false
@@ -551,12 +551,12 @@ const createProgramSource = (): string => {
 
                 const handleClear = () => {
                         // Clear screen and move to top
-                        writeStdout('\x1b[2J\x1b[H', { appendNewline: true })
+                        writeStdout('\x1b[2J\x1b[H', { appendNewline: false })
                         render()
                 }
 
                 const handleExit = () => {
-                        writeStdout('\r\n', { appendNewline: true })
+                        writeStdout('\r\n', { appendNewline: false })
                         exitSafely(0)
                 }
 
