@@ -134,6 +134,14 @@ function from (value, encodingOrOffset, length) {
     return fromArrayBuffer(value, encodingOrOffset, length)
   }
 
+  if (typeof SharedArrayBuffer !== 'undefined' && (
+    (value instanceof SharedArrayBuffer) ||
+    (value && isInstance(value.buffer, SharedArrayBuffer))
+  )) {
+    debugger;
+    return fromArrayBuffer(value, encodingOrOffset, length);
+  }
+
   if (typeof value === 'number') {
     throw new TypeError(
       'The "value" argument must not be of type number. Received type number'
