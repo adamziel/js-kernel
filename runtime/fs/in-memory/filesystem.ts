@@ -431,59 +431,141 @@ export class InMemoryFileSystem {
 		const encoding = extractEncoding(options)
 		return fromUint8Array(node.content, encoding)
 	}
-	writeFileSync(path, data, options) {
-		var _a
-		const encoding =
-			(_a = extractEncoding(options)) !== null && _a !== void 0
-				? _a
-				: typeof data === 'string'
-				? 'utf8'
-				: null
-		const bytes = toUint8Array(data, encoding)
-		const result = this.walk(path)
-		if (result.blockedBy) {
-			throw createFsError(
-				'ENOTDIR',
-				`ENOTDIR: not a directory, open '${path}'`
-			)
-		}
-		if (result.missingParent) {
-			throw createFsError(
-				'ENOENT',
-				`ENOENT: no such file or directory, open '${path}'`
-			)
-		}
-		if (!result.parent) {
-			throw createFsError(
-				'EISDIR',
-				`EISDIR: illegal operation on a directory, open '${path}'`
-			)
-		}
-		const { parent, node, name } = result
-		if (node && node.type === 'dir') {
-			throw createFsError(
-				'EISDIR',
-				`EISDIR: illegal operation on a directory, open '${path}'`
-			)
-		}
-		if (node && node.type === 'file') {
-			node.content = bytes
-			updateTimestamps(node, 'modify')
-			updateDirectoryTimestamp(parent)
-			return
-		}
-		const fileNode = createFileNode(
-			bytes,
-			typeof options === 'object' &&
-				options &&
-				'mode' in options &&
-				typeof options.mode === 'number'
-				? options.mode
-				: DEFAULT_FILE_MODE
-		)
-		parent.children.set(name, fileNode)
-		updateDirectoryTimestamp(parent)
-	}
+        writeFileSync(path, data, options) {
+                var _a
+                const encoding =
+                        (_a = extractEncoding(options)) !== null && _a !== void 0
+                                ? _a
+                                : typeof data === 'string'
+                                ? 'utf8'
+                                : null
+                const bytes = toUint8Array(data, encoding)
+                const flagOption = extractFlag(options)
+                const modeOption = extractMode(options)
+                const flag = flagOption === undefined ? 'w' : flagOption
+
+                if (typeof path === 'number') {
+                        const fd = path
+                        const openFile = this.openFiles.get(fd)
+                        if (!openFile) {
+                                throw createFsError('EBADF', `EBADF: bad file descriptor, write`)
+                        }
+                        const fdFlags = parseOpenFlags(openFile.flags)
+                        if (!fdFlags.writable) {
+                                throw createFsError('EBADF', `EBADF: bad file descriptor, write`)
+                        }
+
+                        this.writeSync(fd, bytes, 0, bytes.length, null)
+                        return
+                }
+
+                const result = this.walk(path)
+                if (result.blockedBy) {
+                        throw createFsError(
+                                'ENOTDIR',
+                                `ENOTDIR: not a directory, open '${path}'`
+                        )
+                }
+                if (result.missingParent) {
+                        throw createFsError(
+                                'ENOENT',
+                                `ENOENT: no such file or directory, open '${path}'`
+                        )
+                }
+                if (!result.parent) {
+                        throw createFsError(
+                                'EISDIR',
+                                `EISDIR: illegal operation on a directory, open '${path}'`
+                        )
+                }
+
+                const { parent, node: existingNode, name } = result
+                const openFlags = parseOpenFlags(flag)
+
+                if (existingNode) {
+                        if (existingNode.type === 'dir') {
+                                throw createFsError(
+                                        'EISDIR',
+                                        `EISDIR: illegal operation on a directory, open '${path}'`
+                                )
+                        }
+                        if (existingNode.type !== 'file') {
+                                if (openFlags.exclusive && openFlags.create) {
+                                        throw createFsError(
+                                                'EEXIST',
+                                                `EEXIST: file already exists, open '${path}'`
+                                        )
+                                }
+                                if (!openFlags.create) {
+                                        throw createFsError(
+                                                'EBADF',
+                                                `EBADF: bad file descriptor, open '${path}'`
+                                        )
+                                }
+                                const replacementNode = createFileNode(
+                                        bytes,
+                                        modeOption !== undefined
+                                                ? modeOption
+                                                : DEFAULT_FILE_MODE
+                                )
+                                parent.children.set(name, replacementNode)
+                                updateDirectoryTimestamp(parent)
+                                return
+                        }
+                        if (!openFlags.writable) {
+                                throw createFsError(
+                                        'EBADF',
+                                        `EBADF: bad file descriptor, open '${path}'`
+                                )
+                        }
+                        if (openFlags.exclusive && openFlags.create) {
+                                throw createFsError(
+                                        'EEXIST',
+                                        `EEXIST: file already exists, open '${path}'`
+                                )
+                        }
+
+                        if (openFlags.append) {
+                                const newContent = new Uint8Array(
+                                        existingNode.content.length + bytes.length
+                                )
+                                newContent.set(existingNode.content)
+                                newContent.set(bytes, existingNode.content.length)
+                                existingNode.content = newContent
+                        } else if (openFlags.truncate) {
+                                existingNode.content = bytes
+                        } else {
+                                const targetLength = Math.max(
+                                        existingNode.content.length,
+                                        bytes.length
+                                )
+                                const newContent = new Uint8Array(targetLength)
+                                newContent.set(existingNode.content)
+                                if (bytes.length > 0) {
+                                        newContent.set(bytes)
+                                }
+                                existingNode.content = newContent
+                        }
+
+                        updateTimestamps(existingNode, 'modify')
+                        updateDirectoryTimestamp(parent)
+                        return
+                }
+
+                if (!openFlags.create) {
+                        throw createFsError(
+                                'ENOENT',
+                                `ENOENT: no such file or directory, open '${path}'`
+                        )
+                }
+
+                const fileNode = createFileNode(
+                        bytes,
+                        modeOption !== undefined ? modeOption : DEFAULT_FILE_MODE
+                )
+                parent.children.set(name, fileNode)
+                updateDirectoryTimestamp(parent)
+        }
 	existsSync(path) {
 		const { node } = this.walk(path)
 		return Boolean(node)
@@ -2336,12 +2418,32 @@ export function promiseFromSync(syncFn) {
 
 // Helper functions
 function extractEncoding(options) {
-	if (!options) return null
-	if (typeof options === 'string') return options
-	if (typeof options === 'object' && 'encoding' in options) {
-		return options.encoding
-	}
-	return null
+        if (!options) return null
+        if (typeof options === 'string') return options
+        if (typeof options === 'object' && 'encoding' in options) {
+                return options.encoding
+        }
+        return null
+}
+
+function extractFlag(options) {
+        if (!options || typeof options === 'string') return undefined
+        if (typeof options === 'object' && 'flag' in options) {
+                return options.flag
+        }
+        return undefined
+}
+
+function extractMode(options) {
+        if (!options || typeof options === 'string') return undefined
+        if (
+                typeof options === 'object' &&
+                'mode' in options &&
+                typeof options.mode === 'number'
+        ) {
+                return options.mode
+        }
+        return undefined
 }
 
 function toUint8Array(data, encoding) {
