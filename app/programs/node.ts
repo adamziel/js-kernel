@@ -1,11 +1,6 @@
-declare const processController: {
-	argv(): string[]
-	exit(code: number): void
-}
-
 const utilsModuleUrl = new URL(
-	'../../runtime/busybox/lib/utils.ts',
-	import.meta.url
+        '../../runtime/busybox/lib/utils.ts',
+        import.meta.url
 ).href
 const nodeLoaderUrl = new URL(
 	'./node-loader.ts',

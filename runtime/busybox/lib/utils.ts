@@ -1,5 +1,3 @@
-declare const processController: any
-
 interface WritableStreamLike {
 	write(chunk: string): void
 }

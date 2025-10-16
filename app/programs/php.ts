@@ -1,4 +1,3 @@
-declare const processController: any
 const utilsModuleUrl = new URL(
 	'../../runtime/busybox/lib/utils.ts',
 	import.meta.url

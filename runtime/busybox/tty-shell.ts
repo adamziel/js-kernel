@@ -1,5 +1,3 @@
-declare const processController: any
-
 const utilsModuleUrl = new URL('./lib/utils.ts', import.meta.url).href
 const pathsModuleUrl = new URL('../util/paths.ts', import.meta.url).href
 

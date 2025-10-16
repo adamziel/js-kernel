@@ -16,15 +16,20 @@ import {
 } from '../constants.ts'
 import { createProcessWorker } from '../worker-factory.ts'
 import {
-	normalizeSpawnOptions,
-	type NormalizedSpawnOptions,
-	type StdioMode,
+        normalizeSpawnOptions,
+        type NormalizedSpawnOptions,
+        type StdioMode,
 } from '../spawn-options.ts'
 import { createKernelFsClient, type KernelFsClient } from './fs-client.ts'
 import {
-	createSpawnSyncClient,
-	type SpawnSyncClient,
+        createSpawnSyncClient,
+        type SpawnSyncClient,
 } from '../spawn-sync/client.ts'
+import type {
+        ProcessController,
+        ProcessControllerChildProcess,
+        ProcessControllerSpawnOptions,
+} from './process-controller-types.ts'
 
 
 // Error handling
@@ -97,26 +102,9 @@ interface ChildProcessInitOptions {
 	threadName?: string
 }
 
-interface ProcessControllerSpawnOptions {
-	argv: string[]
-	env?: Record<string, string>
-	cwd?: string
-	name?: string
-	debug?: boolean
-	stdio?: {
-		stdin?: StdioMode
-		stdout?: StdioMode
-		stderr?: StdioMode
-	}
-	timeout?: number
-	ipcPort?: MessagePort
-	workerThreadId?: number
-	workerThreadName?: string
-}
-
 interface SpawnPlanMessage {
-	pid: number
-	programPath: string
+        pid: number
+        programPath: string
 	programSource: string
 	stdio: Array<{
 		fd: 0 | 1 | 2
@@ -137,19 +125,7 @@ interface SpawnPlanMessage {
 
 type ExitListener = (code: number) => void
 
-interface ChildProcessHandle {
-	pid: number
-	stdin?: MessagePortWritableStream
-	stdout?: MessagePortReadableStream
-	stderr?: MessagePortReadableStream
-	messagePort?: MessagePort | null
-	threadId?: number
-	threadName?: string
-	onExit(listener: ExitListener): void
-	offExit(listener: ExitListener): void
-	kill(): void
-	readonly exitCode: number | null
-}
+type ChildProcessHandle = ProcessControllerChildProcess
 
 interface PendingSpawnRequest {
 	options: NormalizedSpawnOptions
@@ -463,7 +439,7 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 	disposeSpawnSyncClient()
 	spawnSyncClient = createSpawnSyncClient(options.spawnSyncPort)
 
-	const processController = {
+        const processController: ProcessController = {
 		argv() {
 			return [...childProcessState!.argv]
 		},

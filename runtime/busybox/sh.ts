@@ -1,5 +1,3 @@
-declare const processController: any
-
 const runnerModuleUrl = new URL('../shell/run.ts', import.meta.url).href
 const parserModuleUrl = new URL('../shell/sh.ts', import.meta.url).href
 const utilsModuleUrl = new URL('./lib/utils.ts', import.meta.url).href
