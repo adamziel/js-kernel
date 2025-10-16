@@ -57,6 +57,7 @@ const entryPoints = {
 	events: './node/lib/events.js',
 	errors: './node/lib/internal/errors.js',
 	// http: './node/lib/http.js',
+	_http_agent: './node/lib/_http_agent.js',
 	http: './src/this-is-bundled/node-lib/http.js',
 	https: './src/this-is-bundled/node-lib/http.js',
 	// https: './node/lib/https.js',

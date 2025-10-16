@@ -377,6 +377,448 @@ function promiseFromSync(syncFn) {
 		}
 	});
 }
+
+const ASYNC_WRAP_CONSTANTS = Object.freeze({
+	kInit: 0,
+	kBefore: 1,
+	kAfter: 2,
+	kDestroy: 3,
+	kPromiseResolve: 4,
+	kTotals: 5,
+	kCheck: 6,
+	kStackLength: 7,
+	kUsesExecutionAsyncResource: 8,
+	kExecutionAsyncId: 0,
+	kTriggerAsyncId: 1,
+	kAsyncIdCounter: 2,
+	kDefaultTriggerAsyncId: 3,
+});
+
+const ASYNC_WRAP_PROVIDER_NAMES = [
+	'NONE',
+	'DIRHANDLE',
+	'DNSCHANNEL',
+	'ELDHISTOGRAM',
+	'FILEHANDLE',
+	'FILEHANDLECLOSEREQ',
+	'BLOBREADER',
+	'FSEVENTWRAP',
+	'FSREQCALLBACK',
+	'FSREQPROMISE',
+	'GETADDRINFOREQWRAP',
+	'GETNAMEINFOREQWRAP',
+	'HEAPSNAPSHOT',
+	'HTTP2SESSION',
+	'HTTP2STREAM',
+	'HTTP2PING',
+	'HTTP2SETTINGS',
+	'HTTPINCOMINGMESSAGE',
+	'HTTPCLIENTREQUEST',
+	'LOCKS',
+	'JSSTREAM',
+	'JSUDPWRAP',
+	'MESSAGEPORT',
+	'PIPECONNECTWRAP',
+	'PIPESERVERWRAP',
+	'PIPEWRAP',
+	'PROCESSWRAP',
+	'PROMISE',
+	'QUERYWRAP',
+	'QUIC_ENDPOINT',
+	'QUIC_LOGSTREAM',
+	'QUIC_PACKET',
+	'QUIC_SESSION',
+	'QUIC_STREAM',
+	'QUIC_UDP',
+	'SHUTDOWNWRAP',
+	'SIGNALWRAP',
+	'STATWATCHER',
+	'STREAMPIPE',
+	'TCPCONNECTWRAP',
+	'TCPSERVERWRAP',
+	'TCPWRAP',
+	'TTYWRAP',
+	'UDPSENDWRAP',
+	'UDPWRAP',
+	'SIGINTWATCHDOG',
+	'WORKER',
+	'WORKERCPUPROFILE',
+	'WORKERCPUUSAGE',
+	'WORKERHEAPPROFILE',
+	'WORKERHEAPSNAPSHOT',
+	'WORKERHEAPSTATISTICS',
+	'WRITEWRAP',
+	'ZLIB',
+	'CHECKPRIMEREQUEST',
+	'PBKDF2REQUEST',
+	'KEYPAIRGENREQUEST',
+	'KEYGENREQUEST',
+	'KEYEXPORTREQUEST',
+	'ARGON2REQUEST',
+	'CIPHERREQUEST',
+	'DERIVEBITSREQUEST',
+	'HASHREQUEST',
+	'RANDOMBYTESREQUEST',
+	'RANDOMPRIMEREQUEST',
+	'SCRYPTREQUEST',
+	'SIGNREQUEST',
+	'TLSWRAP',
+	'VERIFYREQUEST',
+];
+
+function createAsyncWrapBinding() {
+	const providers = {};
+	for (let i = 0; i < ASYNC_WRAP_PROVIDER_NAMES.length; i += 1) {
+		providers[ASYNC_WRAP_PROVIDER_NAMES[i]] = i;
+	}
+	const Providers = Object.freeze(providers);
+
+	const async_hook_fields = new Uint32Array(ASYNC_WRAP_CONSTANTS.kUsesExecutionAsyncResource + 1);
+	const async_id_fields = new Float64Array(ASYNC_WRAP_CONSTANTS.kDefaultTriggerAsyncId + 1);
+	async_id_fields[ASYNC_WRAP_CONSTANTS.kAsyncIdCounter] = 1;
+	let async_ids_stack = new Float64Array(128);
+	const execution_async_resources = [];
+
+	const destroyRegistry =
+		typeof FinalizationRegistry === 'function'
+			? new FinalizationRegistry(({ asyncId, destroyed }) => {
+					if (destroyed && typeof destroyed === 'object') {
+						destroyed.destroyed = true;
+					}
+					queueDestroy(asyncId);
+					destroyMetadataByAsyncId.delete(asyncId);
+			  })
+			: null;
+
+	const destroyMetadataByAsyncId = new Map();
+	const destroyQueue = [];
+	let destroyScheduled = false;
+
+	const scheduleDestroyDrain = () => {
+		if (destroyScheduled) {
+			return;
+		}
+		destroyScheduled = true;
+		const flush = () => {
+			destroyScheduled = false;
+			if (!destroyQueue.length) {
+				return;
+			}
+			const destroy = hookState.destroy;
+			while (destroyQueue.length) {
+				const asyncId = destroyQueue.shift();
+				if (typeof destroy === 'function') {
+					try {
+						destroy(asyncId);
+					} catch (error) {
+						if (
+							typeof process !== 'undefined' &&
+							typeof process._fatalException === 'function'
+						) {
+							process._fatalException(error);
+						} else {
+							console.error(error);
+						}
+					}
+				}
+			}
+		};
+		if (typeof queueMicrotask === 'function') {
+			queueMicrotask(flush);
+		} else {
+			Promise.resolve().then(flush);
+		}
+	};
+
+	const queueDestroy = (asyncId) => {
+		if (typeof asyncId !== 'number' || asyncId <= 0) {
+			return;
+		}
+		destroyQueue.push(asyncId);
+		scheduleDestroyDrain();
+	};
+
+	const resizeAsyncIdsStack = (minLength) => {
+		let length = async_ids_stack.length || 32;
+		while (length < minLength) {
+			length *= 2;
+		}
+		if (length === async_ids_stack.length) {
+			return;
+		}
+		const next = new Float64Array(length);
+		next.set(async_ids_stack);
+		async_ids_stack = next;
+		binding.async_ids_stack = next;
+	};
+
+	const hookState = {
+		init: null,
+		before: null,
+		after: null,
+		destroy: null,
+		promise_resolve: null,
+	};
+
+	let callbackTrampoline = null;
+	const promiseHooks = {
+		init: null,
+		before: null,
+		after: null,
+		resolve: null,
+	};
+
+	const binding = {
+		constants: ASYNC_WRAP_CONSTANTS,
+		Providers,
+		async_hook_fields,
+		async_id_fields,
+		execution_async_resources,
+		setupHooks(hooks) {
+			if (!hooks || typeof hooks !== 'object') {
+				return;
+			}
+			if (typeof hooks.init === 'function') hookState.init = hooks.init;
+			if (typeof hooks.before === 'function') hookState.before = hooks.before;
+			if (typeof hooks.after === 'function') hookState.after = hooks.after;
+			if (typeof hooks.destroy === 'function') hookState.destroy = hooks.destroy;
+			if (typeof hooks.promise_resolve === 'function') {
+				hookState.promise_resolve = hooks.promise_resolve;
+			}
+		},
+		setCallbackTrampoline(fn) {
+			callbackTrampoline = typeof fn === 'function' ? fn : null;
+		},
+		pushAsyncContext(asyncId, triggerAsyncId) {
+			const stackLength = async_hook_fields[ASYNC_WRAP_CONSTANTS.kStackLength];
+			const required = (stackLength + 1) * 2;
+			if (required > async_ids_stack.length) {
+				resizeAsyncIdsStack(required);
+			}
+			const offset = stackLength * 2;
+			async_ids_stack[offset] = async_id_fields[ASYNC_WRAP_CONSTANTS.kExecutionAsyncId];
+			async_ids_stack[offset + 1] =
+				async_id_fields[ASYNC_WRAP_CONSTANTS.kTriggerAsyncId];
+			async_hook_fields[ASYNC_WRAP_CONSTANTS.kStackLength] = stackLength + 1;
+			async_id_fields[ASYNC_WRAP_CONSTANTS.kExecutionAsyncId] = asyncId;
+			async_id_fields[ASYNC_WRAP_CONSTANTS.kTriggerAsyncId] = triggerAsyncId;
+			return true;
+		},
+		popAsyncContext(asyncId) {
+			const stackLength = async_hook_fields[ASYNC_WRAP_CONSTANTS.kStackLength];
+			if (stackLength === 0) {
+				return false;
+			}
+			if (
+				async_id_fields[ASYNC_WRAP_CONSTANTS.kExecutionAsyncId] !== asyncId &&
+				async_hook_fields[ASYNC_WRAP_CONSTANTS.kTotals] > 0
+			) {
+				throw new Error('Mismatched asyncId in popAsyncContext');
+			}
+			const nextLength = stackLength - 1;
+			const offset = nextLength * 2;
+			async_id_fields[ASYNC_WRAP_CONSTANTS.kExecutionAsyncId] =
+				async_ids_stack[offset] ?? 0;
+			async_id_fields[ASYNC_WRAP_CONSTANTS.kTriggerAsyncId] =
+				async_ids_stack[offset + 1] ?? 0;
+			execution_async_resources.length = Math.max(0, nextLength);
+			async_hook_fields[ASYNC_WRAP_CONSTANTS.kStackLength] = nextLength;
+			return nextLength > 0;
+		},
+		executionAsyncResource(index) {
+			return execution_async_resources[index] ?? null;
+		},
+		clearAsyncIdStack() {
+			async_hook_fields[ASYNC_WRAP_CONSTANTS.kStackLength] = 0;
+			execution_async_resources.length = 0;
+			async_id_fields[ASYNC_WRAP_CONSTANTS.kExecutionAsyncId] = 0;
+			async_id_fields[ASYNC_WRAP_CONSTANTS.kTriggerAsyncId] = 0;
+		},
+		queueDestroyAsyncId(asyncId) {
+			if (destroyMetadataByAsyncId.has(asyncId)) {
+				const destroyed = destroyMetadataByAsyncId.get(asyncId);
+				if (destroyed && typeof destroyed === 'object') {
+					destroyed.destroyed = true;
+				}
+			}
+			queueDestroy(asyncId);
+		},
+		setPromiseHooks(init, before, after, resolve) {
+			promiseHooks.init = typeof init === 'function' ? init : null;
+			promiseHooks.before = typeof before === 'function' ? before : null;
+			promiseHooks.after = typeof after === 'function' ? after : null;
+			promiseHooks.resolve = typeof resolve === 'function' ? resolve : null;
+		},
+		getPromiseHooks() {
+			return [
+				promiseHooks.init,
+				promiseHooks.before,
+				promiseHooks.after,
+				promiseHooks.resolve,
+			];
+		},
+		registerDestroyHook(resource, asyncId, destroyed) {
+			if (!resource || typeof resource !== 'object') {
+				return;
+			}
+			if (destroyed && typeof destroyed === 'object') {
+				destroyed.destroyed = false;
+			}
+			if (typeof asyncId === 'number' && asyncId > 0) {
+				destroyMetadataByAsyncId.set(asyncId, destroyed);
+			}
+			if (destroyRegistry) {
+				try {
+					destroyRegistry.register(resource, { asyncId, destroyed }, resource);
+					return;
+				} catch {
+					// Ignore registration errors, fallback below.
+				}
+			}
+			queueDestroy(asyncId);
+			if (destroyed && typeof destroyed === 'object') {
+				destroyed.destroyed = true;
+			}
+			destroyMetadataByAsyncId.delete(asyncId);
+		},
+	};
+
+	Object.defineProperty(binding, 'async_ids_stack', {
+		configurable: true,
+		enumerable: true,
+		get() {
+			return async_ids_stack;
+		},
+		set(value) {
+			async_ids_stack = value;
+		},
+	});
+
+	Object.defineProperty(binding, 'callbackTrampoline', {
+		get() {
+			return callbackTrampoline;
+		},
+	});
+
+	return binding;
+}
+
+function createAsyncContextFrameBinding() {
+	let current = undefined;
+	return {
+		getContinuationPreservedEmbedderData() {
+			return current;
+		},
+		setContinuationPreservedEmbedderData(value) {
+			current = value;
+		},
+	};
+}
+
+function createTaskQueueBinding() {
+	const promiseRejectEvents = Object.freeze({
+		kPromiseRejectWithNoHandler: 0,
+		kPromiseHandlerAddedAfterReject: 1,
+		kPromiseResolveAfterResolved: 2,
+		kPromiseRejectAfterResolved: 3,
+	});
+
+	const tickInfo = new Uint8Array(2);
+	const microtaskQueue = [];
+	let drainingMicrotasks = false;
+	let tickCallback = null;
+	let promiseRejectCallback = null;
+
+	const scheduleDrain = () => {
+		if (drainingMicrotasks) {
+			return;
+		}
+		drainingMicrotasks = true;
+		const flush = () => {
+			try {
+				while (microtaskQueue.length) {
+					const task = microtaskQueue.shift();
+					if (typeof task === 'function') {
+						try {
+							task();
+						} catch (error) {
+							if (
+								typeof process !== 'undefined' &&
+								typeof process._fatalException === 'function'
+							) {
+								process._fatalException(error);
+							} else {
+								console.error(error);
+							}
+						}
+					}
+				}
+			} finally {
+				drainingMicrotasks = false;
+			}
+		};
+		if (typeof queueMicrotask === 'function') {
+			queueMicrotask(flush);
+		} else {
+			Promise.resolve().then(flush);
+		}
+	};
+
+	const binding = {
+		promiseRejectEvents,
+		tickInfo,
+		enqueueMicrotask(fn) {
+			if (typeof fn !== 'function') {
+				throw new TypeError('enqueueMicrotask expects a function');
+			}
+			microtaskQueue.push(fn);
+			scheduleDrain();
+		},
+		runMicrotasks() {
+			if (!drainingMicrotasks) {
+				drainingMicrotasks = true;
+				try {
+					while (microtaskQueue.length) {
+						const task = microtaskQueue.shift();
+						if (typeof task === 'function') {
+							try {
+								task();
+							} catch (error) {
+								if (
+									typeof process !== 'undefined' &&
+									typeof process._fatalException === 'function'
+								) {
+									process._fatalException(error);
+								} else {
+									console.error(error);
+								}
+							}
+						}
+					}
+				} finally {
+					drainingMicrotasks = false;
+				}
+			}
+		},
+		setTickCallback(fn) {
+			tickCallback = typeof fn === 'function' ? fn : null;
+		},
+		setPromiseRejectCallback(fn) {
+			promiseRejectCallback = typeof fn === 'function' ? fn : null;
+		},
+	};
+
+	Object.defineProperty(binding, 'getTickCallback', {
+		value: () => tickCallback,
+		enumerable: false,
+	});
+	Object.defineProperty(binding, 'getPromiseRejectCallback', {
+		value: () => promiseRejectCallback,
+		enumerable: false,
+	});
+
+	return binding;
+}
 globalThis.internalModules = {
 	builtins: {
 		...builtins,
@@ -2197,14 +2639,10 @@ globalThis.internalModules = {
 			return 0;
 		},
 	}),
-	messaging: {},
-	async_wrap: {
-		constants: {},
-	},
-	async_context_frame: {},
-	task_queue: {
-		promiseRejectEvents: {},
-	},
+		messaging: {},
+		async_wrap: createAsyncWrapBinding(),
+		async_context_frame: createAsyncContextFrameBinding(),
+		task_queue: createTaskQueueBinding(),
 	stream_pipe: new Proxy(
 		{
 			StreamPipe: class StreamPipe {
@@ -3809,6 +4247,9 @@ const ensureNodeSpawnBridge = () => {
 };
 
 ensureNodeSpawnBridge();
+
+const _http_agent = await import('../../dist/_http_agent.js');
+globalThis.coreModules._http_agent = _http_agent.default;
 
 const http = await import('../../dist/http.js');
 globalThis.coreModules.http = http.default;

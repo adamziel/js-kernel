@@ -2,6 +2,9 @@ module.exports = require('stream-http');
 module.exports.ours = true;
 const originalRequest = module.exports.request;
 const originalGet = module.exports.get;
+const httpAgent = require('../../../node/lib/_http_agent.js');
+module.exports.Agent = httpAgent.Agent;
+  
 /*
 Node.js http.request() has two signatures:
 http.request(options[, callback])#
