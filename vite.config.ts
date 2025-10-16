@@ -113,8 +113,8 @@ const corsProxyMiddleware: Connect.NextHandleFunction = async (req, res, next) =
 
 export default defineConfig({
 	root: appRoot,
-	server: {
-		open: 'index.html',
+        server: {
+                open: 'index.html',
 		headers: {
 			'Cross-Origin-Opener-Policy': 'same-origin',
 			'Cross-Origin-Embedder-Policy': 'require-corp',
@@ -164,15 +164,16 @@ export default defineConfig({
 		sourcemap: true,
 		emptyOutDir: true,
 		rollupOptions: {
-			input: {
-				index: path.resolve(appRoot, 'index.html'),
-				'main-app': path.resolve(appRoot, 'main-app.ts'),
-				'php-loader': path.resolve(appRoot, 'programs/php-loader.ts'),
-				'node-loader': path.resolve(
-					appRoot,
-					'programs/node-loader/node-loader.ts'
-				),
-			},
+                        input: {
+                                index: path.resolve(appRoot, 'index.html'),
+                                tests: path.resolve(appRoot, 'tests/index.html'),
+                                'main-app': path.resolve(appRoot, 'main-app.ts'),
+                                'php-loader': path.resolve(appRoot, 'programs/php-loader.ts'),
+                                'node-loader': path.resolve(
+                                        appRoot,
+                                        'programs/node-loader/node-loader.ts'
+                                ),
+                        },
 		},
 	},
 })

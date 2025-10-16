@@ -88,6 +88,22 @@ function runProgram(argv: string[]) {
    ```
    The server opens `app/index.html`, which spins up the kernel worker and runs the sample scripts.
 
+## Testing
+
+Kernel functionality is exercised entirely in the browser so that worker orchestration, stdio plumbing, and the in-memory
+filesystem behave exactly as they do in production. To run the automated suite:
+
+1. Start the dev server and open the dedicated runner page:
+   ```bash
+   npm run test:browser
+   ```
+   The server will serve `app/tests/index.html`, which lists every test and streams live results.
+2. Alternatively, run `npm run dev` and visit `http://localhost:5173/tests/` manually if you prefer to keep the regular
+   playground open.
+
+The runner will log results in both the browser and the developer console. Failed tests include stack traces for easier
+debugging, and completed runs expose `window.__kernelTestsComplete = true` so browser automation can await the final state.
+
 ## Project Structure
 
 ```
