@@ -89,7 +89,7 @@ class TestCases {
 				worker.postMessage('Message from the parent – after 100ms');
 			}, 100);
 			setTimeout(() => {
-				worker.postMessage('Message from the parent – after 500ms');
+				worker.postMessage('Message from the parent – after 500ms'); 
 			}, 500);
 			worker.postMessage('Message from the parent');
 			setTimeout(() => {
@@ -111,7 +111,7 @@ class TestCases {
 			console.log('Hello 2 from worker');
 			setTimeout(() => {
 				process.exit(0);
-			}, 4000);
+			}, 2000);
 			`,
 			{ mode: 0o755 }
 		);
@@ -206,8 +206,8 @@ class TestCases {
 	}
 }
 
-await TestCases.testWorker();
-// await TestCases.testPnpm();
+// await TestCases.testWorker();
+await TestCases.testPnpm();
 
 function runProgram(argv: string[], cwd: string = '/bin') {
 	const worker = kernel.spawn({

@@ -3963,6 +3963,81 @@ const createWorkerThreadsPolyfill = () => {
 			return portWrapperCache.get(nativePort);
 		}
 		const emitter = new events.default.EventEmitter();
+		const pendingEvents = [];
+		const listenerCountFor = (eventName) => {
+			if (
+				emitter &&
+				typeof emitter.listenerCount === 'function'
+			) {
+				return emitter.listenerCount(eventName);
+			}
+			if (
+				events?.default?.EventEmitter &&
+				typeof events.default.EventEmitter.listenerCount === 'function'
+			) {
+				return events.default.EventEmitter.listenerCount(
+					emitter,
+					eventName
+				);
+			}
+			return 0;
+		};
+		const queueOrEmit = (type, value) => {
+			if (type !== 'message' && type !== 'messageerror') {
+				emitter.emit(type, value);
+				return;
+			}
+			if (listenerCountFor(type) > 0) {
+				emitter.emit(type, value);
+				return;
+			}
+			pendingEvents.push({ type, value });
+		};
+		const flushPending = (type) => {
+			if (!pendingEvents.length) {
+				return;
+			}
+			if (listenerCountFor(type) === 0) {
+				return;
+			}
+			const remaining = [];
+			for (const entry of pendingEvents) {
+				if (entry.type === type) {
+					emitter.emit(type, entry.value);
+				} else {
+					remaining.push(entry);
+				}
+			}
+			pendingEvents.length = 0;
+			if (remaining.length) {
+				pendingEvents.push(...remaining);
+			}
+		};
+		const wrapAddListener = (original) =>
+			function (type, listener) {
+				const result = original.call(this, type, listener);
+				if (type === 'message' || type === 'messageerror') {
+					flushPending(type);
+				}
+				return result;
+			};
+		if (typeof emitter.on === 'function') {
+			const originalOn = emitter.on;
+			emitter.on = wrapAddListener(originalOn);
+			emitter.addListener = emitter.on;
+		}
+		if (typeof emitter.once === 'function') {
+			const originalOnce = emitter.once;
+			emitter.once = wrapAddListener(originalOnce);
+		}
+		if (typeof emitter.prependListener === 'function') {
+			const originalPrepend = emitter.prependListener;
+			emitter.prependListener = wrapAddListener(originalPrepend);
+		}
+		if (typeof emitter.prependOnceListener === 'function') {
+			const originalPrependOnce = emitter.prependOnceListener;
+			emitter.prependOnceListener = wrapAddListener(originalPrependOnce);
+		}
 		const wrapIncoming = (value) => {
 			if (!value || typeof value !== 'object') {
 				return value;
@@ -4011,9 +4086,9 @@ const createWorkerThreadsPolyfill = () => {
 			return event;
 		};
 		const handleMessage = (event) =>
-			emitter.emit('message', wrapIncoming(extractMessagePayload(event)));
+			queueOrEmit('message', wrapIncoming(extractMessagePayload(event)));
 		const handleMessageError = (event) =>
-			emitter.emit('messageerror', extractMessagePayload(event));
+			queueOrEmit('messageerror', extractMessagePayload(event));
 		nativePort.addEventListener?.('message', handleMessage);
 		nativePort.addEventListener?.('messageerror', handleMessageError);
 		nativePort.start?.();
@@ -4036,6 +4111,7 @@ const createWorkerThreadsPolyfill = () => {
 			} catch {
 				// ignore
 			}
+			pendingEvents.length = 0;
 			emitter.emit('close');
 		};
 		emitter.start = () => nativePort.start?.();
