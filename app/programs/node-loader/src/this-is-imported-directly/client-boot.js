@@ -5432,51 +5432,87 @@ const createWorkerThreadsPolyfill = () => {
 			const originalPrependOnce = emitter.prependOnceListener;
 			emitter.prependOnceListener = wrapAddListener(originalPrependOnce);
 		}
-		const wrapIncoming = (value) => {
-			if (!value || typeof value !== 'object') {
-				return value;
+	
+	// Helper to check if value is a Buffer instance
+	const isBuffer = (value) => {
+		// Try Buffer.isBuffer if available (after buffer module loads)
+		if (typeof globalThis.Buffer !== 'undefined' && typeof globalThis.Buffer.isBuffer === 'function') {
+			return globalThis.Buffer.isBuffer(value);
+		}
+		// Fallback: check for Buffer-like objects
+		return value && typeof value === 'object' && 
+			   value.constructor && value.constructor.name === 'Buffer' &&
+			   typeof value.length === 'number';
+	};
+	
+	const wrapIncoming = (value) => {
+		if (!value || typeof value !== 'object') {
+			return value;
+		}
+		// Deserialize Buffer instances
+		if (value.__nodeBuffer === true && Array.isArray(value.data)) {
+			if (typeof globalThis.Buffer !== 'undefined' && typeof globalThis.Buffer.from === 'function') {
+				return globalThis.Buffer.from(value.data);
 			}
-			if (value && value[kNativePort]) {
-				return wrapMessagePortForUser(value[kNativePort]);
-			}
-			if (
-				typeof MessagePort !== 'undefined' &&
-				value instanceof MessagePort
-			) {
-				return wrapMessagePortForUser(value);
-			}
-			if (Array.isArray(value)) {
-				return value.map(wrapIncoming);
-			}
-			const result = { ...value };
-			for (const key of Object.keys(result)) {
-				result[key] = wrapIncoming(result[key]);
-			}
-			return result;
-		};
+			// Fallback to Uint8Array if Buffer not available yet
+			return new Uint8Array(value.data);
+		}
+		if (value && value[kNativePort]) {
+			return wrapMessagePortForUser(value[kNativePort]);
+		}
+		if (
+			typeof MessagePort !== 'undefined' &&
+			value instanceof MessagePort
+		) {
+			return wrapMessagePortForUser(value);
+		}
+		// Preserve TypedArray and other ArrayBufferView instances (but not Buffer, which we serialize separately)
+		if (ArrayBuffer.isView(value) && !isBuffer(value)) {
+			return value;
+		}
+		if (Array.isArray(value)) {
+			return value.map(wrapIncoming);
+		}
+		const result = { ...value };
+		for (const key of Object.keys(result)) {
+			result[key] = wrapIncoming(result[key]);
+		}
+		return result;
+	};
 
-		const unwrapOutgoing = (value) => {
-			if (!value || typeof value !== 'object') {
-				return value;
-			}
-			if (value && value[kNativePort]) {
-				return value[kNativePort];
-			}
-			if (
-				typeof MessagePort !== 'undefined' &&
-				value instanceof MessagePort
-			) {
-				return value;
-			}
-			if (Array.isArray(value)) {
-				return value.map(unwrapOutgoing);
-			}
-			const result = { ...value };
-			for (const key of Object.keys(result)) {
-				result[key] = unwrapOutgoing(result[key]);
-			}
-			return result;
-		};
+	const unwrapOutgoing = (value) => {
+		if (!value || typeof value !== 'object') {
+			return value;
+		}
+		// Serialize Buffer instances
+		if (isBuffer(value)) {
+			return {
+				__nodeBuffer: true,
+				data: Array.from(value)
+			};
+		}
+		if (value && value[kNativePort]) {
+			return value[kNativePort];
+		}
+		if (
+			typeof MessagePort !== 'undefined' &&
+			value instanceof MessagePort
+		) {
+			return value;
+		}
+		// Preserve TypedArray and other ArrayBufferView instances (but not Buffer, which we serialize separately)
+		if (ArrayBuffer.isView(value) && !isBuffer(value)) {
+			return value;
+		}
+		if (Array.isArray(value)) {
+			return value.map(unwrapOutgoing);
+		}
+		const result = { ...value };
+		for (const key of Object.keys(result)) {
+			result[key] = unwrapOutgoing(result[key]);
+		}
+		return result;
+	};
 		const extractMessagePayload = (event) => {
 			if (event && typeof event === 'object' && 'data' in event) {
 				// DOM MessageEvent-style payload
