@@ -5,6 +5,16 @@ import * as builtins from './builtins.js';
 globalThis.window = globalThis.global = globalThis;
 globalThis.globalFs = processController.fsSync;
 
+const PROCESS_BOOT_EPOCH_MS = (() => {
+        const now = Date.now();
+        const perfNow =
+                typeof performance !== 'undefined' &&
+                typeof performance.now === 'function'
+                        ? performance.now()
+                        : 0;
+        return now - perfNow;
+})();
+
 const UTF8_DECODER = new TextDecoder('utf-8');
 const READ_FILE_UTF8_CHUNK_SIZE = 64 * 1024;
 
@@ -3010,6 +3020,138 @@ const process = (await import('../../dist/process.js')).default;
 globalThis.process = { ...process };
 globalThis.coreModules.process = globalThis.process;
 
+const psStatus = {
+        RUNNING: 'running',
+        UNKNOWN: 'unknown',
+};
+
+const snapshotProcessState = (options = {}) => {
+        const includeEnv = Boolean(options?.includeEnv);
+        const processObj = globalThis.process ?? {};
+        const controller = globalThis.processController;
+        const argv = Array.isArray(processObj.argv)
+                ? [...processObj.argv]
+                : controller?.argv?.() ?? [];
+        const envValues = includeEnv
+                ? processObj.env
+                        ? { ...processObj.env }
+                        : controller?.getAllEnv?.()
+                          ? { ...controller.getAllEnv() }
+                          : {}
+                : undefined;
+        const pid =
+                typeof processObj.pid === 'number'
+                        ? processObj.pid
+                        : controller?.pid?.() ?? 0;
+        const execPath =
+                typeof processObj.execPath === 'string'
+                        ? processObj.execPath
+                        : controller?.executablePath?.() ?? '';
+        const cwd =
+                typeof processObj.cwd === 'function'
+                        ? processObj.cwd()
+                        : controller?.cwd?.() ?? '';
+        const memoryUsage =
+                typeof processObj.memoryUsage === 'function'
+                        ? processObj.memoryUsage()
+                        : {
+                                rss: 0,
+                                heapTotal: 0,
+                                heapUsed: 0,
+                                external: 0,
+                                arrayBuffers: 0,
+                        };
+        const cpuUsage =
+                typeof processObj.cpuUsage === 'function'
+                        ? processObj.cpuUsage()
+                        : { user: 0, system: 0 };
+        const resourceUsage =
+                typeof processObj.resourceUsage === 'function'
+                        ? processObj.resourceUsage()
+                        : undefined;
+        const uptimeSeconds =
+                typeof processObj.uptime === 'function'
+                        ? processObj.uptime()
+                        : typeof performance !== 'undefined' &&
+                          typeof performance.now === 'function'
+                                ? performance.now() / 1000
+                                : 0;
+
+        const snapshot = {
+                pid,
+                ppid: null,
+                uid: 1000,
+                gid: 1000,
+                name: argv[0] ?? 'node',
+                argv,
+                command: argv.join(' '),
+                execPath,
+                cwd,
+                status: psStatus.RUNNING,
+                started: PROCESS_BOOT_EPOCH_MS,
+                uptime: uptimeSeconds,
+                cpu: {
+                        user: cpuUsage?.user ?? 0,
+                        system: cpuUsage?.system ?? 0,
+                },
+                memory: {
+                        rss: memoryUsage?.rss ?? 0,
+                        heapTotal: memoryUsage?.heapTotal ?? 0,
+                        heapUsed: memoryUsage?.heapUsed ?? 0,
+                        external: memoryUsage?.external ?? 0,
+                        arrayBuffers: memoryUsage?.arrayBuffers ?? 0,
+                },
+                threads: 1,
+        };
+
+        if (resourceUsage) {
+                snapshot.resourceUsage = { ...resourceUsage };
+        }
+
+        if (includeEnv) {
+                snapshot.env = envValues ?? {};
+        }
+
+        return snapshot;
+};
+
+const normalizePsOptions = (options) => {
+        if (options === undefined) {
+                return {};
+        }
+        if (options === null || typeof options !== 'object') {
+                throw new TypeError('ps options must be an object if provided');
+        }
+        return options;
+};
+
+globalThis.internalModules.ps = {
+        listProcesses(options = {}) {
+                const normalized = normalizePsOptions(options);
+                const snapshot = snapshotProcessState(normalized);
+                const requestedPid =
+                        typeof normalized.pid === 'number' &&
+                        Number.isFinite(normalized.pid)
+                                ? normalized.pid
+                                : undefined;
+                if (requestedPid !== undefined && snapshot.pid !== requestedPid) {
+                        return [];
+                }
+                return [snapshot];
+        },
+        getProcess(pid, options = {}) {
+                if (typeof pid !== 'number' || !Number.isFinite(pid)) {
+                        throw new TypeError('pid must be a finite number');
+                }
+                const normalized = normalizePsOptions(options);
+                const snapshot = snapshotProcessState(normalized);
+                return snapshot.pid === pid ? snapshot : null;
+        },
+        constants: {
+                status: psStatus,
+        },
+};
+
 const types = await import('../../dist/internal/types.js');
 globalThis.internalModules.util = {
 	types: { ...types },
@@ -3828,6 +3970,9 @@ globalThis.coreModules.zlib = zlib.default;
 
 const dns = await import('../../dist/dns.js');
 globalThis.coreModules.dns = dns.default;
+
+const psModule = await import('../../dist/ps.js');
+globalThis.coreModules.ps = psModule.default;
 
 const readline = await import('../../dist/readline.js');
 globalThis.coreModules.readline = readline.default;
