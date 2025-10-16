@@ -806,28 +806,59 @@ globalThis.internalModules = {
 					reqOrPromise
 				);
 			},
-			read(fd, buffer, offset, length, position, reqOrPromise) {
-				return maybePromiseFromSync(() => {
-					// Read data from the filesystem
-					const sourceBuffer = globalFs.readSync(
-						fd,
-						length,
-						position
-					);
+                        read(fd, buffer, offset, length, position, reqOrPromise) {
+                                return maybePromiseFromSync(() => {
+                                        const maybeShared = buffer && buffer.buffer;
+                                        if (maybeShared instanceof SharedArrayBuffer) {
+                                                const baseOffset =
+                                                        typeof buffer.byteOffset === 'number'
+                                                                ? buffer.byteOffset
+                                                                : 0;
+                                                const targetOffset = baseOffset + offset;
+                                                if (
+                                                        targetOffset < 0 ||
+                                                        targetOffset > maybeShared.byteLength
+                                                ) {
+                                                        throw new RangeError('offset is out of bounds');
+                                                }
+                                                if (targetOffset + length > maybeShared.byteLength) {
+                                                        throw new RangeError('length is out of bounds');
+                                                }
+                                                const result = globalFs.readSync(fd, length, position, {
+                                                        __kernelSharedBytes: true,
+                                                        buffer: maybeShared,
+                                                        offset: targetOffset,
+                                                        length,
+                                                });
+                                                if (typeof result === 'number') {
+                                                        return result;
+                                                }
+                                                if (result && typeof result.length === 'number') {
+                                                        return result.length;
+                                                }
+                                                throw new Error('Kernel readSync did not return byte length');
+                                        }
 
-					// Copy the data into the provided buffer at the specified offset
-					const bytesToCopy = Math.min(sourceBuffer.length, length);
-					if (bytesToCopy > 0) {
-						buffer.set(
-							sourceBuffer.subarray(0, bytesToCopy),
-							offset
-						);
-					}
+                                        // Read data from the filesystem
+                                        const sourceBuffer = globalFs.readSync(
+                                                fd,
+                                                length,
+                                                position
+                                        );
 
-					// Return the number of bytes actually read
-					return bytesToCopy;
-				}, reqOrPromise);
-			},
+                                        // Copy the data into the provided buffer at the specified offset
+                                        const bytesToCopy = Math.min(sourceBuffer.length, length);
+                                        if (bytesToCopy > 0) {
+                                                buffer.set(
+                                                        sourceBuffer.subarray(0, bytesToCopy),
+                                                        offset
+                                                );
+                                        }
+
+                                        // Return the number of bytes actually read
+                                        return bytesToCopy;
+                                }, reqOrPromise);
+                        },
 			readdir(path, encoding, withFileTypes, kUsePromises) {
 				return maybePromiseFromSync(
 					() =>

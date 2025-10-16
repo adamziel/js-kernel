@@ -1038,37 +1038,85 @@ export class InMemoryFileSystem {
 		}
 		this.openFiles.delete(fd)
 	}
-	readSync(fd, length, position) {
-		const openFile = this.openFiles.get(fd)
-		if (!openFile) {
-			throw createFsError('EBADF', `EBADF: bad file descriptor, read`)
-		}
-		// Node.js uses -1 or null to mean "use current position"
-		const readPosition =
-			position !== null && position !== undefined && position >= 0
-				? position
-				: openFile.position
-		const { node: fileNode } = openFile
-		const availableBytes = Math.max(
-			0,
-			fileNode.content.length - readPosition
-		)
-		const bytesToRead = Math.min(length, availableBytes)
-		let buffer = new Uint8Array(bytesToRead)
-		if (bytesToRead > 0) {
-			buffer = fileNode.content.subarray(
-				readPosition,
-				readPosition + bytesToRead
-			)
-			// Only update position if using current position (not absolute position)
-			if (position === null || position === undefined || position < 0) {
-				openFile.position = readPosition + bytesToRead
-			}
-		}
+        readSync(fd, length, position, sharedRequest) {
+                const openFile = this.openFiles.get(fd)
+                if (!openFile) {
+                        throw createFsError('EBADF', `EBADF: bad file descriptor, read`)
+                }
+                // Node.js uses -1 or null to mean "use current position"
+                const readPosition =
+                        position !== null && position !== undefined && position >= 0
+                                ? position
+                                : openFile.position
+                const { node: fileNode } = openFile
+                const availableBytes = Math.max(
+                        0,
+                        fileNode.content.length - readPosition
+                )
+                const wantsSharedBuffer =
+                        sharedRequest &&
+                        typeof sharedRequest === 'object' &&
+                        sharedRequest.__kernelSharedBytes === true &&
+                        sharedRequest.buffer instanceof SharedArrayBuffer
 
-		updateTimestamps(fileNode, 'access')
-		return buffer
-	}
+                if (wantsSharedBuffer) {
+                        const targetView = new Uint8Array(sharedRequest.buffer)
+                        const targetOffset =
+                                typeof sharedRequest.offset === 'number' &&
+                                sharedRequest.offset >= 0
+                                        ? sharedRequest.offset
+                                        : 0
+                        if (targetOffset > targetView.length) {
+                                throw createFsError(
+                                        'EINVAL',
+                                        'readSync: shared buffer offset out of bounds'
+                                )
+                        }
+                        const requestedLength =
+                                typeof sharedRequest.length === 'number' &&
+                                sharedRequest.length >= 0
+                                        ? sharedRequest.length
+                                        : length
+                        const writable = Math.max(
+                                0,
+                                Math.min(requestedLength, targetView.length - targetOffset)
+                        )
+                        const bytesToRead = Math.min(length, availableBytes, writable)
+                        if (bytesToRead > 0) {
+                                const source = fileNode.content.subarray(
+                                        readPosition,
+                                        readPosition + bytesToRead
+                                )
+                                targetView.set(source, targetOffset)
+                                if (
+                                        position === null ||
+                                        position === undefined ||
+                                        position < 0
+                                ) {
+                                        openFile.position = readPosition + bytesToRead
+                                }
+                        }
+
+                        updateTimestamps(fileNode, 'access')
+                        return bytesToRead
+                }
+
+                const bytesToRead = Math.min(length, availableBytes)
+                let buffer = new Uint8Array(bytesToRead)
+                if (bytesToRead > 0) {
+                        buffer = fileNode.content.subarray(
+                                readPosition,
+                                readPosition + bytesToRead
+                        )
+                        // Only update position if using current position (not absolute position)
+                        if (position === null || position === undefined || position < 0) {
+                                openFile.position = readPosition + bytesToRead
+                        }
+                }
+
+                updateTimestamps(fileNode, 'access')
+                return buffer
+        }
 	read(fd, length, position, callback) {
 		try {
 			const buffer = this.readSync(
