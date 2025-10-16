@@ -52,6 +52,24 @@
         });
         
         term.open(document.getElementById('terminal'));
+        term.focus();
+
+        const decoder = new TextDecoder();
+        const toText = (value) => {
+            if (typeof value === 'string') {
+                return value;
+            }
+            if (value instanceof Uint8Array) {
+                return decoder.decode(value);
+            }
+            if (value instanceof ArrayBuffer) {
+                return decoder.decode(new Uint8Array(value));
+            }
+            if (Array.isArray(value)) {
+                return decoder.decode(new Uint8Array(value));
+            }
+            return String(value ?? '');
+        };
         
         // Initialize worker
         const worker = new Worker('./main-app.ts', {
@@ -72,34 +90,24 @@
             const { type, data } = event.data;
             
             if (type === 'stdout') {
-                // Raw terminal output from shell - write directly
-                console.log('Raw terminal output:', {data});
-                term.write(data);
+                term.write(toText(data));
             } else if (type === 'stderr') {
-                // Command submitted for execution
-                console.log('Command to execute:', data);
-                // TODO: Execute command and send results back
-                // For now, just acknowledge
-                worker.postMessage({ 
-                    type: 'stdout', 
-                    data: `Executed: ${data}\r\n` 
-                });
+                term.write(toText(data));
+            } else if (type === 'commandExit') {
+                const exitCode = Number(data);
+                if (!Number.isNaN(exitCode) && exitCode !== 0) {
+                    term.write(`\r\n[process exited with code ${exitCode}]\r\n`);
+                }
+            } else if (type === 'exit') {
+                term.write(`\r\nShell exited with code ${data}\r\n`);
             }
         });
-        
+
         worker.addEventListener('error', (error) => {
             console.error('Worker error:', error);
             term.write(`\r\n\x1b[31mError: ${error.message}\x1b[0m\r\n`);
         });
-        
-        // Start the worker
-        worker.postMessage({ type: 'start' });
-        
-        // API for feeding shell responses
-        window.writeToShell = (data) => {
-            worker.postMessage({ type: 'stdout', data });
-        };
-        
+
         // Make terminal and worker available globally for debugging
         window.term = term;
         window.worker = worker;

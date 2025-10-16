@@ -529,7 +529,7 @@ const createProgramSource = (): string => {
                         // Echo the command and newline
                         writeStdout('\r\n', { appendNewline: false })
                         // Output the command for execution
-                        writeStderr(line + '\n')
+                        writeStderr(`\u0000${line}\n`)
                         if (line.trim()) {
                                 pushHistory(line)
                         }
