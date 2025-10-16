@@ -473,8 +473,12 @@ function createAsyncWrapBinding() {
 	}
 	const Providers = Object.freeze(providers);
 
-	const async_hook_fields = new Uint32Array(ASYNC_WRAP_CONSTANTS.kUsesExecutionAsyncResource + 1);
-	const async_id_fields = new Float64Array(ASYNC_WRAP_CONSTANTS.kDefaultTriggerAsyncId + 1);
+	const async_hook_fields = new Uint32Array(
+		ASYNC_WRAP_CONSTANTS.kUsesExecutionAsyncResource + 1
+	);
+	const async_id_fields = new Float64Array(
+		ASYNC_WRAP_CONSTANTS.kDefaultTriggerAsyncId + 1
+	);
 	async_id_fields[ASYNC_WRAP_CONSTANTS.kAsyncIdCounter] = 1;
 	let async_ids_stack = new Float64Array(128);
 	const execution_async_resources = [];
@@ -579,9 +583,12 @@ function createAsyncWrapBinding() {
 				return;
 			}
 			if (typeof hooks.init === 'function') hookState.init = hooks.init;
-			if (typeof hooks.before === 'function') hookState.before = hooks.before;
-			if (typeof hooks.after === 'function') hookState.after = hooks.after;
-			if (typeof hooks.destroy === 'function') hookState.destroy = hooks.destroy;
+			if (typeof hooks.before === 'function')
+				hookState.before = hooks.before;
+			if (typeof hooks.after === 'function')
+				hookState.after = hooks.after;
+			if (typeof hooks.destroy === 'function')
+				hookState.destroy = hooks.destroy;
 			if (typeof hooks.promise_resolve === 'function') {
 				hookState.promise_resolve = hooks.promise_resolve;
 			}
@@ -590,27 +597,33 @@ function createAsyncWrapBinding() {
 			callbackTrampoline = typeof fn === 'function' ? fn : null;
 		},
 		pushAsyncContext(asyncId, triggerAsyncId) {
-			const stackLength = async_hook_fields[ASYNC_WRAP_CONSTANTS.kStackLength];
+			const stackLength =
+				async_hook_fields[ASYNC_WRAP_CONSTANTS.kStackLength];
 			const required = (stackLength + 1) * 2;
 			if (required > async_ids_stack.length) {
 				resizeAsyncIdsStack(required);
 			}
 			const offset = stackLength * 2;
-			async_ids_stack[offset] = async_id_fields[ASYNC_WRAP_CONSTANTS.kExecutionAsyncId];
+			async_ids_stack[offset] =
+				async_id_fields[ASYNC_WRAP_CONSTANTS.kExecutionAsyncId];
 			async_ids_stack[offset + 1] =
 				async_id_fields[ASYNC_WRAP_CONSTANTS.kTriggerAsyncId];
-			async_hook_fields[ASYNC_WRAP_CONSTANTS.kStackLength] = stackLength + 1;
+			async_hook_fields[ASYNC_WRAP_CONSTANTS.kStackLength] =
+				stackLength + 1;
 			async_id_fields[ASYNC_WRAP_CONSTANTS.kExecutionAsyncId] = asyncId;
-			async_id_fields[ASYNC_WRAP_CONSTANTS.kTriggerAsyncId] = triggerAsyncId;
+			async_id_fields[ASYNC_WRAP_CONSTANTS.kTriggerAsyncId] =
+				triggerAsyncId;
 			return true;
 		},
 		popAsyncContext(asyncId) {
-			const stackLength = async_hook_fields[ASYNC_WRAP_CONSTANTS.kStackLength];
+			const stackLength =
+				async_hook_fields[ASYNC_WRAP_CONSTANTS.kStackLength];
 			if (stackLength === 0) {
 				return false;
 			}
 			if (
-				async_id_fields[ASYNC_WRAP_CONSTANTS.kExecutionAsyncId] !== asyncId &&
+				async_id_fields[ASYNC_WRAP_CONSTANTS.kExecutionAsyncId] !==
+					asyncId &&
 				async_hook_fields[ASYNC_WRAP_CONSTANTS.kTotals] > 0
 			) {
 				throw new Error('Mismatched asyncId in popAsyncContext');
@@ -647,7 +660,8 @@ function createAsyncWrapBinding() {
 			promiseHooks.init = typeof init === 'function' ? init : null;
 			promiseHooks.before = typeof before === 'function' ? before : null;
 			promiseHooks.after = typeof after === 'function' ? after : null;
-			promiseHooks.resolve = typeof resolve === 'function' ? resolve : null;
+			promiseHooks.resolve =
+				typeof resolve === 'function' ? resolve : null;
 		},
 		getPromiseHooks() {
 			return [
@@ -669,7 +683,11 @@ function createAsyncWrapBinding() {
 			}
 			if (destroyRegistry) {
 				try {
-					destroyRegistry.register(resource, { asyncId, destroyed }, resource);
+					destroyRegistry.register(
+						resource,
+						{ asyncId, destroyed },
+						resource
+					);
 					return;
 				} catch {
 					// Ignore registration errors, fallback below.
@@ -786,7 +804,8 @@ function createTaskQueueBinding() {
 							} catch (error) {
 								if (
 									typeof process !== 'undefined' &&
-									typeof process._fatalException === 'function'
+									typeof process._fatalException ===
+										'function'
 								) {
 									process._fatalException(error);
 								} else {
@@ -2639,10 +2658,16 @@ globalThis.internalModules = {
 			return 0;
 		},
 	}),
-		messaging: {},
-		async_wrap: createAsyncWrapBinding(),
-		async_context_frame: createAsyncContextFrameBinding(),
-		task_queue: createTaskQueueBinding(),
+	messaging: {
+		DOMException: class DOMException extends Error {
+			constructor(message, name) {
+				super(message, name);
+			}
+		},
+	},
+	async_wrap: createAsyncWrapBinding(),
+	async_context_frame: createAsyncContextFrameBinding(),
+	task_queue: createTaskQueueBinding(),
 	stream_pipe: new Proxy(
 		{
 			StreamPipe: class StreamPipe {
@@ -4022,7 +4047,9 @@ const ensureNodeMessagePort =
 const ensureNodeSpawnBridge = () => {
 	const controller = globalThis.processController;
 	if (!controller || typeof controller.spawn !== 'function') {
-		throw new Error('processController.spawn is not available for Node runtime');
+		throw new Error(
+			'processController.spawn is not available for Node runtime'
+		);
 	}
 	if (typeof controller.spawnNodeProcess === 'function') {
 		return;
@@ -4036,7 +4063,11 @@ const ensureNodeSpawnBridge = () => {
 			return [];
 		}
 		return input.map((value) =>
-			value == null ? '' : typeof value === 'string' ? value : String(value)
+			value == null
+				? ''
+				: typeof value === 'string'
+				? value
+				: String(value)
 		);
 	};
 
@@ -4050,7 +4081,11 @@ const ensureNodeSpawnBridge = () => {
 				continue;
 			}
 			result[key] =
-				value == null ? '' : typeof value === 'string' ? value : String(value);
+				value == null
+					? ''
+					: typeof value === 'string'
+					? value
+					: String(value);
 		}
 		return result;
 	};
@@ -4059,10 +4094,14 @@ const ensureNodeSpawnBridge = () => {
 		const argv = Array.isArray(options.argv)
 			? sanitizeArgv(options.argv)
 			: sanitizeArgv(
-					Array.isArray(options.argvInput) ? options.argvInput : options.argv
+					Array.isArray(options.argvInput)
+						? options.argvInput
+						: options.argv
 			  );
 		if (argv.length === 0) {
-			throw new Error('spawnNodeProcess: argv must be a non-empty array of strings');
+			throw new Error(
+				'spawnNodeProcess: argv must be a non-empty array of strings'
+			);
 		}
 
 		const env = {
@@ -4082,7 +4121,8 @@ const ensureNodeSpawnBridge = () => {
 		const resolvedName =
 			typeof options.name === 'string' && options.name.length
 				? options.name
-				: typeof options.workerThreadName === 'string' && options.workerThreadName.length
+				: typeof options.workerThreadName === 'string' &&
+				  options.workerThreadName.length
 				? options.workerThreadName
 				: `node-process-${++counter}`;
 
@@ -4094,15 +4134,18 @@ const ensureNodeSpawnBridge = () => {
 			debug: Boolean(options.debug),
 			stdio: {
 				stdin:
-					options.stdio?.stdin && typeof options.stdio.stdin === 'string'
+					options.stdio?.stdin &&
+					typeof options.stdio.stdin === 'string'
 						? options.stdio.stdin
 						: 'pipe',
 				stdout:
-					options.stdio?.stdout && typeof options.stdio.stdout === 'string'
+					options.stdio?.stdout &&
+					typeof options.stdio.stdout === 'string'
 						? options.stdio.stdout
 						: 'pipe',
 				stderr:
-					options.stdio?.stderr && typeof options.stdio.stderr === 'string'
+					options.stdio?.stderr &&
+					typeof options.stdio.stderr === 'string'
 						? options.stdio.stderr
 						: 'pipe',
 			},
@@ -4127,7 +4170,8 @@ const ensureNodeSpawnBridge = () => {
 					typeof chunk === 'string' ? chunk : decoder.decode(chunk);
 
 				if (handle.stdout && typeof options.onStdout === 'function') {
-					const listener = (chunk) => options.onStdout?.(normalizeChunk(chunk));
+					const listener = (chunk) =>
+						options.onStdout?.(normalizeChunk(chunk));
 					const detach = handle.stdout.on('data', listener);
 					detachments.push(() => {
 						try {
@@ -4139,7 +4183,8 @@ const ensureNodeSpawnBridge = () => {
 				}
 
 				if (handle.stderr && typeof options.onStderr === 'function') {
-					const listener = (chunk) => options.onStderr?.(normalizeChunk(chunk));
+					const listener = (chunk) =>
+						options.onStderr?.(normalizeChunk(chunk));
 					const detach = handle.stderr.on('data', listener);
 					detachments.push(() => {
 						try {
@@ -4151,9 +4196,16 @@ const ensureNodeSpawnBridge = () => {
 				}
 
 				let messagePortListener = null;
-				if (handle.messagePort && typeof options.onMessage === 'function') {
-					messagePortListener = (event) => options.onMessage?.(event.data);
-					handle.messagePort.addEventListener('message', messagePortListener);
+				if (
+					handle.messagePort &&
+					typeof options.onMessage === 'function'
+				) {
+					messagePortListener = (event) =>
+						options.onMessage?.(event.data);
+					handle.messagePort.addEventListener(
+						'message',
+						messagePortListener
+					);
 					try {
 						handle.messagePort.start();
 					} catch {
@@ -4164,7 +4216,10 @@ const ensureNodeSpawnBridge = () => {
 							return;
 						}
 						try {
-							handle.messagePort.removeEventListener('message', messagePortListener);
+							handle.messagePort.removeEventListener(
+								'message',
+								messagePortListener
+							);
 						} catch {
 							// ignore
 						}
@@ -4360,10 +4415,7 @@ if (typeof globalThis.__kernelWorkerThreadCounter !== 'number') {
 
 const allocateWorkerThreadId = () => {
 	const key = '__kernelWorkerThreadCounter';
-	const current =
-		typeof globalThis[key] === 'number'
-			? (globalThis[key])
-			: 1;
+	const current = typeof globalThis[key] === 'number' ? globalThis[key] : 1;
 	globalThis[key] = current + 1;
 	return current;
 };
@@ -4406,10 +4458,7 @@ const createWorkerThreadsPolyfill = () => {
 		const emitter = new events.default.EventEmitter();
 		const pendingEvents = [];
 		const listenerCountFor = (eventName) => {
-			if (
-				emitter &&
-				typeof emitter.listenerCount === 'function'
-			) {
+			if (emitter && typeof emitter.listenerCount === 'function') {
 				return emitter.listenerCount(eventName);
 			}
 			if (
@@ -4486,7 +4535,10 @@ const createWorkerThreadsPolyfill = () => {
 			if (value && value[kNativePort]) {
 				return wrapMessagePortForUser(value[kNativePort]);
 			}
-			if (typeof MessagePort !== 'undefined' && value instanceof MessagePort) {
+			if (
+				typeof MessagePort !== 'undefined' &&
+				value instanceof MessagePort
+			) {
 				return wrapMessagePortForUser(value);
 			}
 			if (Array.isArray(value)) {
@@ -4506,7 +4558,10 @@ const createWorkerThreadsPolyfill = () => {
 			if (value && value[kNativePort]) {
 				return value[kNativePort];
 			}
-			if (typeof MessagePort !== 'undefined' && value instanceof MessagePort) {
+			if (
+				typeof MessagePort !== 'undefined' &&
+				value instanceof MessagePort
+			) {
 				return value;
 			}
 			if (Array.isArray(value)) {
@@ -4536,14 +4591,18 @@ const createWorkerThreadsPolyfill = () => {
 		emitter.postMessage = (value, transferList) => {
 			const nativeTransfers = Array.isArray(transferList)
 				? transferList.map((item) =>
-					item && item[kNativePort] ? item[kNativePort] : item)
+						item && item[kNativePort] ? item[kNativePort] : item
+				  )
 				: undefined;
 			nativePort.postMessage(unwrapOutgoing(value), nativeTransfers);
 		};
 		emitter.close = () => {
 			try {
 				nativePort.removeEventListener?.('message', handleMessage);
-				nativePort.removeEventListener?.('messageerror', handleMessageError);
+				nativePort.removeEventListener?.(
+					'messageerror',
+					handleMessageError
+				);
 			} catch {
 				// ignore
 			}
@@ -4586,9 +4645,12 @@ const createWorkerThreadsPolyfill = () => {
 
 			if (
 				!globalThis.processController ||
-				typeof globalThis.processController.spawnNodeProcess !== 'function'
+				typeof globalThis.processController.spawnNodeProcess !==
+					'function'
 			) {
-				throw new Error('worker_threads is not available in this environment');
+				throw new Error(
+					'worker_threads is not available in this environment'
+				);
 			}
 
 			const resolvedName =
@@ -4615,7 +4677,9 @@ const createWorkerThreadsPolyfill = () => {
 			};
 			if ('workerData' in options) {
 				try {
-					spawnEnv.__KERNEL_WORKER_DATA = JSON.stringify(options.workerData);
+					spawnEnv.__KERNEL_WORKER_DATA = JSON.stringify(
+						options.workerData
+					);
 				} catch {
 					// Ignore serialization errors.
 				}
