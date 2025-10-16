@@ -431,6 +431,10 @@ export class InMemoryFileSystem {
 		const encoding = extractEncoding(options)
 		return fromUint8Array(node.content, encoding)
 	}
+
+	writeFileUtf8Sync(path, data, flags, mode) {
+		return this.writeFileSync(path, data, { encoding: 'utf8', flag: flags, mode: mode });
+	}
 	writeFileSync(path, data, options) {
 		var _a
 		const encoding =
