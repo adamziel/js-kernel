@@ -655,6 +655,7 @@ export default Save;`);
 			],
 			'/jsx'
 		);
+		runProgram(['ls', '/build/blocks'])
 	}
 
 	static async runBash() {

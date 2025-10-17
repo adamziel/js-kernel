@@ -622,6 +622,7 @@ export class Kernel extends InMemoryFileSystem {
 		stderr?: string
 		error?: string
 	}> {
+		console.log('spawn sync', options)
 		const program = this.loadProgram(options.argv[0], options.cwd)
 		if (!program) {
 			throw new Error(`Command not found: ${options.argv[0]}`)

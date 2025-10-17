@@ -218,6 +218,216 @@ function createDebugProxy(name, target) {
 	});
 }
 
+const blobHandleBrand = Symbol('blobHandleBrand');
+const blobHandleBlob = Symbol('blobHandleBlob');
+const blobObjectUrlPrefix = 'blob:nodedata:';
+const blobDataObjectStore = new Map();
+const blobTextEncoder = typeof TextEncoder === 'function'
+	? new TextEncoder()
+	: null;
+
+const ensureBlobSupport = () => {
+	if (typeof Blob !== 'function') {
+		throw new Error('Blob is not supported in this environment');
+	}
+};
+
+const isBlobHandle = (value) => value?.[blobHandleBrand] === true;
+
+const normalizeBlobPart = (source) => {
+	if (source == null) {
+		return new Uint8Array(0);
+	}
+	if (isBlobHandle(source)) {
+		return source[blobHandleBlob];
+	}
+	if (source instanceof Blob) {
+		return source;
+	}
+	if (source instanceof ArrayBuffer) {
+		return source;
+	}
+	if (ArrayBuffer.isView(source)) {
+		const { buffer, byteOffset, byteLength } = source;
+		return buffer.slice(byteOffset, byteOffset + byteLength);
+	}
+	if (typeof source === 'string') {
+		if (!blobTextEncoder) {
+			throw new Error('TextEncoder is not available to encode strings');
+		}
+		return blobTextEncoder.encode(source);
+	}
+	return new Uint8Array(source);
+};
+
+const chunkToArrayBuffer = (chunk) => {
+	if (chunk === undefined) {
+		return undefined;
+	}
+	if (chunk instanceof ArrayBuffer) {
+		return chunk;
+	}
+	if (ArrayBuffer.isView(chunk)) {
+		const { buffer, byteOffset, byteLength } = chunk;
+		return buffer.slice(byteOffset, byteOffset + byteLength);
+	}
+	if (chunk?.buffer instanceof ArrayBuffer) {
+		return chunk.buffer.slice(0);
+	}
+	return new Uint8Array(chunk).buffer;
+};
+
+class BrowserBlobReader {
+	constructor(blob) {
+		this.blob = blob;
+		this.reader =
+			typeof blob.stream === 'function'
+				? blob.stream().getReader()
+				: null;
+		this.arrayBufferPromise = null;
+		this.arrayBufferDelivered = false;
+		this.closed = false;
+	}
+
+	pull(callback) {
+		if (typeof callback !== 'function') {
+			throw new TypeError('callback must be a function');
+		}
+		if (this.closed) {
+			callback(0);
+			return 0;
+		}
+		if (this.reader) {
+			this.reader
+				.read()
+				.then(({ done, value }) => {
+					if (done) {
+						this.closed = true;
+						callback(0);
+						return;
+					}
+					callback(1, chunkToArrayBuffer(value));
+				})
+				.catch((error) => {
+					console.warn('Blob reader failed', error);
+					this.closed = true;
+					callback(-1);
+				});
+			return 1;
+		}
+		if (!this.arrayBufferPromise) {
+			this.arrayBufferPromise = this.blob.arrayBuffer();
+		}
+		this.arrayBufferPromise
+			.then((buffer) => {
+				if (this.closed) {
+					callback(0);
+					return;
+				}
+				if (!this.arrayBufferDelivered) {
+					this.arrayBufferDelivered = true;
+					callback(1, buffer);
+					return;
+				}
+				this.closed = true;
+				callback(0);
+			})
+			.catch((error) => {
+				console.warn('Blob reader failed', error);
+				this.closed = true;
+				callback(-1);
+			});
+		return 1;
+	}
+}
+
+class BrowserBlobHandle {
+	constructor(blob) {
+		this[blobHandleBrand] = true;
+		this[blobHandleBlob] = blob;
+	}
+
+	slice(start, end) {
+		return new BrowserBlobHandle(this[blobHandleBlob].slice(start, end));
+	}
+
+	getReader() {
+		return new BrowserBlobReader(this[blobHandleBlob]);
+	}
+}
+
+const makeBlobHandle = (sources) => {
+	ensureBlobSupport();
+	const parts = sources.map((part) => normalizeBlobPart(part));
+	const blob = new Blob(parts);
+	return new BrowserBlobHandle(blob);
+};
+
+const concatArrayBuffers = (buffers) => {
+	if (!Array.isArray(buffers)) {
+		throw new TypeError('buffers must be an array');
+	}
+	const views = [];
+	let total = 0;
+	for (const buffer of buffers) {
+		const normalized = chunkToArrayBuffer(buffer);
+		if (normalized === undefined) {
+			continue;
+		}
+		const view = new Uint8Array(normalized);
+		views.push(view);
+		total += view.byteLength;
+	}
+	const result = new Uint8Array(total);
+	let offset = 0;
+	for (const view of views) {
+		result.set(view, offset);
+		offset += view.byteLength;
+	}
+	return result.buffer;
+};
+
+const storeBlobDataObject = (id, handle, size, type) => {
+	if (typeof id !== 'string') {
+		throw new TypeError('Expected string id');
+	}
+	if (!isBlobHandle(handle)) {
+		throw new TypeError('Expected Blob handle');
+	}
+	blobDataObjectStore.set(id, {
+		handle,
+		length: typeof size === 'number' ? size : Number(size ?? 0),
+		type: `${type ?? ''}`,
+	});
+};
+
+const getBlobDataObject = (id) => {
+	const stored = blobDataObjectStore.get(id);
+	if (!stored) {
+		return undefined;
+	}
+	return [stored.handle, stored.length, stored.type];
+};
+
+const revokeBlobDataObject = (url) => {
+	const str = `${url}`;
+	let id;
+	try {
+		const parsed = new URL(str);
+		const parts = parsed.pathname.split(':', 2);
+		if (parts.length === 2 && parts[0] === 'nodedata') {
+			id = parts[1];
+		}
+	} catch {
+		if (str.startsWith(blobObjectUrlPrefix)) {
+			id = str.slice(blobObjectUrlPrefix.length);
+		}
+	}
+	if (id) {
+		blobDataObjectStore.delete(id);
+	}
+};
+
 // Fill a provided stats array at a specific offset
 // This is used by the native binding to populate the shared statValues arrays
 // offset is in fields (18 fields per Stats instance)
@@ -1931,6 +2141,10 @@ globalThis.internalModules = {
 			is_sea_main,
 			shouldDetectModule
 		) => {
+			if(content.includes('TextDecoder')) {
+				console.log(filename);
+				console.log(content.split('\n').slice(0, 10).join('\n'));
+			}
 			// Remove up to two shebang lines if present
 			if (content.startsWith('#!')) {
 				let shebangCount = 0;
@@ -2886,17 +3100,30 @@ globalThis.internalModules = {
 		},
 	}),
 	blob: createDebugProxy('blob', {
-		createBlob() {
-			throw new Error('Not implemented');
+		Blob: Blob,
+		createBlob(sources = []) {
+			if (!Array.isArray(sources)) {
+				throw new TypeError('sources must be an array');
+			}
+			return makeBlobHandle(sources);
 		},
 		createBlobFromFilePath() {
+			return undefined;
+		},
+		concat(buffers = []) {
+			return concatArrayBuffers(buffers);
+		},
+		getDataObject(id) {
+			return getBlobDataObject(`${id}`);
+		},
+		storeDataObject(id, handle, size, type) {
+			storeBlobDataObject(`${id}`, handle, size, type);
+		},
+		resolveObjectURL() {
 			throw new Error('Not implemented');
 		},
-		concat() {
-			throw new Error('Not implemented');
-		},
-		getDataObject() {
-			throw new Error('Not implemented');
+		revokeObjectURL(url) {
+			revokeBlobDataObject(url);
 		},
 	}),
 	encoding_binding: createDebugProxy('encoding_binding', {
@@ -2939,6 +3166,14 @@ globalThis.internalModules = {
 		},
 	}),
 	url: createDebugProxy('url', {
+		canParse(string, base) {
+			try {
+				new URL(string, base);
+				return true;
+			} catch {
+				return false;
+			}
+		},
 		pathToFileURL(filepath) {
 			if (typeof filepath !== 'string') {
 				throw new TypeError('Path must be a string');
@@ -4458,6 +4693,8 @@ globalThis.internalModules.util = {
 globalThis.coreModules.util = util.default;
 globalThis.coreModules.util.encodingsMap =
 	globalThis.internalModules.string_decoder.encodings;
+globalThis.coreModules.util.TextDecoder = globalThis.TextDecoder;
+globalThis.coreModules.util.TextEncoder = globalThis.TextEncoder;
 
 const errors = await import('../../dist/errors.js');
 globalThis.internalModules.errors = {

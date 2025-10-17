@@ -8,7 +8,13 @@
     ✅ /bin/php
 -   Support more programs
     ✅ /bin/node
-    -   /bin/npm
+    ✅ /bin/npm
+-   Support ESM
+    - await import("globby")
+    - via either:
+      - a service worker that resolves dynamic imports
+      - a transpiler that converts imports to require() calls,
+      potentially supporting require.async() or so
 -   Support multiple filesystems
     -   Fast SharedArrayBuffer filesystem
     -   Centralized OPFS (goes through kernel worker)

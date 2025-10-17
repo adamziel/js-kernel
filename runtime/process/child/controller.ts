@@ -919,7 +919,7 @@ function createChildProcessHandle(
 			argv: [...options.argv],
 			env: { ...options.env },
 			cwd: options.cwd,
-			debug: Boolean(options.debug),
+			debug: true, // Boolean(options.debug),
 			stdio: plan.stdio.map((descriptor) => ({
 				fd: descriptor.fd,
 				mode: descriptor.mode,
