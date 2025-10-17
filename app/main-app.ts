@@ -488,8 +488,8 @@ class TestCases {
 		);
 
 		// Create a simple block
-		kernel.mkdirSync('/jsx/my-block', { recursive: true });
-kernel.writeFileSync('/jsx/my-block/block.json', `{
+		kernel.mkdirSync('/jsx/src', { recursive: true });
+kernel.writeFileSync('/jsx/src/block.json', `{
 	"$schema": "https://json.schemastore.org/block.json",
 	"apiVersion": 2,
 	"name": "gutenberg-examples/example-01-basic-esnext",
@@ -500,7 +500,35 @@ kernel.writeFileSync('/jsx/my-block/block.json', `{
 	"example": {},
 	"editorScript": "file:./index.js"
 }`);
-kernel.writeFileSync('/jsx/my-block/edit.js', `/**
+kernel.writeFileSync('/jsx/src/index.js', `/**
+	* WordPress dependencies
+	*/
+   import { registerBlockType } from '@wordpress/blocks';
+   
+   /**
+	* Internal dependencies
+	*/
+   import json from './block.json';
+   import Edit from './edit';
+   import save from './save';
+   
+   // Export this so we can use it in the edit and save files
+   export const blockStyle = {
+	   backgroundColor: '#900',
+	   color: '#fff',
+	   padding: '20px',
+   };
+   
+   // Destructure the json file to get the name of the block
+   // For more information on how this works, see: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/Destructuring_assignment
+   const { name } = json;
+   
+   // Register the block
+   registerBlockType( name, {
+	   edit: Edit,
+	   save, // Object shorthand property - same as writing: save: save,
+   } );`);
+kernel.writeFileSync('/jsx/src/edit.js', `/**
  * WordPress dependencies
  */
 import { __ } from '@wordpress/i18n';
@@ -524,35 +552,30 @@ const Edit = () => {
 };
 export default Edit;`);
 
-kernel.writeFileSync('/jsx/my-block/edit.js', `/**
+kernel.writeFileSync('/jsx/src/save.js', `/**
  * WordPress dependencies
  */
-import { registerBlockType } from '@wordpress/blocks';
+import { __ } from '@wordpress/i18n';
+import { useBlockProps } from '@wordpress/block-editor';
 
 /**
  * Internal dependencies
  */
-import json from './block.json';
-import Edit from './edit';
-import save from './save';
+import { blockStyle } from './index';
 
-// Export this so we can use it in the edit and save files
-export const blockStyle = {
-	backgroundColor: '#900',
-	color: '#fff',
-	padding: '20px',
+const Save = () => {
+	const blockProps = useBlockProps.save( { style: blockStyle } );
+	return (
+		<div { ...blockProps }>
+			{ __(
+				'Hello World, step 1 (from the frontend).',
+				'gutenberg-examples'
+			) }
+		</div>
+	);
 };
-
-// Destructure the json file to get the name of the block
-// For more information on how this works, see: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/Destructuring_assignment
-const { name } = json;
-
-// Register the block
-registerBlockType( name, {
-	edit: Edit,
-	save, // Object shorthand property - same as writing: save: save,
-} );`);
-kernel.writeFileSync('/jsx/my-block/index.php', `<?php
+export default Save;`);
+kernel.writeFileSync('/jsx/src/index.php', `<?php
 /**
  * Plugin Name: Gutenberg Examples Basic EsNext
  * Plugin URI: https://github.com/WordPress/gutenberg-examples
@@ -596,7 +619,7 @@ function gutenberg_examples_01_esnext_register_block() {
 }
 add_action( 'init', 'gutenberg_examples_01_esnext_register_block' );`);
 
-kernel.writeFileSync('/jsx/my-block/save.js', `/**
+kernel.writeFileSync('/jsx/src/save.js', `/**
  * WordPress dependencies
  */
 import { __ } from '@wordpress/i18n';
@@ -644,14 +667,23 @@ export default Save;`);
 		kernel.renameSync('/wp-scripts-experiments/package/node_modules', '/node_modules');
 
 		kernel.mkdirSync('/build/blocks', { recursive: true });
+		// await runProgram(
+		// 	[
+		// 		'node',
+		// 		'/wp-scripts-experiments/package/bin/wp-scripts.js',
+		// 		'build',
+		// 		'--webpack-copy-php',
+		// 		'--webpack-src-dir=/jsx',
+		// 		'--webpack-output-path=/build/blocks'
+		// 	],
+		// 	'/jsx'
+		// );
 		await runProgram(
 			[
 				'node',
-				'/wp-scripts-experiments/package/bin/wp-scripts.js',
-				'build',
-				'--webpack-copy-php',
-				'--webpack-src-dir=/jsx',
-				'--webpack-output-path=/build/blocks'
+				'/node_modules/webpack/bin/webpack.js',
+				'--config',
+				"/wp-scripts-experiments/package/config/webpack.config.js"
 			],
 			'/jsx'
 		);

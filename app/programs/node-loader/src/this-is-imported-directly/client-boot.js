@@ -8,6 +8,35 @@ globalThis.globalFs = processController.fsSync;
 const UTF8_DECODER = new TextDecoder('utf-8');
 const READ_FILE_UTF8_CHUNK_SIZE = 64 * 1024;
 
+function _encodePathForFileURL(path) {
+	// Encode the path for use in a file:// URL
+	let encoded = '';
+
+	for (let i = 0; i < path.length; i++) {
+		const char = path[i];
+		const code = path.charCodeAt(i);
+
+		// Percent-encode characters that are not safe in file URLs
+		if (
+			char === '%' ||
+			char === '#' ||
+			char === '?' ||
+			char === '\n' ||
+			char === '\r' ||
+			char === '\t'
+		) {
+			encoded += encodeURIComponent(char);
+		} else if (code < 32 || code > 126) {
+			// Control characters and non-ASCII characters
+			encoded += encodeURIComponent(char);
+		} else {
+			encoded += char;
+		}
+	}
+
+	return encoded;
+};
+
 function readUtf8FromFileDescriptor(fd) {
 	const chunks = [];
 	while (true) {
@@ -2141,10 +2170,10 @@ globalThis.internalModules = {
 			is_sea_main,
 			shouldDetectModule
 		) => {
-			if(content.includes('TextDecoder')) {
-				console.log(filename);
-				console.log(content.split('\n').slice(0, 10).join('\n'));
-			}
+			// if(content.includes('_import')) {
+			// 	console.log(filename);
+			// 	console.log({content});
+			// }
 			// Remove up to two shebang lines if present
 			if (content.startsWith('#!')) {
 				let shebangCount = 0;
@@ -2160,6 +2189,8 @@ globalThis.internalModules = {
 				content = lines.join('\n');
 			}
 
+			// Super naive replacement of import() to require(). It won't even
+			// return a promise. 
 			content = globalThis.coreModules.module.Module.wrap(`
 				${content}
 			`);
@@ -3184,7 +3215,7 @@ globalThis.internalModules = {
 			const hadTrailingSlash = filepath.endsWith('/');
 
 			// Encode the path for file URL
-			const encodedPath = this._encodePathForFileURL(resolved);
+			const encodedPath = _encodePathForFileURL(resolved);
 
 			// Create and return the URL
 			return new URL(`file://${encodedPath}`);
@@ -3343,36 +3374,7 @@ globalThis.internalModules = {
 			};
 
 			return posixPathFromURL(urlObj);
-		},
-
-		_encodePathForFileURL(path) {
-			// Encode the path for use in a file:// URL
-			let encoded = '';
-
-			for (let i = 0; i < path.length; i++) {
-				const char = path[i];
-				const code = path.charCodeAt(i);
-
-				// Percent-encode characters that are not safe in file URLs
-				if (
-					char === '%' ||
-					char === '#' ||
-					char === '?' ||
-					char === '\n' ||
-					char === '\r' ||
-					char === '\t'
-				) {
-					encoded += encodeURIComponent(char);
-				} else if (code < 32 || code > 126) {
-					// Control characters and non-ASCII characters
-					encoded += encodeURIComponent(char);
-				} else {
-					encoded += char;
-				}
-			}
-
-			return encoded;
-		},
+		}
 	}),
 	permission: createDebugProxy('permission', {}),
 	fs_dir: createDebugProxy(
