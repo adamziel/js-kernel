@@ -474,6 +474,189 @@ class TestCases {
 		// );
 	}
 
+	static async testWpScriptsLocal() {
+		kernel.mkdirSync('/wp-scripts-experiments', { recursive: true });
+		await fetchAndWriteKernelFile(
+			`/programs/node-loader/wp-scripts/wp-scripts.zip`,
+			`/wp-scripts-experiments/wp-scripts.zip`
+		);
+		
+		// Unzip rest.zip into the dist directory
+		await unzipToKernelDirectory(
+			`/wp-scripts-experiments/wp-scripts.zip`,
+			`/wp-scripts-experiments`
+		);
+
+		// Create a simple block
+		kernel.mkdirSync('/jsx/my-block', { recursive: true });
+kernel.writeFileSync('/jsx/my-block/block.json', `{
+	"$schema": "https://json.schemastore.org/block.json",
+	"apiVersion": 2,
+	"name": "gutenberg-examples/example-01-basic-esnext",
+	"title": "Example: Basic (ESNext)",
+	"textdomain": "gutenberg-examples",
+	"icon": "universal-access-alt",
+	"category": "jsx-examples",
+	"example": {},
+	"editorScript": "file:./index.js"
+}`);
+kernel.writeFileSync('/jsx/my-block/edit.js', `/**
+ * WordPress dependencies
+ */
+import { __ } from '@wordpress/i18n';
+import { useBlockProps } from '@wordpress/block-editor';
+
+/**
+ * Internal dependencies
+ */
+import { blockStyle } from './index';
+
+const Edit = () => {
+	const blockProps = useBlockProps( { style: blockStyle } );
+	return (
+		<div { ...blockProps }>
+			{ __(
+				'Hello World, step 1 (from the editor).',
+				'gutenberg-examples'
+			) }
+		</div>
+	);
+};
+export default Edit;`);
+
+kernel.writeFileSync('/jsx/my-block/edit.js', `/**
+ * WordPress dependencies
+ */
+import { registerBlockType } from '@wordpress/blocks';
+
+/**
+ * Internal dependencies
+ */
+import json from './block.json';
+import Edit from './edit';
+import save from './save';
+
+// Export this so we can use it in the edit and save files
+export const blockStyle = {
+	backgroundColor: '#900',
+	color: '#fff',
+	padding: '20px',
+};
+
+// Destructure the json file to get the name of the block
+// For more information on how this works, see: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/Destructuring_assignment
+const { name } = json;
+
+// Register the block
+registerBlockType( name, {
+	edit: Edit,
+	save, // Object shorthand property - same as writing: save: save,
+} );`);
+kernel.writeFileSync('/jsx/my-block/index.php', `<?php
+/**
+ * Plugin Name: Gutenberg Examples Basic EsNext
+ * Plugin URI: https://github.com/WordPress/gutenberg-examples
+ * Description: This is a plugin demonstrating how to register new blocks for the Gutenberg editor.
+ * Version: 1.1.0
+ * Author: the Gutenberg Team
+ *
+ * @package gutenberg-examples
+ */
+
+defined( 'ABSPATH' ) || exit;
+
+/**
+ * Load all translations for our plugin from the MO file.
+ */
+function gutenberg_examples_01_esnext_load_textdomain() {
+	load_plugin_textdomain( 'gutenberg-examples', false, basename( __DIR__ ) . '/languages' );
+}
+add_action( 'init', 'gutenberg_examples_01_esnext_load_textdomain' );
+
+/**
+ * Registers all block assets so that they can be enqueued through Gutenberg in
+ * the corresponding context.
+ *
+ * Passes translations to JavaScript.
+ */
+function gutenberg_examples_01_esnext_register_block() {
+
+	// Register the block by passing the location of block.json to register_block_type.
+	register_block_type( __DIR__ );
+
+	if ( function_exists( 'wp_set_script_translations' ) ) {
+		/**
+		 * May be extended to wp_set_script_translations( 'my-handle', 'my-domain',
+		 * plugin_dir_path( MY_PLUGIN ) . 'languages' ) ). For details see
+		 * https://make.wordpress.org/core/2018/11/09/new-javascript-i18n-support-in-wordpress/
+		 */
+		wp_set_script_translations( 'gutenberg-examples-01-esnext', 'gutenberg-examples' );
+	}
+
+}
+add_action( 'init', 'gutenberg_examples_01_esnext_register_block' );`);
+
+kernel.writeFileSync('/jsx/my-block/save.js', `/**
+ * WordPress dependencies
+ */
+import { __ } from '@wordpress/i18n';
+import { useBlockProps } from '@wordpress/block-editor';
+
+/**
+ * Internal dependencies
+ */
+import { blockStyle } from './index';
+
+const Save = () => {
+	const blockProps = useBlockProps.save( { style: blockStyle } );
+	return (
+		<div { ...blockProps }>
+			{ __(
+				'Hello World, step 1 (from the frontend).',
+				'gutenberg-examples'
+			) }
+		</div>
+	);
+};
+export default Save;`);
+		
+		kernel.writeFileSync('/jsx/package.json', `{
+			"name": "gutenberg-examples",
+			"version": "1.1.0",
+			"private": true,
+			"description": "Gutenberg Examples",
+			"author": "The WordPress Contributors",
+			"license": "GPL-2.0-or-later",
+			"keywords": [
+				"WordPress",
+				"editor",
+				"Examples"
+			],
+			"homepage": "https://github.com/WordPress/gutenberg-examples/",
+			"repository": "git+https://github.com/WordPress/gutenberg-examples.git",
+			"bugs": {
+				"url": "https://github.com/WordPress/gutenberg-examples/issues"
+			}
+		}`);
+
+		// Move node_modules to the top level so it can always be found by wp-scripts.
+		kernel.renameSync('/node_modules', '/node_modules_old');
+		kernel.renameSync('/wp-scripts-experiments/package/node_modules', '/node_modules');
+
+		kernel.mkdirSync('/build/blocks', { recursive: true });
+		await runProgram(
+			[
+				'node',
+				'/wp-scripts-experiments/package/bin/wp-scripts.js',
+				'build',
+				'--webpack-copy-php',
+				'--webpack-src-dir=/jsx',
+				'--webpack-output-path=/build/blocks'
+			],
+			'/jsx'
+		);
+	}
+
 	static async runBash() {
 		kernel.writeFileSync(
 			`/my-script.sh`,
@@ -505,7 +688,7 @@ class TestCases {
 
 // await TestCases.testWorker();
 try {
-	await TestCases.testPnpmLocal();
+	await TestCases.testWpScriptsLocal();
 } catch (error) {
 	console.error('Error', error);
 }
