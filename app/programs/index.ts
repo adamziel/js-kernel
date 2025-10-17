@@ -1,11 +1,13 @@
 import { Kernel } from '../../runtime/index.ts'
 import { joinPaths } from '../../runtime/util/paths.ts'
+import { extractTarProgramSource } from './extract-tar.ts'
 import { phpProgramSource } from './php.ts'
 import { nodeProgramSource } from './node.ts'
 
 export const programs: Record<string, string> = {
 	php: phpProgramSource,
 	node: nodeProgramSource,
+	'extract-tar': extractTarProgramSource,
 }
 
 export type ProgramName = keyof typeof programs

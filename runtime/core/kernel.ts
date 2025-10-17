@@ -132,6 +132,8 @@ export class Kernel extends InMemoryFileSystem {
 	private pidCounter = 1
 	private readonly processes = new Map<number, KernelProcessRecord>()
 	private readonly textDecoder = new TextDecoder()
+	// Global filesystem operation queue to ensure sequential execution across all processes
+	private fsQueue = Promise.resolve()
 
 	constructor() {
 		super()
@@ -460,22 +462,30 @@ export class Kernel extends InMemoryFileSystem {
 			) {
 				return
 			}
-			let response
-			try {
-				const result = await this.invokeFsMethod(method, args)
-				response = serializeFsResponse(result)
-			} catch (error) {
-				response = serializeFsError(error)
-			}
-			try {
-				record.fsPort.postMessage({
-					type: CONTROL_MESSAGE_FS_RESPONSE,
-					requestId,
-					response,
-				})
-			} catch {
-				// Ignore failures sending responses on a closed port.
-			}
+
+			// Queue this filesystem operation on the GLOBAL queue to ensure 
+			// sequential execution across ALL processes, not just this one
+			// This prevents race conditions when multiple processes access the same files
+			this.fsQueue = this.fsQueue.then(async () => {
+				let response
+				try {
+					const result = await this.invokeFsMethod(method, args)
+					response = serializeFsResponse(result)
+				} catch (error) {
+					response = serializeFsError(error)
+				}
+				try {
+					record.fsPort.postMessage({
+						type: CONTROL_MESSAGE_FS_RESPONSE,
+						requestId,
+						response,
+					})
+				} catch {
+					// Ignore failures sending responses on a closed port.
+				}
+			}).catch(() => {
+				// Catch any errors to prevent breaking the queue chain
+			})
 		}
 
 		record.fsPort.addEventListener('message', handleFsMessage)

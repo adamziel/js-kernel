@@ -728,6 +728,9 @@ Module._findPath = function (request, paths, isMain, conditions) {
 	return false
 }
 
+export function isBuiltin(request) {
+	return request.startsWith('node:') || globalThis.coreModules?.[request] || Module.builtinModules?.includes?.(request)
+}
 export const runMain = Module.runMain
 export const findLongestRegisteredExtension =
 	ModuleCJSLoader.findLongestRegisteredExtension

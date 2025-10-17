@@ -4,6 +4,7 @@ import { Kernel } from '../runtime/index.ts';
 import { BlobReader, ZipReader, Uint8ArrayWriter } from "@zip.js/zip.js";
 
 const kernel = new Kernel();
+globalThis.kernel = kernel;
 installBusybox(kernel);
 installCustomPrograms(kernel);
 
@@ -34,6 +35,27 @@ kernel.writeFileSync('/bin/node_modules/node-gyp/package.json', '{}', {
 kernel.writeFileSync('/bin/node_modules/node-gyp/bin/node-gyp.js', '', {
 	mode: 0o755,
 });
+
+// ------------------------------------------------------------
+
+globalThis.runProgram = function(argv: string[], cwd: string = '/bin') {
+	const worker = kernel.spawn({
+		argv,
+		env: {},
+		cwd,
+		name: argv[0],
+		debug: true,
+	});
+	if (typeof worker === 'number') {
+		throw new Error('Failed to spawn program');
+	}
+
+	return new Promise((resolve) => {
+		worker.onExit((code) => {
+			resolve(code);
+		});
+	});
+}
 
 // Shell fun
 
@@ -217,20 +239,7 @@ class TestCases {
 	}
 
 	static async testPnpm() {
-		const npmCodeResponse = await fetch(
-			'/programs/node-loader/npm/npm-single.js'
-		);
-		const npmCode = await npmCodeResponse.text();
-		kernel.writeFileSync('/bin/npm', npmCode, { mode: 0o755 });
-
-		const defaultInputResponse = await fetch(
-			'/programs/node-loader/npm/default-input.js'
-		);
-		const defaultInputCode = await defaultInputResponse.text();
-		kernel.writeFileSync('/bin/default-input.js', defaultInputCode, {
-			mode: 0o755,
-		});
-
+		await TestCases.installNpm();
 		await runProgram(['node', '/bin/npm', 'install', 'pnpm']);
 
 		kernel.writeFileSync(
@@ -274,7 +283,122 @@ class TestCases {
 		);
 	}
 
+	static async installNpm() {
+		const npmCodeResponse = await fetch(
+			'/programs/node-loader/npm/npm-single.js'
+		);
+		const npmCode = await npmCodeResponse.text();
+		kernel.writeFileSync('/bin/npm', npmCode, { mode: 0o755 });
+
+		const defaultInputResponse = await fetch(
+			'/programs/node-loader/npm/default-input.js'
+		);
+		const defaultInputCode = await defaultInputResponse.text();
+		kernel.writeFileSync('/bin/default-input.js', defaultInputCode, {
+			mode: 0o755,
+		});
+	}
+
 	static async testPnpmLocal() {
+		await TestCases.installNpm();
+		kernel.mkdirSync('/tar-experiments', { recursive: true });
+		await runProgram(['node', '/bin/npm', 'pack', '@wordpress/scripts'], '/tar-experiments');
+		await runProgram(['extract-tar', '/tar-experiments/wordpress-scripts-30.25.0.tgz'], '/tar-experiments');
+		// console.log(kernel.readdirSync('/tar-experiments', undefined));
+		kernel.writeFileSync(
+			`/tar-experiments/package.json`,
+			`{
+	"name": "@wordpress/scripts",
+	"version": "30.25.0",
+	"description": "Collection of reusable scripts for WordPress development.",
+	"author": "The WordPress Contributors",
+	"license": "GPL-2.0-or-later",
+	"keywords": [
+		"wordpress",
+		"gutenberg",
+		"scripts"
+	],
+	"homepage": "https://github.com/WordPress/gutenberg/tree/HEAD/packages/scripts/README.md",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/WordPress/gutenberg.git",
+		"directory": "packages/scripts"
+	},
+	"bugs": {
+		"url": "https://github.com/WordPress/gutenberg/issues"
+	},
+	"engines": {
+		"node": ">=18.12.0",
+		"npm": ">=8.19.2"
+	},
+	"files": [
+		"bin",
+		"config",
+		"plugins",
+		"scripts",
+		"utils"
+	],
+	"bin": {
+		"wp-scripts": "./bin/wp-scripts.js"
+	},
+	"dependencies": {
+		"@babel/core": "7.25.7",
+		"@pmmmwh/react-refresh-webpack-plugin": "^0.5.11",
+		"@svgr/webpack": "^8.0.1",
+		"@wordpress/browserslist-config": "^6.32.0",
+		"@wordpress/dependency-extraction-webpack-plugin": "^6.32.0",
+		"@wordpress/postcss-plugins-preset": "^5.32.0",
+		"adm-zip": "^0.5.9",
+		"babel-loader": "9.2.1",
+		"browserslist": "^4.21.10",
+		"chalk": "^4.0.0",
+		"check-node-version": "^4.1.0",
+		"copy-webpack-plugin": "^10.2.0",
+		"cross-spawn": "^7.0.6",
+		"css-loader": "^6.2.0",
+		"cssnano": "^6.0.1",
+		"cwd": "^0.10.0",
+		"dir-glob": "^3.0.1",
+		"fast-glob": "^3.2.7",
+		"filenamify": "^4.2.0",
+		"json2php": "^0.0.9",
+		"merge-deep": "^3.0.3",
+		"mini-css-extract-plugin": "^2.9.2",
+		"minimist": "^1.2.0",
+		"npm-packlist": "^3.0.0",
+		"postcss": "^8.4.5",
+		"postcss-loader": "^6.2.1",
+		"react-refresh": "^0.14.0",
+		"read-pkg-up": "^7.0.1",
+		"resolve-bin": "^0.4.0",
+		"rtlcss": "^4.3.0",
+		"sass": "^1.54.0",
+		"sass-loader": "^16.0.3",
+		"schema-utils": "^4.2.0",
+		"source-map-loader": "^3.0.0",
+		"terser-webpack-plugin": "^5.3.10",
+		"url-loader": "^4.1.1",
+		"webpack": "^5.97.0",
+		"webpack-bundle-analyzer": "^4.9.1",
+		"webpack-cli": "^5.1.4",
+		"webpack-dev-server": "^4.15.1"
+	},
+	"peerDependenciesMeta": {
+		"@wordpress/env": {
+			"optional": true
+		}
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"gitHead": "a030b4c0e0695239b942c7dc18511782b64f10ed"
+}`,
+			{ mode: 0o755 }
+		);
+
+		// "@wordpress/babel-preset-default": "^8.32.0",
+
+
 		const pnpmSourceRoot = '/programs/node-loader/pnpm/node_modules/pnpm';
 		const pnpmTargetRoot = '/bin/node_modules/.ignored/pnpm';
 
@@ -318,15 +442,36 @@ class TestCases {
 			{ mode: 0o755 }
 		);
 		await runProgram(['sh', '/my-script.sh']);
+		kernel.writeFileSync(
+			`/pnpm-project/cowsay-demo.js`,
+			`
+		const cowsay = require('cowsay');
+		console.log(cowsay.say({
+			text : "I'm a moooodule",
+			e : "oO",
+			T : "U "
+		}));
+		`,
+			{ mode: 0o755 }
+		);
+
 		await runProgram(
 			[
 				'node',
 				'/bin/node_modules/.ignored/pnpm/bin/pnpm.cjs',
 				'install',
-				'cowsay',
 			],
-			'/pnpm-project'
+			'/tar-experiments'
 		);
+		// await runProgram(
+		// 	[
+		// 		'node',
+		// 		'/bin/node_modules/.ignored/pnpm/bin/pnpm.cjs',
+		// 		'install',
+		// 		'cowsay',
+		// 	],
+		// 	'/pnpm-project'
+		// );
 	}
 
 	static async runBash() {
@@ -375,21 +520,3 @@ globalThis.addEventListener('error', (event) => {
 });
 
 
-function runProgram(argv: string[], cwd: string = '/bin') {
-	const worker = kernel.spawn({
-		argv,
-		env: {},
-		cwd,
-		name: argv[0],
-		debug: true,
-	});
-	if (typeof worker === 'number') {
-		throw new Error('Failed to spawn program');
-	}
-
-	return new Promise((resolve) => {
-		worker.onExit((code) => {
-			resolve(code);
-		});
-	});
-}

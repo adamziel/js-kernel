@@ -429,7 +429,10 @@ export class InMemoryFileSystem {
 		}
 		updateTimestamps(node, 'access')
 		const encoding = extractEncoding(options)
-		return fromUint8Array(node.content, encoding)
+		// Create a copy to prevent race conditions where file content
+		// changes after read but before serialization
+		const contentCopy = node.content.slice()
+		return fromUint8Array(contentCopy, encoding)
 	}
 
 	writeFileUtf8Sync(path, data, flags, mode) {
@@ -1060,9 +1063,14 @@ export class InMemoryFileSystem {
 		const bytesToRead = Math.min(length, availableBytes)
 		let buffer = new Uint8Array(bytesToRead)
 		if (bytesToRead > 0) {
-			buffer = fileNode.content.subarray(
-				readPosition,
-				readPosition + bytesToRead
+			// Copy the data instead of creating a subarray view
+			// This prevents race conditions where the file content changes
+			// after the read but before serialization
+			buffer.set(
+				fileNode.content.subarray(
+					readPosition,
+					readPosition + bytesToRead
+				)
 			)
 			// Only update position if using current position (not absolute position)
 			if (position === null || position === undefined || position < 0) {
@@ -2350,7 +2358,8 @@ function extractEncoding(options) {
 
 function toUint8Array(data, encoding) {
 	if (data instanceof Uint8Array) {
-		return data
+		// Always create a copy to prevent shared buffer issues
+		return data.slice()
 	}
 	if (typeof data === 'string') {
 		if (typeof Buffer !== 'undefined') {
@@ -2361,7 +2370,9 @@ function toUint8Array(data, encoding) {
 		return encoder.encode(data)
 	}
 	if (ArrayBuffer.isView(data)) {
-		return new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+		// Create a copy, not a view, to prevent shared buffer issues
+		const view = new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+		return view.slice()
 	}
 	throw new Error('Invalid data type')
 }
