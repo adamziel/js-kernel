@@ -119,7 +119,7 @@ export const createKernelFsClient = (
 
 		const normalizedArgs = Array.isArray(args) ? [...args] : []
 		let bufferBytes = SYNC_TOTAL_BYTES
-		const MAX_BUFFER_BYTES = 16 * 1024 * 1024
+		const MAX_BUFFER_BYTES = 64 * 1024 * 1024
 
 		for (let attempt = 0; attempt < 6; attempt += 1) {
 			const buffer = new SharedArrayBuffer(bufferBytes)
