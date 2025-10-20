@@ -12,6 +12,7 @@
     "@php-wasm/node": "^3.0.12",
     "@php-wasm/web": "^3.0.12",
     "@zip.js/zip.js": "^2.8.8",
+    "esbuild-node-externals": "^1.18.0",
     "fflate": "^0.8.2",
     "vite": "^7.1.9"
   },

@@ -76,6 +76,21 @@ if (typeof worker === 'number') {
 	throw new Error('Failed to spawn program');
 }
 self.addEventListener('message', (event) => {
+	if (event.data.type === 'resolve-import') {
+		const port = event.ports?.[0];
+		if (!port) {
+			return;
+		}
+		const { path, referrer } = event.data;
+		resolveImportRequest(path, referrer, port).catch((error) => {
+			port.postMessage({
+				ok: false,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
+		return;
+	}
+
 	if (event.data.type === 'stdin') {
 		console.log('input', event.data.data);
 		worker.stdin!.write(event.data.data);
@@ -92,6 +107,274 @@ worker.stderr!.on('data', (data) => {
 worker.onExit((code) => {
 	self.postMessage({ type: 'exit', data: code });
 });
+
+const moduleTextDecoder = new TextDecoder();
+const cjsModuleWrapperCache = new Map<string, string>();
+
+async function resolveImportRequest(
+	requestPath: string,
+	referrer: string | null,
+	replyPort: MessagePort
+) {
+	try {
+		if (typeof requestPath !== 'string' || requestPath.length === 0) {
+			throw new Error('Invalid import path');
+		}
+
+		if (isBareModuleSpecifier(requestPath)) {
+			const moduleSource = await getCjsModuleWrapperSource(requestPath);
+			replyPort.postMessage({
+				ok: true,
+				body: moduleSource,
+				contentType: 'application/javascript',
+				status: 200,
+			});
+			return;
+		}
+
+		const normalizedPath = normalizeImportPath(requestPath, referrer);
+
+		if (isBareModuleSpecifier(normalizedPath)) {
+			const moduleSource = await getCjsModuleWrapperSource(normalizedPath);
+			replyPort.postMessage({
+				ok: true,
+				body: moduleSource,
+				contentType: 'application/javascript',
+				status: 200,
+			});
+			return;
+		}
+
+		const moduleContent = readModuleSource(normalizedPath);
+		replyPort.postMessage({
+			ok: true,
+			body: moduleContent,
+			contentType: guessMimeType(normalizedPath),
+			status: 200,
+		});
+	} catch (error) {
+		replyPort.postMessage({
+			ok: false,
+			error: error instanceof Error ? error.message : String(error),
+		});
+	}
+}
+
+function normalizeImportPath(pathOrUrl: string, referrer: string | null) {
+	try {
+		if (pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')) {
+			const url = new URL(pathOrUrl);
+			return url.pathname;
+		}
+		if (pathOrUrl.startsWith('file://')) {
+			const url = new URL(pathOrUrl);
+			return url.pathname;
+		}
+		if (isBareModuleSpecifier(pathOrUrl)) {
+			return pathOrUrl;
+		}
+		if (!pathOrUrl.startsWith('/')) {
+			if (referrer) {
+				const base = referrer.startsWith('http')
+					? new URL(referrer).pathname
+					: referrer;
+				if (base.endsWith('/')) {
+					return `${base}${pathOrUrl}`;
+				}
+				const lastSlash = base.lastIndexOf('/');
+				const baseDir = lastSlash >= 0 ? base.slice(0, lastSlash + 1) : '/';
+				return `${baseDir}${pathOrUrl}`;
+			}
+			return `/${pathOrUrl}`;
+		}
+		return pathOrUrl;
+	} catch {
+		return pathOrUrl;
+	}
+}
+
+function readModuleSource(importPath: string): string {
+	const result = kernel.readFileSync(importPath, 'utf8') as string | Uint8Array;
+	if (typeof result === 'string') {
+		return result;
+	}
+	return moduleTextDecoder.decode(result);
+}
+
+function guessMimeType(importPath: string) {
+	if (importPath.endsWith('.json')) {
+		return 'application/json';
+	}
+	return 'application/javascript';
+}
+
+function isBareModuleSpecifier(value: string) {
+	if (!value) {
+		return false;
+	}
+	if (value.startsWith('/') || value.startsWith('./') || value.startsWith('../')) {
+		return false;
+	}
+	if (value.includes('://')) {
+		return false;
+	}
+	return true;
+}
+
+async function getCjsModuleWrapperSource(specifier: string) {
+	const cached = cjsModuleWrapperCache.get(specifier);
+	if (cached) {
+		return cached;
+	}
+
+	const sanitized = stripNodePrefix(specifier);
+	const moduleExports = snapshotCjsModuleExports(sanitized);
+	const exportNames = collectExportNames(moduleExports);
+
+	const requireTarget = sanitized;
+	const fallbackKeys = Array.from(
+		new Set(
+			[
+				requireTarget,
+				specifier,
+				specifier.startsWith('node:') ? requireTarget : `node:${requireTarget}`,
+			].filter((value) => typeof value === 'string' && value.length > 0)
+		)
+	);
+	const lines = [
+		'const moduleModule = globalThis.coreModules && globalThis.coreModules.module;',
+		'const require = moduleModule && moduleModule.Module && moduleModule.Module._load'
+			+ ' ? (request) => moduleModule.Module._load(request, null, false)'
+			+ ' : globalThis.require;',
+		`if (typeof require !== 'function') { throw new Error('require is not available to load ${specifier}'); }`,
+		'let mod;',
+		'try {',
+		`	mod = require(${JSON.stringify(requireTarget)});`,
+		'} catch (error) {',
+		'	const coreModules = globalThis.coreModules;',
+		`	if (coreModules) {`,
+		`		const fallbackKeys = ${JSON.stringify(fallbackKeys)};`,
+		'		for (const key of fallbackKeys) {',
+		'			if (key in coreModules) {',
+		'				mod = coreModules[key];',
+		'				break;',
+		'			}',
+		'		}',
+		'	}',
+		'	if (mod === undefined) { throw error; }',
+		'}',
+	];
+	if (exportNames.length > 0) {
+		const destructured = exportNames.join(', ');
+		lines.push(`const { ${destructured} } = mod;`);
+		lines.push(`export { ${destructured} };`);
+	}
+	lines.push('export default mod;');
+
+	const source = lines.join('\n') + '\n';
+	cjsModuleWrapperCache.set(specifier, source);
+	return source;
+}
+
+function stripNodePrefix(specifier: string) {
+	return specifier.replace(/^node:/, '');
+}
+
+function snapshotCjsModuleExports(specifier: string) {
+	const sanitized = specifier.replace(/^node:/, '');
+	const coreModules = (globalThis as unknown as Record<string, any>).coreModules;
+	if (coreModules) {
+		const candidates = new Set<string>();
+		if (typeof specifier === 'string' && specifier.length > 0) {
+			candidates.add(specifier);
+		}
+		if (sanitized) {
+			candidates.add(sanitized);
+			candidates.add(`node:${sanitized}`);
+		}
+		for (const key of candidates) {
+			if (key && key in coreModules) {
+				return coreModules[key];
+			}
+		}
+	}
+	throw new Error(`Module "${specifier}" is not available for import()`);
+}
+
+const IDENTIFIER_REGEX = /^[A-Za-z$_][A-Za-z0-9$_]*$/;
+const RESERVED_IDENTIFIERS = new Set([
+	'await',
+	'break',
+	'case',
+	'catch',
+	'class',
+	'const',
+	'continue',
+	'debugger',
+	'default',
+	'delete',
+	'do',
+	'else',
+	'export',
+	'extends',
+	'finally',
+	'for',
+	'function',
+	'if',
+	'import',
+	'in',
+	'instanceof',
+	'new',
+	'return',
+	'super',
+	'switch',
+	'this',
+	'throw',
+	'try',
+	'typeof',
+	'var',
+	'void',
+	'while',
+	'with',
+	'yield',
+	'arguments',
+	'caller',
+]);
+
+function collectExportNames(moduleExports: Record<string, unknown> | Function) {
+	if (moduleExports == null) {
+		return [];
+	}
+
+	const target =
+		typeof moduleExports === 'function' || typeof moduleExports === 'object'
+			? moduleExports
+			: {};
+
+	const names = new Set<string>();
+	for (const key of Object.keys(target)) {
+		names.add(key);
+	}
+	for (const key of Object.getOwnPropertyNames(target)) {
+		names.add(key);
+	}
+
+	const filtered = Array.from(names).filter((name) => {
+		if (name === 'default' || name === '__esModule' || name === 'prototype' || name === 'constructor' || name === 'length' || name === 'name') {
+			return false;
+		}
+		if (!IDENTIFIER_REGEX.test(name)) {
+			return false;
+		}
+		if (RESERVED_IDENTIFIERS.has(name)) {
+			return false;
+		}
+		return true;
+	});
+
+	filtered.sort();
+	return filtered;
+}
 
 function ensureParentDirectory(targetPath: string) {
 	const lastSlash = targetPath.lastIndexOf('/');
@@ -474,175 +757,163 @@ class TestCases {
 		// );
 	}
 
-	static async testWpScriptsLocal() {
-		kernel.mkdirSync('/wp-scripts-experiments', { recursive: true });
-		await fetchAndWriteKernelFile(
-			`/programs/node-loader/wp-scripts/wp-scripts.zip`,
-			`/wp-scripts-experiments/wp-scripts.zip`
-		);
-		
-		// Unzip rest.zip into the dist directory
-		await unzipToKernelDirectory(
-			`/wp-scripts-experiments/wp-scripts.zip`,
-			`/wp-scripts-experiments`
-		);
-
+	static async createSimpleBlock() {
 		// Create a simple block
 		kernel.mkdirSync('/jsx/src', { recursive: true });
-kernel.writeFileSync('/jsx/src/block.json', `{
-	"$schema": "https://json.schemastore.org/block.json",
-	"apiVersion": 2,
-	"name": "gutenberg-examples/example-01-basic-esnext",
-	"title": "Example: Basic (ESNext)",
-	"textdomain": "gutenberg-examples",
-	"icon": "universal-access-alt",
-	"category": "jsx-examples",
-	"example": {},
-	"editorScript": "file:./index.js"
-}`);
-kernel.writeFileSync('/jsx/src/index.js', `/**
-	* WordPress dependencies
-	*/
-   import { registerBlockType } from '@wordpress/blocks';
-   
-   /**
-	* Internal dependencies
-	*/
-   import json from './block.json';
-   import Edit from './edit';
-   import save from './save';
-   
-   // Export this so we can use it in the edit and save files
-   export const blockStyle = {
-	   backgroundColor: '#900',
-	   color: '#fff',
-	   padding: '20px',
-   };
-   
-   // Destructure the json file to get the name of the block
-   // For more information on how this works, see: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/Destructuring_assignment
-   const { name } = json;
-   
-   // Register the block
-   registerBlockType( name, {
-	   edit: Edit,
-	   save, // Object shorthand property - same as writing: save: save,
-   } );`);
-kernel.writeFileSync('/jsx/src/edit.js', `/**
- * WordPress dependencies
- */
-import { __ } from '@wordpress/i18n';
-import { useBlockProps } from '@wordpress/block-editor';
-
-/**
- * Internal dependencies
- */
-import { blockStyle } from './index';
-
-const Edit = () => {
-	const blockProps = useBlockProps( { style: blockStyle } );
-	return (
-		<div { ...blockProps }>
-			{ __(
-				'Hello World, step 1 (from the editor).',
-				'gutenberg-examples'
-			) }
-		</div>
-	);
-};
-export default Edit;`);
-
-kernel.writeFileSync('/jsx/src/save.js', `/**
- * WordPress dependencies
- */
-import { __ } from '@wordpress/i18n';
-import { useBlockProps } from '@wordpress/block-editor';
-
-/**
- * Internal dependencies
- */
-import { blockStyle } from './index';
-
-const Save = () => {
-	const blockProps = useBlockProps.save( { style: blockStyle } );
-	return (
-		<div { ...blockProps }>
-			{ __(
-				'Hello World, step 1 (from the frontend).',
-				'gutenberg-examples'
-			) }
-		</div>
-	);
-};
-export default Save;`);
-kernel.writeFileSync('/jsx/src/index.php', `<?php
-/**
- * Plugin Name: Gutenberg Examples Basic EsNext
- * Plugin URI: https://github.com/WordPress/gutenberg-examples
- * Description: This is a plugin demonstrating how to register new blocks for the Gutenberg editor.
- * Version: 1.1.0
- * Author: the Gutenberg Team
- *
- * @package gutenberg-examples
- */
-
-defined( 'ABSPATH' ) || exit;
-
-/**
- * Load all translations for our plugin from the MO file.
- */
-function gutenberg_examples_01_esnext_load_textdomain() {
-	load_plugin_textdomain( 'gutenberg-examples', false, basename( __DIR__ ) . '/languages' );
-}
-add_action( 'init', 'gutenberg_examples_01_esnext_load_textdomain' );
-
-/**
- * Registers all block assets so that they can be enqueued through Gutenberg in
- * the corresponding context.
- *
- * Passes translations to JavaScript.
- */
-function gutenberg_examples_01_esnext_register_block() {
-
-	// Register the block by passing the location of block.json to register_block_type.
-	register_block_type( __DIR__ );
-
-	if ( function_exists( 'wp_set_script_translations' ) ) {
-		/**
-		 * May be extended to wp_set_script_translations( 'my-handle', 'my-domain',
-		 * plugin_dir_path( MY_PLUGIN ) . 'languages' ) ). For details see
-		 * https://make.wordpress.org/core/2018/11/09/new-javascript-i18n-support-in-wordpress/
-		 */
-		wp_set_script_translations( 'gutenberg-examples-01-esnext', 'gutenberg-examples' );
-	}
-
-}
-add_action( 'init', 'gutenberg_examples_01_esnext_register_block' );`);
-
-kernel.writeFileSync('/jsx/src/save.js', `/**
- * WordPress dependencies
- */
-import { __ } from '@wordpress/i18n';
-import { useBlockProps } from '@wordpress/block-editor';
-
-/**
- * Internal dependencies
- */
-import { blockStyle } from './index';
-
-const Save = () => {
-	const blockProps = useBlockProps.save( { style: blockStyle } );
-	return (
-		<div { ...blockProps }>
-			{ __(
-				'Hello World, step 1 (from the frontend).',
-				'gutenberg-examples'
-			) }
-		</div>
-	);
-};
-export default Save;`);
+		kernel.writeFileSync('/jsx/src/block.json', `{
+			"$schema": "https://json.schemastore.org/block.json",
+			"apiVersion": 2,
+			"name": "gutenberg-examples/example-01-basic-esnext",
+			"title": "Example: Basic (ESNext)",
+			"textdomain": "gutenberg-examples",
+			"icon": "universal-access-alt",
+			"category": "jsx-examples",
+			"example": {},
+			"editorScript": "file:./index.js"
+		}`);
+		kernel.writeFileSync('/jsx/src/index.js', `/**
+			* WordPress dependencies
+			*/
+			import { registerBlockType } from '@wordpress/blocks';
+			
+			/**
+			* Internal dependencies
+			*/
+			import json from './block.json';
+			import Edit from './edit';
+			import save from './save';
+			
+			// Export this so we can use it in the edit and save files
+			export const blockStyle = {
+				backgroundColor: '#900',
+				color: '#fff',
+				padding: '20px',
+			};
+			
+			// Destructure the json file to get the name of the block
+			// For more information on how this works, see: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/Destructuring_assignment
+			const { name } = json;
+			
+			// Register the block
+			registerBlockType( name, {
+				edit: Edit,
+				save, // Object shorthand property - same as writing: save: save,
+			} );`);
+		kernel.writeFileSync('/jsx/src/edit.js', `/**
+			* WordPress dependencies
+			*/
+		import { __ } from '@wordpress/i18n';
+		import { useBlockProps } from '@wordpress/block-editor';
 		
+		/**
+		 * Internal dependencies
+		 */
+		import { blockStyle } from './index';
+		
+		const Edit = () => {
+			const blockProps = useBlockProps( { style: blockStyle } );
+			return (
+				<div { ...blockProps }>
+					{ __(
+						'Hello World, step 1 (from the editor).',
+						'gutenberg-examples'
+					) }
+				</div>
+			);
+		};
+		export default Edit;`);
+		
+		kernel.writeFileSync('/jsx/src/save.js', `/**
+			* WordPress dependencies
+			*/
+		import { __ } from '@wordpress/i18n';
+		import { useBlockProps } from '@wordpress/block-editor';
+		
+		/**
+		 * Internal dependencies
+		 */
+		import { blockStyle } from './index';
+		
+		const Save = () => {
+			const blockProps = useBlockProps.save( { style: blockStyle } );
+			return (
+				<div { ...blockProps }>
+					{ __(
+						'Hello World, step 1 (from the frontend).',
+						'gutenberg-examples'
+					) }
+				</div>
+			);
+		};
+		export default Save;`);
+		kernel.writeFileSync('/jsx/src/index.php', `<?php
+		/**
+		 * Plugin Name: Gutenberg Examples Basic EsNext
+		 * Plugin URI: https://github.com/WordPress/gutenberg-examples
+		 * Description: This is a plugin demonstrating how to register new blocks for the Gutenberg editor.
+		 * Version: 1.1.0
+		 * Author: the Gutenberg Team
+		 *
+		 * @package gutenberg-examples
+		 */
+		
+		defined( 'ABSPATH' ) || exit;
+		
+		/**
+		 * Load all translations for our plugin from the MO file.
+		 */
+		function gutenberg_examples_01_esnext_load_textdomain() {
+			load_plugin_textdomain( 'gutenberg-examples', false, basename( __DIR__ ) . '/languages' );
+		}
+		add_action( 'init', 'gutenberg_examples_01_esnext_load_textdomain' );
+		
+		/**
+		 * Registers all block assets so that they can be enqueued through Gutenberg in
+		 * the corresponding context.
+		 *
+		 * Passes translations to JavaScript.
+		 */
+		function gutenberg_examples_01_esnext_register_block() {
+		
+			// Register the block by passing the location of block.json to register_block_type.
+			register_block_type( __DIR__ );
+		
+			if ( function_exists( 'wp_set_script_translations' ) ) {
+				/**
+				 * May be extended to wp_set_script_translations( 'my-handle', 'my-domain',
+				 * plugin_dir_path( MY_PLUGIN ) . 'languages' ) ). For details see
+				 * https://make.wordpress.org/core/2018/11/09/new-javascript-i18n-support-in-wordpress/
+				 */
+				wp_set_script_translations( 'gutenberg-examples-01-esnext', 'gutenberg-examples' );
+			}
+		
+		}
+		add_action( 'init', 'gutenberg_examples_01_esnext_register_block' );`);
+		
+		kernel.writeFileSync('/jsx/src/save.js', `/**
+			* WordPress dependencies
+			*/
+		import { __ } from '@wordpress/i18n';
+		import { useBlockProps } from '@wordpress/block-editor';
+		
+		/**
+		 * Internal dependencies
+		 */
+		import { blockStyle } from './index';
+		
+		const Save = () => {
+			const blockProps = useBlockProps.save( { style: blockStyle } );
+			return (
+				<div { ...blockProps }>
+					{ __(
+						'Hello World, step 1 (from the frontend).',
+						'gutenberg-examples'
+					) }
+				</div>
+			);
+		};
+		export default Save;`);
+				
 		kernel.writeFileSync('/jsx/package.json', `{
 			"name": "gutenberg-examples",
 			"version": "1.1.0",
@@ -661,6 +932,60 @@ export default Save;`);
 				"url": "https://github.com/WordPress/gutenberg-examples/issues"
 			}
 		}`);
+	}
+
+	static async testEsbuild() {
+		kernel.mkdirSync('/esbuild-experiments', { recursive: true });
+		await fetchAndWriteKernelFile(
+			`/programs/node-loader/es-bundler.zip`,
+			`/esbuild-experiments/esbuild.zip`
+		);
+		
+		// Unzip rest.zip into the dist directory
+		await unzipToKernelDirectory(
+			`/esbuild-experiments/esbuild.zip`,
+			`/esbuild-experiments`
+		);
+		
+
+		// Move node_modules to the top level so it can always be found by wp-scripts.
+		kernel.renameSync('/node_modules', '/node_modules_old');
+		kernel.renameSync('/esbuild-experiments/node_modules', '/node_modules');
+
+		console.log('Creating simple block...');
+		await TestCases.createSimpleBlock();
+		console.log('Renaming src...');
+		kernel.renameSync('/jsx/src', '/esbuild-experiments/src');
+		console.log('Running esbuild...');
+
+		await runProgram(
+			[
+				'node',
+				'/esbuild-experiments/bundle.js',
+				'/esbuild-experiments/src'
+			],
+			'/esbuild-experiments'
+		);
+		console.log('Listing build blocks...');
+		runProgram(['ls', '/build/blocks'])
+		console.log('Done!');
+	}
+
+	static async testWpScriptsLocal() {
+		kernel.mkdirSync('/wp-scripts-experiments', { recursive: true });
+		await fetchAndWriteKernelFile(
+			`/programs/node-loader/wp-scripts/wp-scripts.zip`,
+			`/wp-scripts-experiments/wp-scripts.zip`
+		);
+		
+		// Unzip rest.zip into the dist directory
+		await unzipToKernelDirectory(
+			`/wp-scripts-experiments/wp-scripts.zip`,
+			`/wp-scripts-experiments`
+		);
+
+
+		TestCases.createSimpleBlock();
 
 		// Move node_modules to the top level so it can always be found by wp-scripts.
 		kernel.renameSync('/node_modules', '/node_modules_old');
@@ -721,7 +1046,8 @@ export default Save;`);
 
 // await TestCases.testWorker();
 try {
-	await TestCases.testWpScriptsLocal();
+	// await TestCases.testWpScriptsLocal();
+	await TestCases.testEsbuild();
 } catch (error) {
 	console.error('Error', error);
 }
@@ -734,5 +1060,3 @@ globalThis.addEventListener('unhandledrejection', (event) => {
 globalThis.addEventListener('error', (event) => {
 	console.error('Error:', event);
 });
-
-

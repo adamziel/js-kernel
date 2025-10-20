@@ -1,21 +1,21 @@
-import path from '../../dist/path.js'
-import fs from '../../dist/fs.js'
+import path from '../../dist/path.js';
+import fs from '../../dist/fs.js';
 const ModuleCJSLoader = (
 	await import('../../dist/internal/modules/cjs/loader.js')
-).default
+).default;
 
-const NodeBuffer = globalThis.Buffer
+const NodeBuffer = globalThis.Buffer;
 
-export const kModuleSource = ModuleCJSLoader.kModuleSource
-export const kModuleExport = ModuleCJSLoader.kModuleExport
-export const kModuleExportNames = ModuleCJSLoader.kModuleExportNames
-export const kModuleCircularVisited = ModuleCJSLoader.kModuleCircularVisited
-export const initializeCJS = ModuleCJSLoader.initializeCJS
-export const Module = ModuleCJSLoader.Module
+export const kModuleSource = ModuleCJSLoader.kModuleSource;
+export const kModuleExport = ModuleCJSLoader.kModuleExport;
+export const kModuleExportNames = ModuleCJSLoader.kModuleExportNames;
+export const kModuleCircularVisited = ModuleCJSLoader.kModuleCircularVisited;
+export const initializeCJS = ModuleCJSLoader.initializeCJS;
+export const Module = ModuleCJSLoader.Module;
 
-const DEFAULT_EXPORT_CONDITIONS = Object.freeze(['node', 'require', 'default'])
-const EXPORTS_PATTERN = /^((?:@[^/\\%]+\/)?[^./\\%][^/\\%]*)(\/.*)?$/
-const packageJsonCache = new Map()
+const DEFAULT_EXPORT_CONDITIONS = Object.freeze(['node', 'require', 'default']);
+const EXPORTS_PATTERN = /^((?:@[^/\\%]+\/)?[^./\\%][^/\\%]*)(\/.*)?$/;
+const packageJsonCache = new Map();
 
 function isRelativeRequest(request) {
 	return (
@@ -23,12 +23,12 @@ function isRelativeRequest(request) {
 		request === '..' ||
 		request.startsWith('./') ||
 		request.startsWith('../')
-	)
+	);
 }
 
 function toPathString(input) {
 	if (typeof input === 'string') {
-		return input
+		return input;
 	}
 	if (typeof input === 'object' && input !== null) {
 		if (
@@ -36,37 +36,37 @@ function toPathString(input) {
 			typeof NodeBuffer.isBuffer === 'function' &&
 			NodeBuffer.isBuffer(input)
 		) {
-			return input.toString()
+			return input.toString();
 		}
 		if (typeof input.path === 'string') {
-			return input.path
+			return input.path;
 		}
 	}
-	return String(input)
+	return String(input);
 }
 
 function isPathNotFoundError(error) {
 	return Boolean(
 		error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')
-	)
+	);
 }
 
 function scheduleAsync(callback) {
 	if (typeof queueMicrotask === 'function') {
-		queueMicrotask(callback)
-		return
+		queueMicrotask(callback);
+		return;
 	}
-	Promise.resolve().then(callback)
+	Promise.resolve().then(callback);
 }
 
 function getRealpathFn() {
 	if (typeof fs?.realpathSync?.native === 'function') {
-		return fs.realpathSync.native
+		return fs.realpathSync.native;
 	}
 	if (typeof fs?.realpathSync === 'function') {
-		return fs.realpathSync
+		return fs.realpathSync;
 	}
-	return null
+	return null;
 }
 
 function resolveRealpathWithSymlinks(inputPath, seen = new Set()) {
@@ -74,57 +74,57 @@ function resolveRealpathWithSymlinks(inputPath, seen = new Set()) {
 		typeof fs?.lstatSync !== 'function' ||
 		typeof fs?.readlinkSync !== 'function'
 	) {
-		return null
+		return null;
 	}
-	const absoluteInput = path.resolve(inputPath)
-	const parsed = path.parse(absoluteInput)
+	const absoluteInput = path.resolve(inputPath);
+	const parsed = path.parse(absoluteInput);
 	const segments = absoluteInput
 		.slice(parsed.root.length)
 		.split(path.sep)
-		.filter(Boolean)
-	let currentPath = parsed.root || path.sep
+		.filter(Boolean);
+	let currentPath = parsed.root || path.sep;
 	for (let index = 0; index < segments.length; index += 1) {
-		currentPath = path.join(currentPath, segments[index])
-		let stats
+		currentPath = path.join(currentPath, segments[index]);
+		let stats;
 		try {
-			stats = fs.lstatSync(currentPath)
+			stats = fs.lstatSync(currentPath);
 		} catch (error) {
 			if (isPathNotFoundError(error)) {
-				return null
+				return null;
 			}
-			throw error
+			throw error;
 		}
 		if (stats?.isSymbolicLink?.()) {
-			const canonicalCurrent = path.resolve(currentPath)
+			const canonicalCurrent = path.resolve(currentPath);
 			if (seen.has(canonicalCurrent)) {
 				const loopError = new Error(
 					`ELOOP: too many symbolic links encountered while resolving '${inputPath}'`
-				)
-				loopError.code = 'ELOOP'
-				throw loopError
+				);
+				loopError.code = 'ELOOP';
+				throw loopError;
 			}
-			seen.add(canonicalCurrent)
-			let linkTarget
+			seen.add(canonicalCurrent);
+			let linkTarget;
 			try {
-				linkTarget = fs.readlinkSync(canonicalCurrent)
+				linkTarget = fs.readlinkSync(canonicalCurrent);
 			} catch (error) {
 				if (isPathNotFoundError(error) || error?.code === 'EINVAL') {
-					return null
+					return null;
 				}
-				throw error
+				throw error;
 			}
 			const resolvedTarget = path.isAbsolute(linkTarget)
 				? linkTarget
-				: path.resolve(path.dirname(canonicalCurrent), linkTarget)
-			const remaining = segments.slice(index + 1)
+				: path.resolve(path.dirname(canonicalCurrent), linkTarget);
+			const remaining = segments.slice(index + 1);
 			const nextPath =
 				remaining.length > 0
 					? path.resolve(resolvedTarget, ...remaining)
-					: resolvedTarget
-			return resolveRealpathWithSymlinks(nextPath, seen)
+					: resolvedTarget;
+			return resolveRealpathWithSymlinks(nextPath, seen);
 		}
 	}
-	return absoluteInput
+	return absoluteInput;
 }
 
 function formatRealpathResult(resolvedPath, options) {
@@ -133,81 +133,81 @@ function formatRealpathResult(resolvedPath, options) {
 			? options
 			: typeof options === 'object' && options !== null
 			? options.encoding
-			: undefined
+			: undefined;
 	if (encoding === 'buffer') {
 		if (NodeBuffer && typeof NodeBuffer.from === 'function') {
-			return NodeBuffer.from(resolvedPath)
+			return NodeBuffer.from(resolvedPath);
 		}
 		throw new Error(
 			'Buffer is not available to encode realpath result as buffer'
-		)
+		);
 	}
 	if (!encoding || encoding === 'utf8') {
-		return resolvedPath
+		return resolvedPath;
 	}
 	if (NodeBuffer && typeof NodeBuffer.from === 'function') {
-		return NodeBuffer.from(resolvedPath).toString(encoding)
+		return NodeBuffer.from(resolvedPath).toString(encoding);
 	}
 	throw new Error(
 		'Buffer is not available to encode realpath result with custom encoding'
-	)
+	);
 }
 
 function createRealpathNotFoundError(requestPath) {
 	const error = new Error(
 		`ENOENT: no such file or directory, realpath '${requestPath}'`
-	)
-	error.code = 'ENOENT'
-	error.path = requestPath
-	error.syscall = 'realpath'
-	return error
+	);
+	error.code = 'ENOENT';
+	error.path = requestPath;
+	error.syscall = 'realpath';
+	return error;
 }
 
 function realpathSyncWithSymlinkFallback(requestPath, options) {
-	const pathString = toPathString(requestPath)
-	const manualResolved = resolveRealpathWithSymlinks(pathString)
+	const pathString = toPathString(requestPath);
+	const manualResolved = resolveRealpathWithSymlinks(pathString);
 	if (!manualResolved) {
-		throw createRealpathNotFoundError(pathString)
+		throw createRealpathNotFoundError(pathString);
 	}
-	return formatRealpathResult(manualResolved, options)
+	return formatRealpathResult(manualResolved, options);
 }
 
 function patchFsRealpath() {
 	if (!fs) {
-		return
+		return;
 	}
 	const originalRealpathSync =
-		typeof fs.realpathSync === 'function' ? fs.realpathSync.bind(fs) : null
+		typeof fs.realpathSync === 'function' ? fs.realpathSync.bind(fs) : null;
 	const patchedRealpathSync = function patchedRealpathSync(
 		requestPath,
 		options
 	) {
 		try {
 			if (originalRealpathSync) {
-				return originalRealpathSync(requestPath, options)
+				return originalRealpathSync(requestPath, options);
 			}
 		} catch (error) {
 			if (!isPathNotFoundError(error) && error?.code !== 'ELOOP') {
-				throw error
+				throw error;
 			}
 		}
-		return realpathSyncWithSymlinkFallback(requestPath, options)
-	}
+		return realpathSyncWithSymlinkFallback(requestPath, options);
+	};
 	patchedRealpathSync.native = function patchedRealpathNative(
 		requestPath,
 		options
 	) {
-		return realpathSyncWithSymlinkFallback(requestPath, options)
-	}
-	fs.realpathSync = patchedRealpathSync
-	fs.realpathSync.native = patchedRealpathSync.native
+		return realpathSyncWithSymlinkFallback(requestPath, options);
+	};
+	fs.realpathSync = patchedRealpathSync;
+	fs.realpathSync.native = patchedRealpathSync.native;
 	if (typeof fs.realpath === 'function') {
 		fs.realpath = function patchedRealpath(requestPath, options, callback) {
-			let cb = callback
-			let opts = options
+			let cb = callback;
+			let opts = options;
 			if (typeof opts === 'function') {
-				cb = opts
-				opts = undefined
+				cb = opts;
+				opts = undefined;
 			}
 			if (typeof cb === 'function') {
 				scheduleAsync(() => {
@@ -215,13 +215,13 @@ function patchFsRealpath() {
 						const result = realpathSyncWithSymlinkFallback(
 							requestPath,
 							opts
-						)
-						cb(null, result)
+						);
+						cb(null, result);
 					} catch (error) {
-						cb(error)
+						cb(error);
 					}
-				})
-				return
+				});
+				return;
 			}
 			return new Promise((resolve, reject) => {
 				scheduleAsync(() => {
@@ -229,35 +229,36 @@ function patchFsRealpath() {
 						const result = realpathSyncWithSymlinkFallback(
 							requestPath,
 							opts
-						)
-						resolve(result)
+						);
+						resolve(result);
 					} catch (error) {
-						reject(error)
+						reject(error);
 					}
-				})
-			})
-		}
+				});
+			});
+		};
 	}
 }
 
-patchFsRealpath()
+patchFsRealpath();
 
 function safeRealpath(absolutePath) {
-	const realpathFn = getRealpathFn()
+	const realpathFn = getRealpathFn();
 	if (realpathFn) {
 		try {
-			return realpathFn(absolutePath)
+			return realpathFn(absolutePath);
 		} catch (error) {
 			try {
-				const manualResolved = resolveRealpathWithSymlinks(absolutePath)
+				const manualResolved =
+					resolveRealpathWithSymlinks(absolutePath);
 				if (manualResolved) {
-					return manualResolved
+					return manualResolved;
 				}
 			} catch (manualError) {
 				if (manualError?.code !== 'ELOOP') {
-					throw manualError
+					throw manualError;
 				}
-				return path.resolve(absolutePath)
+				return path.resolve(absolutePath);
 			}
 			if (
 				error &&
@@ -265,42 +266,42 @@ function safeRealpath(absolutePath) {
 					error.code === 'ENOTDIR' ||
 					error.code === 'ELOOP')
 			) {
-				return path.resolve(absolutePath)
+				return path.resolve(absolutePath);
 			}
-			throw error
+			throw error;
 		}
 	}
 	try {
-		const manualResolved = resolveRealpathWithSymlinks(absolutePath)
+		const manualResolved = resolveRealpathWithSymlinks(absolutePath);
 		if (manualResolved) {
-			return manualResolved
+			return manualResolved;
 		}
 	} catch (manualError) {
 		if (manualError?.code !== 'ELOOP') {
-			throw manualError
+			throw manualError;
 		}
 	}
-	return path.resolve(absolutePath)
+	return path.resolve(absolutePath);
 }
 
 function statPath(targetPath) {
 	if (!targetPath) {
-		return -1
+		return -1;
 	}
 	try {
-		const stats = fs.statSync(targetPath)
+		const stats = fs.statSync(targetPath);
 		if (
 			stats.isFile() ||
 			stats.isFIFO?.() ||
 			stats.isSocket?.() ||
 			stats.isSymbolicLink?.()
 		) {
-			return 0
+			return 0;
 		}
 		if (stats.isDirectory()) {
-			return 1
+			return 1;
 		}
-		return 2
+		return 2;
 	} catch (error) {
 		if (
 			error &&
@@ -309,75 +310,75 @@ function statPath(targetPath) {
 				error.code === 'ELOOP')
 		) {
 			try {
-				const manualResolved = resolveRealpathWithSymlinks(targetPath)
+				const manualResolved = resolveRealpathWithSymlinks(targetPath);
 				if (manualResolved) {
 					try {
-						const stats = fs.statSync(manualResolved)
+						const stats = fs.statSync(manualResolved);
 						if (
 							stats.isFile() ||
 							stats.isFIFO?.() ||
 							stats.isSocket?.() ||
 							stats.isSymbolicLink?.()
 						) {
-							return 0
+							return 0;
 						}
 						if (stats.isDirectory()) {
-							return 1
+							return 1;
 						}
 					} catch (manualError) {
 						if (
 							!isPathNotFoundError(manualError) &&
 							manualError?.code !== 'ELOOP'
 						) {
-							throw manualError
+							throw manualError;
 						}
 					}
 				}
 			} catch (manualResolveError) {
 				if (manualResolveError?.code !== 'ELOOP') {
-					throw manualResolveError
+					throw manualResolveError;
 				}
 			}
-			return -1
+			return -1;
 		}
-		throw error
+		throw error;
 	}
 }
 
 function readPackage(dirPath) {
-	const packageJsonPath = path.join(dirPath, 'package.json')
-	const cached = packageJsonCache.get(packageJsonPath)
+	const packageJsonPath = path.join(dirPath, 'package.json');
+	const cached = packageJsonCache.get(packageJsonPath);
 	if (cached) {
-		return cached
+		return cached;
 	}
 	try {
-		const raw = fs.readFileSync(packageJsonPath, 'utf8')
-		const data = JSON.parse(raw)
+		const raw = fs.readFileSync(packageJsonPath, 'utf8');
+		const data = JSON.parse(raw);
 		const entry = {
 			exists: true,
 			path: packageJsonPath,
 			data,
 			main: data.main,
 			exports: data.exports,
-		}
-		packageJsonCache.set(packageJsonPath, entry)
-		return entry
+		};
+		packageJsonCache.set(packageJsonPath, entry);
+		return entry;
 	} catch (error) {
 		if (error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) {
-			const entry = { exists: false, path: packageJsonPath }
-			packageJsonCache.set(packageJsonPath, entry)
-			return entry
+			const entry = { exists: false, path: packageJsonPath };
+			packageJsonCache.set(packageJsonPath, entry);
+			return entry;
 		}
-		throw error
+		throw error;
 	}
 }
 
 function selectConditionalTarget(target, conditions, patternMatch) {
 	if (target == null) {
-		return null
+		return null;
 	}
 	if (typeof target === 'string') {
-		return { target, patternMatch }
+		return { target, patternMatch };
 	}
 	if (Array.isArray(target)) {
 		for (const candidate of target) {
@@ -385,12 +386,12 @@ function selectConditionalTarget(target, conditions, patternMatch) {
 				candidate,
 				conditions,
 				patternMatch
-			)
+			);
 			if (resolved) {
-				return resolved
+				return resolved;
 			}
 		}
-		return null
+		return null;
 	}
 	if (typeof target === 'object') {
 		for (const condition of conditions) {
@@ -399,9 +400,9 @@ function selectConditionalTarget(target, conditions, patternMatch) {
 					target[condition],
 					conditions,
 					patternMatch
-				)
+				);
 				if (resolved) {
-					return resolved
+					return resolved;
 				}
 			}
 		}
@@ -410,49 +411,49 @@ function selectConditionalTarget(target, conditions, patternMatch) {
 				target.default,
 				conditions,
 				patternMatch
-			)
+			);
 		}
 	}
-	return null
+	return null;
 }
 
 function resolveExportsTarget(exportsField, subpath, conditions) {
 	if (exportsField == null) {
-		return null
+		return null;
 	}
 	if (typeof exportsField === 'string' || Array.isArray(exportsField)) {
-		return selectConditionalTarget(exportsField, conditions)
+		return selectConditionalTarget(exportsField, conditions);
 	}
 	if (typeof exportsField !== 'object') {
-		return null
+		return null;
 	}
 	if (Object.keys(exportsField).every((key) => key[0] !== '.')) {
-		return selectConditionalTarget(exportsField, conditions)
+		return selectConditionalTarget(exportsField, conditions);
 	}
 	if (Object.prototype.hasOwnProperty.call(exportsField, subpath)) {
-		return selectConditionalTarget(exportsField[subpath], conditions)
+		return selectConditionalTarget(exportsField[subpath], conditions);
 	}
 	if (subpath !== '.') {
 		for (const key of Object.keys(exportsField)) {
 			if (!key.endsWith('*')) {
-				continue
+				continue;
 			}
-			const baseKey = key.slice(0, -1)
+			const baseKey = key.slice(0, -1);
 			if (!subpath.startsWith(baseKey)) {
-				continue
+				continue;
 			}
-			const patternMatch = subpath.slice(baseKey.length)
+			const patternMatch = subpath.slice(baseKey.length);
 			const resolved = selectConditionalTarget(
 				exportsField[key],
 				conditions,
 				patternMatch
-			)
+			);
 			if (resolved) {
-				return resolved
+				return resolved;
 			}
 		}
 	}
-	return null
+	return null;
 }
 
 function materializeExportsTarget(
@@ -465,20 +466,20 @@ function materializeExportsTarget(
 	seenDirs
 ) {
 	if (!targetEntry) {
-		return null
+		return null;
 	}
-	const { target, patternMatch } = targetEntry
+	const { target, patternMatch } = targetEntry;
 	if (typeof target !== 'string' || !target.startsWith('./')) {
-		return null
+		return null;
 	}
-	let relativeTarget = target
+	let relativeTarget = target;
 	if (patternMatch !== undefined) {
 		if (!target.includes('*')) {
-			return null
+			return null;
 		}
-		relativeTarget = target.replace('*', patternMatch)
+		relativeTarget = target.replace('*', patternMatch);
 	}
-	const resolved = path.resolve(packageRoot, relativeTarget)
+	const resolved = path.resolve(packageRoot, relativeTarget);
 	return finalizeResolvedPath(
 		resolved,
 		exts,
@@ -486,25 +487,25 @@ function materializeExportsTarget(
 		request,
 		conditions,
 		seenDirs
-	)
+	);
 }
 
 function tryFile(filePath) {
-	const statResult = statPath(filePath)
+	const statResult = statPath(filePath);
 	if (statResult === 0) {
-		return safeRealpath(filePath)
+		return safeRealpath(filePath);
 	}
-	return false
+	return false;
 }
 
 function tryExtensions(basePath, exts) {
 	for (const ext of exts) {
-		const filename = tryFile(basePath + ext)
+		const filename = tryFile(basePath + ext);
 		if (filename) {
-			return filename
+			return filename;
 		}
 	}
-	return false
+	return false;
 }
 
 function resolveIndex(targetPath, exts, isMain, request, conditions, seenDirs) {
@@ -515,7 +516,7 @@ function resolveIndex(targetPath, exts, isMain, request, conditions, seenDirs) {
 		request,
 		conditions,
 		seenDirs
-	)
+	);
 }
 
 function resolvePackageDirectory(
@@ -526,19 +527,19 @@ function resolvePackageDirectory(
 	conditions,
 	seenDirs
 ) {
-	const realTarget = safeRealpath(targetPath)
+	const realTarget = safeRealpath(targetPath);
 	if (seenDirs.has(realTarget)) {
-		return false
+		return false;
 	}
-	seenDirs.add(realTarget)
-	const pkg = readPackage(targetPath)
+	seenDirs.add(realTarget);
+	const pkg = readPackage(targetPath);
 	if (pkg?.exists) {
-		const exportsConditions = conditions ?? DEFAULT_EXPORT_CONDITIONS
+		const exportsConditions = conditions ?? DEFAULT_EXPORT_CONDITIONS;
 		const exportsResult = resolveExportsTarget(
 			pkg.exports,
 			'.',
 			exportsConditions
-		)
+		);
 		const materialized = materializeExportsTarget(
 			targetPath,
 			exportsResult,
@@ -547,12 +548,12 @@ function resolvePackageDirectory(
 			request,
 			conditions,
 			seenDirs
-		)
+		);
 		if (materialized) {
-			return materialized
+			return materialized;
 		}
 		if (pkg.main) {
-			const mainTarget = path.resolve(targetPath, pkg.main)
+			const mainTarget = path.resolve(targetPath, pkg.main);
 			if (safeRealpath(mainTarget) !== realTarget) {
 				const mainResolved = finalizeResolvedPath(
 					mainTarget,
@@ -561,14 +562,21 @@ function resolvePackageDirectory(
 					request,
 					conditions,
 					seenDirs
-				)
+				);
 				if (mainResolved) {
-					return mainResolved
+					return mainResolved;
 				}
 			}
 		}
 	}
-	return resolveIndex(targetPath, exts, isMain, request, conditions, seenDirs)
+	return resolveIndex(
+		targetPath,
+		exts,
+		isMain,
+		request,
+		conditions,
+		seenDirs
+	);
 }
 
 function finalizeResolvedPath(
@@ -579,9 +587,9 @@ function finalizeResolvedPath(
 	conditions,
 	seenDirs
 ) {
-	const statResult = statPath(resolvedPath)
+	const statResult = statPath(resolvedPath);
 	if (statResult === 0) {
-		return safeRealpath(resolvedPath)
+		return safeRealpath(resolvedPath);
 	}
 	if (statResult === 1) {
 		return resolvePackageDirectory(
@@ -591,17 +599,17 @@ function finalizeResolvedPath(
 			request,
 			conditions,
 			seenDirs
-		)
+		);
 	}
 	if (statResult === -1) {
 		if (exts.length > 0) {
-			const withExts = tryExtensions(resolvedPath, exts)
+			const withExts = tryExtensions(resolvedPath, exts);
 			if (withExts) {
-				return withExts
+				return withExts;
 			}
 		}
 	}
-	return false
+	return false;
 }
 
 function resolveExportsFromPath(
@@ -612,22 +620,22 @@ function resolveExportsFromPath(
 	conditions,
 	seenDirs
 ) {
-	const match = EXPORTS_PATTERN.exec(request)
+	const match = EXPORTS_PATTERN.exec(request);
 	if (!match) {
-		return null
+		return null;
 	}
-	const [, packageName, expansion = ''] = match
-	const packageRoot = path.resolve(basePath, packageName)
-	const pkg = readPackage(packageRoot)
+	const [, packageName, expansion = ''] = match;
+	const packageRoot = path.resolve(basePath, packageName);
+	const pkg = readPackage(packageRoot);
 	if (!pkg?.exists || pkg.exports == null) {
-		return null
+		return null;
 	}
-	const subpath = expansion ? `.${expansion}` : '.'
+	const subpath = expansion ? `.${expansion}` : '.';
 	const target = resolveExportsTarget(
 		pkg.exports,
 		subpath,
 		conditions ?? DEFAULT_EXPORT_CONDITIONS
-	)
+	);
 	return materializeExportsTarget(
 		packageRoot,
 		target,
@@ -636,52 +644,53 @@ function resolveExportsFromPath(
 		request,
 		conditions,
 		seenDirs
-	)
+	);
 }
 
 Module._findPath = function (request, paths, isMain, conditions) {
 	if (typeof request !== 'string' || request.length === 0) {
-		return false
+		return false;
 	}
 	if (
 		request.startsWith('node:') ||
 		globalThis.coreModules?.[request] ||
 		Module.builtinModules?.includes?.(request)
 	) {
-		return request
+		return request;
 	}
-	let searchPaths = paths
-	const absoluteRequest = path.isAbsolute(request)
+	let searchPaths = paths;
+	const absoluteRequest = path.isAbsolute(request);
 	if (absoluteRequest) {
-		searchPaths = ['']
+		searchPaths = [''];
 	} else if (!Array.isArray(searchPaths) || searchPaths.length === 0) {
-		return false
+		return false;
 	}
-	const cacheKey = `${request}\0${searchPaths.join('\0')}`
-	const cached = Module._pathCache?.[cacheKey]
+	const cacheKey = `${request}\0${searchPaths.join('\0')}`;
+	const cached = Module._pathCache?.[cacheKey];
 	if (cached) {
-		return cached
+		return cached;
 	}
-	let extensions = null
-	const seenDirectories = new Set()
-	const trailingSlash = request.endsWith('/') || request.endsWith('..')
-	let insidePath = true
+	let extensions = null;
+	const seenDirectories = new Set();
+	const trailingSlash = request.endsWith('/') || request.endsWith('..');
+	let insidePath = true;
 	if (isRelativeRequest(request)) {
-		const normalized = path.normalize(request)
+		const normalized = path.normalize(request);
 		if (normalized.startsWith('..')) {
-			insidePath = false
+			insidePath = false;
 		}
 	}
 	for (const currentPath of searchPaths) {
 		if (typeof currentPath !== 'string') {
-			continue
+			continue;
 		}
 		if (insidePath && currentPath && statPath(currentPath) < 1) {
-			continue
+			continue;
 		}
 		if (!absoluteRequest) {
 			const candidateExts =
-				extensions ?? Object.keys(Module._extensions ?? { '.js': true })
+				extensions ??
+				Object.keys(Module._extensions ?? { '.js': true });
 			const exportsResolved = resolveExportsFromPath(
 				currentPath,
 				request,
@@ -689,17 +698,17 @@ Module._findPath = function (request, paths, isMain, conditions) {
 				isMain,
 				conditions ?? DEFAULT_EXPORT_CONDITIONS,
 				seenDirectories
-			)
+			);
 			if (exportsResolved) {
-				Module._pathCache[cacheKey] = exportsResolved
-				return exportsResolved
+				Module._pathCache[cacheKey] = exportsResolved;
+				return exportsResolved;
 			}
 		}
-		const basePath = path.resolve(currentPath, request)
+		const basePath = path.resolve(currentPath, request);
 		if (extensions === null) {
-			extensions = Object.keys(Module._extensions ?? { '.js': true })
+			extensions = Object.keys(Module._extensions ?? { '.js': true });
 		}
-		let filename = null
+		let filename = null;
 		if (!trailingSlash) {
 			filename = finalizeResolvedPath(
 				basePath,
@@ -708,7 +717,7 @@ Module._findPath = function (request, paths, isMain, conditions) {
 				request,
 				conditions,
 				seenDirectories
-			)
+			);
 		}
 		if (!filename && statPath(basePath) === 1) {
 			filename = resolvePackageDirectory(
@@ -718,32 +727,36 @@ Module._findPath = function (request, paths, isMain, conditions) {
 				request,
 				conditions,
 				seenDirectories
-			)
+			);
 		}
 		if (filename) {
-			Module._pathCache[cacheKey] = filename
-			return filename
+			Module._pathCache[cacheKey] = filename;
+			return filename;
 		}
 	}
-	return false
-}
+	return false;
+};
 
 export function isBuiltin(request) {
-	return request.startsWith('node:') || globalThis.coreModules?.[request] || Module.builtinModules?.includes?.(request)
+	return (
+		request.startsWith('node:') ||
+		globalThis.coreModules?.[request] ||
+		Module.builtinModules?.includes?.(request)
+	);
 }
-export const runMain = Module.runMain
+export const runMain = Module.runMain;
 export const findLongestRegisteredExtension =
-	ModuleCJSLoader.findLongestRegisteredExtension
-export const resolveForCJSWithHooks = ModuleCJSLoader.resolveForCJSWithHooks
+	ModuleCJSLoader.findLongestRegisteredExtension;
+export const resolveForCJSWithHooks = ModuleCJSLoader.resolveForCJSWithHooks;
 export const loadSourceForCJSWithHooks =
-	ModuleCJSLoader.loadSourceForCJSWithHooks
+	ModuleCJSLoader.loadSourceForCJSWithHooks;
 export const populateCJSExportsFromESM =
-	ModuleCJSLoader.populateCJSExportsFromESM
-export const wrapSafe = ModuleCJSLoader.wrapSafe
-export const wrapModuleLoad = ModuleCJSLoader.wrapModuleLoad
-export const kIsMainSymbol = ModuleCJSLoader.kIsMainSymbol
-export const kIsCachedByESMLoader = ModuleCJSLoader.kIsCachedByESMLoader
-export const kRequiredModuleSymbol = ModuleCJSLoader.kRequiredModuleSymbol
-export const kIsExecuting = ModuleCJSLoader.kIsExecuting
-export const builtinModules = Object.keys(globalThis.coreModules)
-export const globalPaths = Module.globalPaths
+	ModuleCJSLoader.populateCJSExportsFromESM;
+export const wrapSafe = ModuleCJSLoader.wrapSafe;
+export const wrapModuleLoad = ModuleCJSLoader.wrapModuleLoad;
+export const kIsMainSymbol = ModuleCJSLoader.kIsMainSymbol;
+export const kIsCachedByESMLoader = ModuleCJSLoader.kIsCachedByESMLoader;
+export const kRequiredModuleSymbol = ModuleCJSLoader.kRequiredModuleSymbol;
+export const kIsExecuting = ModuleCJSLoader.kIsExecuting;
+export const builtinModules = Object.keys(globalThis.coreModules);
+export const globalPaths = Module.globalPaths;

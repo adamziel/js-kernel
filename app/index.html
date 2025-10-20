@@ -23,90 +23,187 @@
     
     <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
     <script type="module">
-        // Initialize xterm.js
-        const term = new Terminal({
-            cursorBlink: true,
-            fontSize: 14,
-            fontFamily: 'Menlo, Monaco, "Courier New", monospace',
-            theme: {
-                background: '#1e1e1e',
-                foreground: '#d4d4d4',
-                cursor: '#ffffff',
-                black: '#000000',
-                red: '#cd3131',
-                green: '#0dbc79',
-                yellow: '#e5e510',
-                blue: '#2472c8',
-                magenta: '#bc3fbc',
-                cyan: '#11a8cd',
-                white: '#e5e5e5',
-                brightBlack: '#666666',
-                brightRed: '#f14c4c',
-                brightGreen: '#23d18b',
-                brightYellow: '#f5f543',
-                brightBlue: '#3b8eea',
-                brightMagenta: '#d670d6',
-                brightCyan: '#29b8db',
-                brightWhite: '#e5e5e5'
+        const SERVICE_WORKER_PATH = './import-service-worker.js';
+        const SERVICE_WORKER_TIMEOUT_MS = 10000;
+
+        async function ensureServiceWorkerControl() {
+            if (!('serviceWorker' in navigator)) {
+                return null;
             }
-        });
-        
-        term.open(document.getElementById('terminal'));
-        
-        // Initialize worker
-        const worker = new Worker('./main-app.ts', {
-            type: 'module'
-        });
-        
-        // Callback for every keystroke - raw input sent directly to shell
-        term.onData((data) => {
-            // Send raw keystroke to worker's stdin
-            worker.postMessage({ 
-                type: 'stdin', 
-                data: data 
-            });
-        });
-        
-        // Handle messages from worker
-        worker.addEventListener('message', (event) => {
-            const { type, data } = event.data;
-            
-            if (type === 'stdout') {
-                // Raw terminal output from shell - write directly
-                console.log('Raw terminal output:', {data});
-                term.write(data);
-            } else if (type === 'stderr') {
-                // Command submitted for execution
-                console.log('Command to execute:', data);
-                // TODO: Execute command and send results back
-                // For now, just acknowledge
-                worker.postMessage({ 
-                    type: 'stdout', 
-                    data: `Executed: ${data}\r\n` 
+
+            const registration = await navigator.serviceWorker.register(
+                SERVICE_WORKER_PATH,
+                { type: 'module' }
+            );
+
+            await navigator.serviceWorker.ready;
+
+            if (!navigator.serviceWorker.controller) {
+                await new Promise((resolve) => {
+                    const handleControllerChange = () => {
+                        navigator.serviceWorker.removeEventListener(
+                            'controllerchange',
+                            handleControllerChange
+                        );
+                        resolve();
+                    };
+                    navigator.serviceWorker.addEventListener(
+                        'controllerchange',
+                        handleControllerChange
+                    );
                 });
             }
-        });
-        
-        worker.addEventListener('error', (error) => {
-            console.error('Worker error:', error);
-            term.write(`\r\n\x1b[31mError: ${error.message}\x1b[0m\r\n`);
-        });
-        
-        // Start the worker
-        worker.postMessage({ type: 'start' });
-        
-        // API for feeding shell responses
-        window.writeToShell = (data) => {
-            worker.postMessage({ type: 'stdout', data });
-        };
-        
-        // Make terminal and worker available globally for debugging
-        window.term = term;
-        window.worker = worker;
 
-        globalThis.runProgram = async (argv) => {
-            worker.postMessage({ type: 'runProgram', argv });
-        };
+            return registration;
+        }
+
+        function createImportRequest(worker) {
+            return (path, referrer) =>
+                new Promise((resolve, reject) => {
+                    const channel = new MessageChannel();
+                    const timeout = setTimeout(() => {
+                        channel.port1.onmessage = null;
+                        reject(new Error(`Timed out resolving import ${path}`));
+                    }, SERVICE_WORKER_TIMEOUT_MS);
+
+                    channel.port1.onmessage = (event) => {
+                        clearTimeout(timeout);
+                        const payload = event.data;
+                        if (payload?.ok) {
+                            resolve(payload);
+                        } else {
+                            reject(
+                                new Error(
+                                    payload?.error ||
+                                        `Failed to resolve import ${path}`
+                                )
+                            );
+                        }
+                    };
+
+                    worker.postMessage(
+                        {
+                            type: 'resolve-import',
+                            path,
+                            referrer: referrer ?? null,
+                        },
+                        [channel.port2]
+                    );
+                });
+        }
+
+        async function init() {
+            const term = new Terminal({
+                cursorBlink: true,
+                fontSize: 14,
+                fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+                theme: {
+                    background: '#1e1e1e',
+                    foreground: '#d4d4d4',
+                    cursor: '#ffffff',
+                    black: '#000000',
+                    red: '#cd3131',
+                    green: '#0dbc79',
+                    yellow: '#e5e510',
+                    blue: '#2472c8',
+                    magenta: '#bc3fbc',
+                    cyan: '#11a8cd',
+                    white: '#e5e5e5',
+                    brightBlack: '#666666',
+                    brightRed: '#f14c4c',
+                    brightGreen: '#23d18b',
+                    brightYellow: '#f5f543',
+                    brightBlue: '#3b8eea',
+                    brightMagenta: '#d670d6',
+                    brightCyan: '#29b8db',
+                    brightWhite: '#e5e5e5',
+                },
+            });
+
+            term.open(document.getElementById('terminal'));
+
+            await ensureServiceWorkerControl();
+
+            const worker = new Worker('./main-app.ts', {
+                type: 'module',
+            });
+
+            const resolveImport = createImportRequest(worker);
+
+            if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.addEventListener('message', (event) => {
+                    if (event.data?.type !== 'resolve-import') {
+                        return;
+                    }
+
+                    const port = event.ports?.[0];
+                    if (!port) {
+                        return;
+                    }
+
+                    const { path, referrer } = event.data;
+                    resolveImport(path, referrer)
+                        .then((payload) => {
+                            port.postMessage(payload);
+                        })
+                        .catch((error) => {
+                            port.postMessage({
+                                ok: false,
+                                error:
+                                    error instanceof Error
+                                        ? error.message
+                                        : String(error),
+                            });
+                        });
+                });
+            }
+
+            term.onData((data) => {
+                worker.postMessage({
+                    type: 'stdin',
+                    data,
+                });
+            });
+
+            worker.addEventListener('message', (event) => {
+                const { type, data } = event.data;
+
+                if (type === 'stdout') {
+                    console.log('Raw terminal output:', { data });
+                    term.write(data);
+                } else if (type === 'stderr') {
+                    console.log('Command to execute:', data);
+                    worker.postMessage({
+                        type: 'stdout',
+                        data: `Executed: ${data}\r\n`,
+                    });
+                }
+            });
+
+            worker.addEventListener('error', (error) => {
+                console.error('Worker error:', error);
+                term.write(
+                    `\r\n\x1b[31mError: ${error.message}\x1b[0m\r\n`
+                );
+            });
+
+            worker.postMessage({ type: 'start' });
+
+            window.writeToShell = (data) => {
+                worker.postMessage({ type: 'stdout', data });
+            };
+
+            window.term = term;
+            window.worker = worker;
+
+            globalThis.runProgram = async (argv) => {
+                worker.postMessage({ type: 'runProgram', argv });
+            };
+        }
+
+        init().catch((error) => {
+            console.error('Failed to initialise app', error);
+        });
     </script>
 </body>
 </html>

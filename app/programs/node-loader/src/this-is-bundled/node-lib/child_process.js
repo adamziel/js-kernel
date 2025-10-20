@@ -49,7 +49,8 @@ var __classPrivateFieldSet =
 var _ChildProcessPolyfill_finishListeners,
 	_ChildProcessPolyfill_killListeners,
 	_ChildProcessPolyfill_finished,
-	_ChildProcessPolyfill_customKill;
+	_ChildProcessPolyfill_customKill,
+	_ChildProcessPolyfill_refed;
 import { EventEmitter } from '../../../node/lib/events.js';
 import { PassThrough } from '../../../node/lib/stream.js';
 const sharedDecoder =
@@ -68,6 +69,7 @@ class ChildProcessPolyfill extends EventEmitter {
 		_ChildProcessPolyfill_killListeners.set(this, []);
 		_ChildProcessPolyfill_finished.set(this, false);
 		_ChildProcessPolyfill_customKill.set(this, null);
+		_ChildProcessPolyfill_refed.set(this, true);
 		this.stdin = stdio.stdin;
 		this.stdout = stdio.stdout;
 		this.stderr = stdio.stderr;
@@ -143,11 +145,20 @@ class ChildProcessPolyfill extends EventEmitter {
 			'f'
 		);
 	}
+	ref() {
+		__classPrivateFieldSet(this, _ChildProcessPolyfill_refed, true, 'f');
+		return this;
+	}
+	unref() {
+		__classPrivateFieldSet(this, _ChildProcessPolyfill_refed, false, 'f');
+		return this;
+	}
 }
 (_ChildProcessPolyfill_finishListeners = new WeakMap()),
 	(_ChildProcessPolyfill_killListeners = new WeakMap()),
 	(_ChildProcessPolyfill_finished = new WeakMap()),
-	(_ChildProcessPolyfill_customKill = new WeakMap());
+	(_ChildProcessPolyfill_customKill = new WeakMap()),
+	(_ChildProcessPolyfill_refed = new WeakMap());
 
 const createStream = () => new PassThrough();
 const removeNodeListener = (emitter, event, listener) => {

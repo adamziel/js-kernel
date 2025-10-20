@@ -14,6 +14,37 @@ const clientBootUrl = new URL(
 	import.meta.url
 ).href;
 
+function createServiceWorkerImportUrl(sourceUrl: string): string | null {
+	try {
+		const target = new URL(sourceUrl, self.location.href);
+		const origin =
+			typeof self.location?.origin === 'string'
+				? self.location.origin
+				: `${target.protocol}//${target.host}`;
+	const path = target.pathname || '/';
+	return `${origin}${path}?import=${encodeURIComponent(path)}`;
+	} catch {
+		return null;
+	}
+}
+
+async function importWithServiceWorker(url: string) {
+	const swUrl = createServiceWorkerImportUrl(url);
+	if (swUrl) {
+		try {
+			return await import(/* @vite-ignore */ swUrl);
+		} catch (error) {
+			console.warn(
+				`Service worker import fallback failed for ${url}:`,
+				error
+			);
+		}
+	}
+	return import(
+		/* @vite-ignore */ url.slice(0, 4) + url.slice(4)
+	);
+}
+
 let runtimePromise: Promise<NodeRuntime> | null = null;
 
 export async function loadNode(): Promise<NodeRuntime> {
@@ -26,10 +57,7 @@ export async function loadNode(): Promise<NodeRuntime> {
 async function bootstrapNodeRuntime(): Promise<NodeRuntime> {
 	let module;
 	try {
-		module = await import(
-			/* @vite-ignore */ clientBootUrl.slice(0, 4) +
-				clientBootUrl.slice(4)
-		);
+		module = await importWithServiceWorker(clientBootUrl);
 	} catch (error) {
 		console.error(error);
 		console.trace('Error loading client-boot.js:', error);

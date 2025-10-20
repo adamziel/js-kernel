@@ -6032,6 +6032,7 @@ const Module = await import('./module.js');
 globalThis.coreModules.module = {
 	...Module,
 	runMain: () => Module.Module.runMain(),
+	createRequire: (parentModule) => Module.Module.createRequire(parentModule),
 };
 
 // realm.BuiltinModule
