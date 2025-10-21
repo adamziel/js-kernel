@@ -8,8 +8,51 @@ import {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-const decode = (input: Uint8Array | Buffer) => decoder.decode(input);
-const toArray = (bytes: Uint8Array | Buffer) => Array.from(bytes);
+const decode = (input: Uint8Array | string) =>
+	typeof input === 'string' ? input : decoder.decode(input);
+const toArray = (bytes: Uint8Array) => Array.from(bytes);
+
+const base64ToString = (value: string) => {
+	const BASE64_CHARS =
+		'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+	const charToValue = new Map<string, number>();
+	for (let i = 0; i < BASE64_CHARS.length; i += 1) {
+		charToValue.set(BASE64_CHARS[i], i);
+	}
+	const cleaned = value.replace(/[\r\n\s]/g, '');
+	let padding = 0;
+	if (cleaned.endsWith('==')) {
+		padding = 2;
+	} else if (cleaned.endsWith('=')) {
+		padding = 1;
+	}
+	const outputLength = ((cleaned.length / 4) * 3) - padding;
+	const bytes = new Uint8Array(outputLength);
+	let outIndex = 0;
+	for (let i = 0; i < cleaned.length; i += 4) {
+		const c1 = charToValue.get(cleaned[i]) ?? 0;
+		const c2 = charToValue.get(cleaned[i + 1]) ?? 0;
+		const c3 =
+			cleaned[i + 2] === '=' ? 0 : charToValue.get(cleaned[i + 2]) ?? 0;
+		const c4 =
+			cleaned[i + 3] === '=' ? 0 : charToValue.get(cleaned[i + 3]) ?? 0;
+		const triple = (c1 << 18) | (c2 << 12) | (c3 << 6) | c4;
+		if (outIndex < bytes.length) {
+			bytes[outIndex++] = (triple >> 16) & 0xff;
+		}
+		if (outIndex < bytes.length) {
+			bytes[outIndex++] = (triple >> 8) & 0xff;
+		}
+		if (outIndex < bytes.length) {
+			bytes[outIndex++] = triple & 0xff;
+		}
+	}
+	let output = '';
+	for (let i = 0; i < bytes.length; i += 1) {
+		output += String.fromCharCode(bytes[i]);
+	}
+	return output;
+};
 
 describe('InMemoryFileSystem', () => {
 	let fs: InMemoryFileSystem;
@@ -67,9 +110,9 @@ describe('InMemoryFileSystem', () => {
 		expect(latin1).toBe('\u00ffOK');
 
 		fs.writeFileSync('/buffer.bin', 'buffer!', 'utf8');
-		const bufferResult = fs.readFileSync('/buffer.bin', 'buffer');
-		expect(Buffer.isBuffer(bufferResult)).toBe(true);
-		expect(bufferResult.toString('utf8')).toBe('buffer!');
+	const bufferResult = fs.readFileSync('/buffer.bin', 'buffer');
+	expect(bufferResult instanceof Uint8Array).toBe(true);
+	expect(new TextDecoder().decode(bufferResult)).toBe('buffer!');
 	});
 
 	it('throws an ENOENT error when reading a missing file', () => {
@@ -125,13 +168,12 @@ describe('InMemoryFileSystem', () => {
 		const subDirent = dirents.find((entry) => entry.name === 'sub');
 		expect(subDirent?.isDirectory()).toBe(true);
 
-		const buffers = fs.readdirSync('/dir', 'buffer');
-		expect(buffers.every((entry) => Buffer.isBuffer(entry))).toBe(true);
+	const buffers = fs.readdirSync('/dir', 'buffer');
+	expect(buffers.every((entry) => entry instanceof Uint8Array)).toBe(true);
 
-		const base64 = fs.readdirSync('/dir', 'base64');
-		expect(base64).toEqual(
-			entries.map((name) => Buffer.from(name).toString('base64'))
-		);
+	const base64 = fs.readdirSync('/dir', 'base64');
+	const decoded = base64.map((name) => base64ToString(name));
+	expect(decoded).toEqual(entries);
 	});
 
 	it('supports the scandir binding variant and encoding validation', () => {

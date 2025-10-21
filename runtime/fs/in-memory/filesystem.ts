@@ -622,15 +622,15 @@ export class InMemoryFileSystem {
 		);
 		const entries = Array.from(node.children.keys());
 
-		// When encoding is 'buffer', return array of Buffers
+		// When encoding is 'buffer', return array of Uint8Array buffers
 		if (encoding === 'buffer') {
-			return entries.map((entry) => Buffer.from(entry));
+			return entries.map((entry) => toUint8Array(entry, 'utf8'));
 		}
 
 		// Otherwise return strings (with optional encoding conversion)
 		if (encoding && encoding !== 'utf8') {
 			return entries.map((entry) =>
-				Buffer.from(entry).toString(encoding)
+				fromUint8Array(toUint8Array(entry, 'utf8'), encoding)
 			);
 		}
 
@@ -2449,13 +2449,6 @@ function toUint8Array(data, encoding) {
 	}
 	if (typeof data === 'string') {
 		const format = normalizeEncoding(encoding) ?? 'utf8';
-		if (typeof Buffer !== 'undefined') {
-			if (format === 'base64url') {
-				return Buffer.from(base64UrlToBase64(data), 'base64');
-			}
-			const bufferEncoding = format === 'latin1' ? 'latin1' : format;
-			return Buffer.from(data, bufferEncoding === 'buffer' ? 'utf8' : bufferEncoding);
-		}
 		switch (format) {
 			case 'utf8': {
 				if (!textEncoderUtf8) {
@@ -2500,15 +2493,15 @@ function toUint8Array(data, encoding) {
 				}
 				return result;
 			}
-			case 'base64':
-				return base64DecodeToUint8Array(data);
-			case 'base64url':
-				return base64DecodeToUint8Array(base64UrlToBase64(data));
-			default: {
-				if (!textEncoderUtf8) {
-					throw new Error('TextEncoder not available');
-				}
-				return textEncoderUtf8.encode(data);
+		case 'base64':
+			return base64DecodeToUint8Array(data);
+		case 'base64url':
+			return base64DecodeToUint8Array(base64UrlToBase64(data));
+		default: {
+			if (!textEncoderUtf8) {
+				throw new Error('TextEncoder not available');
+			}
+			return textEncoderUtf8.encode(data);
 			}
 		}
 	}
@@ -2529,20 +2522,6 @@ function fromUint8Array(data, encoding) {
 	if (!format) {
 		return data;
 	}
-	if (format === 'buffer') {
-		if (typeof Buffer !== 'undefined') {
-			return Buffer.from(data);
-		}
-		return data.slice();
-	}
-	if (typeof Buffer !== 'undefined') {
-		if (format === 'base64url') {
-			const base64 = Buffer.from(data).toString('base64');
-			return base64ToBase64Url(base64);
-		}
-		const bufferEncoding = format === 'latin1' ? 'latin1' : format;
-		return Buffer.from(data).toString(bufferEncoding);
-	}
 	const view = data instanceof Uint8Array ? data : new Uint8Array(data);
 	switch (format) {
 		case 'utf8': {
@@ -2559,14 +2538,14 @@ function fromUint8Array(data, encoding) {
 			return output;
 		}
 		case 'latin1': {
-			if (textDecoderLatin1) {
-				return textDecoderLatin1.decode(view);
-			}
 			let output = '';
 			for (let i = 0; i < view.length; i += 1) {
 				output += String.fromCharCode(view[i]);
 			}
 			return output;
+		}
+		case 'buffer': {
+			return view.slice();
 		}
 		case 'utf16le': {
 			const evenLength = view.length - (view.length % 2);
@@ -2699,36 +2678,72 @@ function normalizeEncoding(encoding) {
 
 function base64DecodeToUint8Array(value) {
 	const cleaned = value.replace(/[\r\n\s]/g, '');
-	const globalAtob =
-		typeof globalThis.atob === 'function' ? globalThis.atob : undefined;
-	if (globalAtob) {
-		const binary = globalAtob(cleaned);
-		const result = new Uint8Array(binary.length);
-		for (let i = 0; i < binary.length; i += 1) {
-			result[i] = binary.charCodeAt(i);
+	const BASE64_CHARS =
+		'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+	const charToValue = new Map();
+	for (let i = 0; i < BASE64_CHARS.length; i += 1) {
+		charToValue.set(BASE64_CHARS[i], i);
+	}
+	let padding = 0;
+	if (cleaned.endsWith('==')) {
+		padding = 2;
+	} else if (cleaned.endsWith('=')) {
+		padding = 1;
+	}
+	const outputLength = ((cleaned.length / 4) * 3) - padding;
+	const output = new Uint8Array(outputLength);
+	let outIndex = 0;
+	for (let i = 0; i < cleaned.length; i += 4) {
+		const c1 = charToValue.get(cleaned[i]) ?? 0;
+		const c2 = charToValue.get(cleaned[i + 1]) ?? 0;
+		const c3 =
+			cleaned[i + 2] === '=' ? 0 : charToValue.get(cleaned[i + 2]) ?? 0;
+		const c4 =
+			cleaned[i + 3] === '=' ? 0 : charToValue.get(cleaned[i + 3]) ?? 0;
+		const triple = (c1 << 18) | (c2 << 12) | (c3 << 6) | c4;
+		if (outIndex < output.length) {
+			output[outIndex++] = (triple >> 16) & 0xff;
 		}
-		return result;
+		if (outIndex < output.length) {
+			output[outIndex++] = (triple >> 8) & 0xff;
+		}
+		if (outIndex < output.length) {
+			output[outIndex++] = triple & 0xff;
+		}
 	}
-	if (typeof Buffer !== 'undefined') {
-		return new Uint8Array(Buffer.from(cleaned, 'base64'));
-	}
-	throw new Error('Base64 decoding not supported in this environment');
+	return output;
 }
 
 function base64EncodeFromUint8Array(bytes) {
-	const globalBtoa =
-		typeof globalThis.btoa === 'function' ? globalThis.btoa : undefined;
-	if (globalBtoa) {
-		let binary = '';
-		for (let i = 0; i < bytes.length; i += 1) {
-			binary += String.fromCharCode(bytes[i]);
-		}
-		return globalBtoa(binary);
+	const BASE64_CHARS =
+		'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+	let output = '';
+	let i = 0;
+	for (; i + 2 < bytes.length; i += 3) {
+		const triple =
+			(bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2];
+		output +=
+			BASE64_CHARS[(triple >> 18) & 0x3f] +
+			BASE64_CHARS[(triple >> 12) & 0x3f] +
+			BASE64_CHARS[(triple >> 6) & 0x3f] +
+			BASE64_CHARS[triple & 0x3f];
 	}
-	if (typeof Buffer !== 'undefined') {
-		return Buffer.from(bytes).toString('base64');
+	const remaining = bytes.length - i;
+	if (remaining === 1) {
+		const triple = bytes[i] << 16;
+		output +=
+			BASE64_CHARS[(triple >> 18) & 0x3f] +
+			BASE64_CHARS[(triple >> 12) & 0x3f] +
+			'==';
+	} else if (remaining === 2) {
+		const triple = (bytes[i] << 16) | (bytes[i + 1] << 8);
+		output +=
+			BASE64_CHARS[(triple >> 18) & 0x3f] +
+			BASE64_CHARS[(triple >> 12) & 0x3f] +
+			BASE64_CHARS[(triple >> 6) & 0x3f] +
+			'=';
 	}
-	throw new Error('Base64 encoding not supported in this environment');
+	return output;
 }
 
 function base64UrlToBase64(value) {

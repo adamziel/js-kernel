@@ -3,9 +3,7 @@ export type KernelStdioChunk = string | Uint8Array
 type Listener<Arg> = (input: Arg) => void
 
 class BasicEventEmitter<Events extends Record<string, unknown>> {
-	private listeners: {
-		[K in keyof Events]?: Set<Listener<Events[K]>>
-	} = {}
+	private listeners: { [K in keyof Events]?: Set<Listener<Events[K]>> } = {}
 
 	on<K extends keyof Events>(event: K, listener: Listener<Events[K]>) {
 		if (!this.listeners[event]) {
@@ -15,14 +13,6 @@ class BasicEventEmitter<Events extends Record<string, unknown>> {
 		return () => this.off(event, listener)
 	}
 
-	once<K extends keyof Events>(event: K, listener: Listener<Events[K]>) {
-		const wrapper: Listener<Events[K]> = (value) => {
-			this.off(event, wrapper)
-			listener(value)
-		}
-		return this.on(event, wrapper)
-	}
-
 	off<K extends keyof Events>(event: K, listener: Listener<Events[K]>) {
 		const listeners = this.listeners[event]
 		if (!listeners) return
@@ -30,6 +20,14 @@ class BasicEventEmitter<Events extends Record<string, unknown>> {
 		if (listeners.size === 0) {
 			delete this.listeners[event]
 		}
+	}
+
+	once<K extends keyof Events>(event: K, listener: Listener<Events[K]>) {
+		const wrapper: Listener<Events[K]> = (value) => {
+			this.off(event, wrapper)
+			listener(value)
+		}
+		return this.on(event, wrapper)
 	}
 
 	protected emit<K extends keyof Events>(event: K, value: Events[K]) {
@@ -45,13 +43,13 @@ class BasicEventEmitter<Events extends Record<string, unknown>> {
 	}
 }
 
-interface ReadableEvents extends Record<string, unknown> {
+interface ReadableEvents {
 	data: KernelStdioChunk
 	end: void
 	close: void
 }
 
-interface WritableEvents extends Record<string, unknown> {
+interface WritableEvents {
 	close: void
 }
 
@@ -60,49 +58,9 @@ export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents>
 	private readonly waitBuffer: SharedArrayBuffer | null
 	private readonly waitView: Int32Array | null
 	private remoteClosed = false
-	private static readonly WAIT_TIMEOUT_MS = 5000
-	private readonly handleMessage = (event: MessageEvent) => {
-		const payload = event.data
-		if (!payload || typeof payload !== 'object') {
-			return
-		}
-		if (payload.type === 'data') {
-			this.buffer.push(payload.payload)
-			this.emit('data', payload.payload)
-			if (this.waitView) {
-				Atomics.store(this.waitView, 0, 1)
-				Atomics.notify(this.waitView, 0)
-			}
-		} else if (payload.type === 'end') {
-			this.ended = true
-			this.remoteClosed = true
-			this.emit('end', undefined as unknown as void)
-			this.close(true)
-		} else if (payload.type === 'close') {
-			this.remoteClosed = true
-			this.close(true)
-		}
-}
-
-	// Override on() to replay buffered data for 'data' events
-	on<K extends keyof ReadableEvents>(event: K, listener: Listener<ReadableEvents[K]>) {
-		const unsubscribe = super.on(event, listener)
-
-		// If this is the first 'data' listener and we have buffered data, replay it
-		if (event === 'data' && this.buffer.length > 0) {
-			// Replay all buffered chunks asynchronously to avoid reentrancy issues
-			queueMicrotask(() => {
-				for (const chunk of this.buffer) {
-					;(listener as Listener<KernelStdioChunk>)(chunk)
-				}
-			})
-		}
-
-		return unsubscribe
-	}
-
 	private closed = false
 	private ended = false
+	private static readonly WAIT_TIMEOUT_MS = 5000
 
 	constructor(private readonly port: MessagePort) {
 		super()
@@ -117,10 +75,24 @@ export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents>
 		port.start()
 	}
 
-	/**
-	 * @TODO: Implement a blocking read() method that will wait for the next
-	 *        stdin chunk or the end of the stream.
-	 */
+	on<K extends keyof ReadableEvents>(event: K, listener: Listener<ReadableEvents[K]>) {
+		const unsubscribe = super.on(event, listener)
+		if (event === 'data' && this.buffer.length > 0) {
+			queueMicrotask(() => {
+				for (const chunk of this.buffer) {
+					;(listener as Listener<KernelStdioChunk>)(chunk)
+				}
+			})
+		}
+		if (event === 'end' && (this.ended || this.closed)) {
+			queueMicrotask(() => listener(undefined as ReadableEvents[K]))
+		}
+		if (event === 'close' && this.closed) {
+			queueMicrotask(() => listener(undefined as ReadableEvents[K]))
+		}
+		return unsubscribe
+	}
+
 	read() {
 		if (this.buffer.length > 0) {
 			return this.buffer.shift()!
@@ -180,23 +152,42 @@ export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents>
 	destroy() {
 		this.close()
 	}
+
+	private handleMessage = (event: MessageEvent) => {
+		const payload = event.data
+		if (!payload || typeof payload !== 'object') {
+			return
+		}
+		if (payload.type === 'data') {
+			this.buffer.push(payload.payload)
+			this.emit('data', payload.payload)
+			if (this.waitView) {
+				Atomics.store(this.waitView, 0, 1)
+				Atomics.notify(this.waitView, 0)
+			}
+		} else if (payload.type === 'end') {
+			this.ended = true
+			this.remoteClosed = true
+			this.emit('end', undefined as unknown as void)
+			this.close(true)
+		} else if (payload.type === 'close') {
+			this.remoteClosed = true
+			this.close(true)
+		}
+	}
 }
 
 export class MessagePortWritableStream extends BasicEventEmitter<WritableEvents> {
 	private closed = false
 	private remoteClosed = false
 	private readonly logLabel: string | null
-	private readonly handleMessage = (event: MessageEvent) => {
-		const payload = event.data
-		if (!payload || typeof payload !== 'object') {
-			return
-		}
-		if (payload.type === 'end' || payload.type === 'close') {
-			this.remoteClosed = true
-			this.logClose('<remote closed>')
-			this.destroy()
-		}
-	}
+	private static logDecoder =
+		typeof TextDecoder === 'function' ? new TextDecoder() : null
+	private readonly queue: Array<
+		| { type: 'data'; chunk: KernelStdioChunk }
+		| { type: 'signal'; signal: 'end' | 'close'; label?: string }
+	> = []
+	private flushing = false
 
 	constructor(
 		private readonly port: MessagePort,
@@ -208,52 +199,27 @@ export class MessagePortWritableStream extends BasicEventEmitter<WritableEvents>
 		port.addEventListener('message', this.handleMessage)
 	}
 
-	on<K extends keyof ReadableEvents>(
-		event: K,
-		listener: (value: ReadableEvents[K]) => void
-	) {
-		const unsubscribe = super.on(event, listener)
-		if (event === 'data' && this.buffer.length > 0) {
-			while (this.buffer.length > 0) {
-				listener(this.buffer.shift() as ReadableEvents[K])
-			}
-		}
-		if (event === 'end' && (this.ended || this.closed)) {
-			queueMicrotask(() => listener(undefined as ReadableEvents[K]))
-		}
-		if (event === 'close' && this.closed) {
-			queueMicrotask(() => listener(undefined as ReadableEvents[K]))
-		}
-		return unsubscribe
-	}
-
 	write(chunk: KernelStdioChunk) {
 		if (this.closed) return false
-		try {
-			this.logChunk(chunk)
-			this.port.postMessage({ type: 'data', payload: chunk })
-			return true
-		} catch {
-			this.close()
-			return false
-		}
+		this.queue.push({ type: 'data', chunk })
+		this.scheduleFlush()
+		return true
 	}
 
 	end(chunk?: KernelStdioChunk) {
 		if (this.closed) return false
 		if (typeof chunk !== 'undefined') {
-			this.logChunk(chunk)
-			this.write(chunk)
+			this.queue.push({ type: 'data', chunk })
 		}
-		this.logClose('<EOF>')
-		this.signalAndClose('end')
+		this.queue.push({ type: 'signal', signal: 'end', label: '<EOF>' })
+		this.scheduleFlush()
 		return true
 	}
 
 	close() {
 		if (this.closed) return false
-		this.logClose('<closed>')
-		this.signalAndClose('close')
+		this.queue.push({ type: 'signal', signal: 'close', label: '<closed>' })
+		this.scheduleFlush()
 		return true
 	}
 
@@ -264,14 +230,57 @@ export class MessagePortWritableStream extends BasicEventEmitter<WritableEvents>
 		this.port.close()
 		this.emit('close', undefined as unknown as void)
 		this.clearAll()
+		this.queue.length = 0
 	}
 
-	private signalAndClose(type: 'end' | 'close') {
-		try {
-			if (!this.remoteClosed) {
-				this.port.postMessage({ type })
+	private scheduleFlush() {
+		if (this.flushing || this.closed) {
+			return
+		}
+		this.flushing = true
+		queueMicrotask(() => this.flushQueue())
+	}
+
+	private flushQueue() {
+		this.flushing = false
+		if (this.closed) {
+			this.queue.length = 0
+			return
+		}
+		while (this.queue.length > 0 && !this.closed) {
+			const item = this.queue.shift()!
+			if (item.type === 'data') {
+				try {
+					this.logChunk(item.chunk)
+					this.port.postMessage({ type: 'data', payload: item.chunk })
+				} catch {
+					this.destroy()
+					return
+				}
+				continue
 			}
-		} finally {
+			this.logClose(item.label ?? '<closed>')
+			try {
+				if (!this.remoteClosed) {
+					this.port.postMessage({ type: item.signal })
+				}
+			} finally {
+				this.destroy()
+			}
+		}
+		if (!this.closed && this.queue.length > 0) {
+			this.scheduleFlush()
+		}
+	}
+
+	private handleMessage = (event: MessageEvent) => {
+		const payload = event.data
+		if (!payload || typeof payload !== 'object') {
+			return
+		}
+		if (payload.type === 'end' || payload.type === 'close') {
+			this.remoteClosed = true
+			this.logClose('<remote closed>')
 			this.destroy()
 		}
 	}
@@ -296,11 +305,14 @@ export class MessagePortWritableStream extends BasicEventEmitter<WritableEvents>
 
 	private static decodeForLog(bytes: Uint8Array): string {
 		try {
-			const decoder = new TextDecoder()
-			return decoder.decode(bytes)
+			const decoder = MessagePortWritableStream.logDecoder
+			if (decoder) {
+				return decoder.decode(bytes)
+			}
 		} catch {
-			return `<${bytes.length} bytes>`
+			// fall through to generic representation
 		}
+		return `<${bytes.length} bytes>`
 	}
 }
 
