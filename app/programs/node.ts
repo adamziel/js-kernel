@@ -25,6 +25,7 @@ const createProgramSource = (): string => {
 			const { loadNode } = await import(
 				/* @vite-ignore */ urls.nodeLoaderUrl
 			)
+			console.log({ loadNode })
 			const runtime = await loadNode()
 			await runtime.runMain()
 			// We can't just exit for the process – this would kill it

@@ -599,19 +599,14 @@ export function redirectConsoleToStdio(isDebug: boolean) {
 			.join(' ')
 
 	const writeStdout = (...args: unknown[]) => {
-		if (isDebug) {
-			originalConsole.log(...args)
-		}
-
+		if (!isDebug) return
 		const value = joinArgs(args)
 		const chunk = appendTrailingNewlineIfText(toKernelChunk(value))
 		stdioStreams!.stdout.write(chunk)
 	}
 
 	const writeStderr = (...args: unknown[]) => {
-		if (isDebug) {
-			originalConsole.trace(...args)
-		}
+		if (!isDebug) return
 		const value = joinArgs(args)
 		const chunk = appendTrailingNewlineIfText(toKernelChunk(value))
 		stdioStreams!.stderr.write(chunk)
