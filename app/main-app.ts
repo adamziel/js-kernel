@@ -1,6 +1,7 @@
 import { installBusybox } from '../runtime/busybox/index.ts';
 import { installCustomPrograms } from './programs/index.ts';
 import { Kernel } from '../runtime/index.ts';
+import type { KernelStdioChunk } from '../runtime/ipc/message-port.ts';
 import { BlobReader, ZipReader, Uint8ArrayWriter } from "@zip.js/zip.js";
 
 const kernel = new Kernel();
@@ -38,13 +39,26 @@ kernel.writeFileSync('/bin/node_modules/node-gyp/bin/node-gyp.js', '', {
 
 // ------------------------------------------------------------
 
-globalThis.runProgram = function(argv: string[], cwd: string = '/bin') {
+type RunProgramOptions = {
+	requestId?: number | string
+	debug?: boolean
+}
+
+globalThis.runProgram = function(
+	argv: string[],
+	cwd: string = '/bin',
+	options: RunProgramOptions = {}
+) {
+	const stdioDecoder = new TextDecoder()
+	const toText = (chunk: KernelStdioChunk) =>
+		typeof chunk === 'string' ? chunk : stdioDecoder.decode(chunk)
+
 	const worker = kernel.spawn({
 		argv,
 		env: {},
 		cwd,
 		name: argv[0],
-		debug: true,
+		debug: Boolean(options.debug),
 		stdio: {
 			stdin: 'pipe',
 			stdout: 'pipe',
@@ -55,11 +69,46 @@ globalThis.runProgram = function(argv: string[], cwd: string = '/bin') {
 		throw new Error('Failed to spawn program');
 	}
 
+	const detachListeners: Array<() => void> = []
+	const forward = (type: 'stdout' | 'stderr', chunk: KernelStdioChunk) => {
+		self.postMessage({
+			type,
+			data: toText(chunk),
+			requestId: options.requestId ?? null,
+		})
+	}
+
+	if (worker.stdout) {
+		const unsubscribe = worker.stdout.on('data', (chunk) => {
+			forward('stdout', chunk)
+		})
+		detachListeners.push(unsubscribe)
+	}
+
+	if (worker.stderr) {
+		const unsubscribe = worker.stderr.on('data', (chunk) => {
+			forward('stderr', chunk)
+		})
+		detachListeners.push(unsubscribe)
+	}
+
 	return new Promise((resolve) => {
 		worker.onExit((code) => {
-			resolve(code);
-		});
-	});
+			for (const detach of detachListeners) {
+				try {
+					detach()
+				} catch {
+					// Ignore listener cleanup errors.
+				}
+			}
+			self.postMessage({
+				type: 'program-exit',
+				data: { code, argv },
+				requestId: options.requestId ?? null,
+			})
+			resolve(code)
+		})
+	})
 }
 
 // Shell fun
@@ -100,7 +149,17 @@ self.addEventListener('message', (event) => {
 		console.log('input', event.data.data);
 		worker.stdin!.write(event.data.data);
 	} else if (event.data.type === 'runProgram') {
-		runProgram(event.data.argv);
+		runProgram(event.data.argv, event.data.cwd ?? '/bin', {
+			requestId: event.data.requestId,
+			debug: Boolean(event.data.debug),
+		}).catch((error) => {
+			self.postMessage({
+				type: 'program-error',
+				error:
+					error instanceof Error ? error.message : String(error ?? 'Unknown error'),
+				requestId: event.data.requestId ?? null,
+			});
+		});
 	}
 });
 worker.stdout!.on('data', (data) => {

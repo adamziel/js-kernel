@@ -165,18 +165,83 @@
                 });
             });
 
+            const textDecoder = new TextDecoder();
+            const toText = (value) => {
+                if (typeof value === 'string') {
+                    return value;
+                }
+                if (value instanceof Uint8Array) {
+                    return textDecoder.decode(value);
+                }
+                if (value && value.buffer instanceof ArrayBuffer) {
+                    return textDecoder.decode(new Uint8Array(value.buffer));
+                }
+                if (value instanceof ArrayBuffer) {
+                    return textDecoder.decode(new Uint8Array(value));
+                }
+                return String(value ?? '');
+            };
+            const normalizeForTerminal = (value) => toText(value).replace(/\n/g, '\r\n');
+
+            const pendingRuns = new Map();
+            let nextRunProgramRequestId = 1;
+
             worker.addEventListener('message', (event) => {
-                const { type, data } = event.data;
+                const { type, data, requestId } = event.data;
+                const pending = requestId != null ? pendingRuns.get(requestId) : null;
 
                 if (type === 'stdout') {
-                    console.log('Raw terminal output:', { data });
-                    term.write(data);
-                } else if (type === 'stderr') {
-                    console.log('Command to execute:', data);
-                    worker.postMessage({
-                        type: 'stdout',
-                        data: `Executed: ${data}\r\n`,
-                    });
+                    const output = normalizeForTerminal(data);
+                    if (pending) {
+                        pending.stdout += toText(data);
+                    }
+                    console.log('Raw terminal output:', { data: output });
+                    term.write(output);
+                    return;
+                }
+
+                if (type === 'stderr') {
+                    const output = normalizeForTerminal(data);
+                    if (pending) {
+                        pending.stderr += toText(data);
+                    }
+                    console.warn('Program stderr output:', output);
+                    term.write(`\x1b[31m${output}\x1b[0m`);
+                    return;
+                }
+
+                if (type === 'program-exit') {
+                    if (pending) {
+                        const programName = pending.argv?.[0] ?? data?.argv?.[0] ?? 'program';
+                        term.write(`\r\n\x1b[90m[${programName} exited with code ${data.code}]\x1b[0m\r\n`);
+                        pending.resolve({
+                            code: data.code,
+                            argv: pending.argv,
+                            stdout: pending.stdout,
+                            stderr: pending.stderr,
+                            error: null,
+                        });
+                        pendingRuns.delete(requestId);
+                    } else {
+                        term.write(`\r\n\x1b[90m[program exited with code ${data.code}]\x1b[0m\r\n`);
+                    }
+                    return;
+                }
+
+                if (type === 'program-error') {
+                    const message = toText(data ?? 'Unknown error');
+                    if (pending) {
+                        pending.resolve({
+                            code: null,
+                            argv: pending.argv,
+                            stdout: pending.stdout,
+                            stderr: pending.stderr,
+                            error: message,
+                        });
+                        pendingRuns.delete(requestId);
+                    }
+                    term.write(`\r\n\x1b[31m[program error: ${message}]\x1b[0m\r\n`);
+                    return;
                 }
             });
 
@@ -196,8 +261,24 @@
             window.term = term;
             window.worker = worker;
 
-            globalThis.runProgram = async (argv) => {
-                worker.postMessage({ type: 'runProgram', argv });
+            globalThis.runProgram = (argv, cwd = '/bin', options = {}) => {
+                const requestId = nextRunProgramRequestId++;
+                return new Promise((resolve) => {
+                    pendingRuns.set(requestId, {
+                        resolve,
+                        stdout: '',
+                        stderr: '',
+                        argv,
+                    });
+
+                    worker.postMessage({
+                        type: 'runProgram',
+                        argv,
+                        cwd,
+                        requestId,
+                        debug: Boolean(options.debug),
+                    });
+                });
             };
         }
 

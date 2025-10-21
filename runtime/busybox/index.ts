@@ -39,10 +39,21 @@ export const busyboxPrograms: Record<string, string> = {
 export type BusyboxProgramName = keyof typeof busyboxPrograms
 
 // Initiate busybox programs
+const EXPORT_DEFAULT_PATTERN = /\bexport\s+default\b/
+
+const wrapProgramModule = (source: string): string => {
+	if (EXPORT_DEFAULT_PATTERN.test(source)) {
+		return source
+	}
+	const trimmed = source.trimEnd()
+	return `export default async function __busyboxModuleEntry(processController) {\n\treturn ${trimmed}\n}`
+}
+
 export function installBusybox(kernel: Kernel, path = '/bin') {
 	kernel.mkdirSync(path, { mode: 0o755 })
 	for (const [name, source] of Object.entries(busyboxPrograms)) {
-		kernel.writeFileSync(joinPaths(path, name), `${source}\n`, {
+		const wrapped = wrapProgramModule(source)
+		kernel.writeFileSync(joinPaths(path, name), `${wrapped}\n`, {
 			mode: 0o755,
 		})
 	}
