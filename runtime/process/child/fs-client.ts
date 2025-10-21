@@ -13,10 +13,6 @@ import {
 	SYNC_STATUS_READY,
 	SYNC_TOTAL_BYTES,
 } from '../../ipc/sync/shared-buffer.ts';
-import type {
-	MessagePortReadableStream,
-	MessagePortWritableStream,
-} from '../../ipc/message-port.ts';
 
 type AsyncResolver = {
 	resolve(value: unknown): void;
@@ -30,7 +26,12 @@ export interface KernelFsClient {
 }
 
 interface StdioStreams {
-	stdin: { read(): unknown; destroy(): void };
+	stdin: {
+		read(): unknown;
+		isClosed(): boolean;
+		isEnded(): boolean;
+		destroy(): void;
+	};
 	stdout: { write(chunk: unknown): boolean; destroy(): void };
 	stderr: { write(chunk: unknown): boolean; destroy(): void };
 }
@@ -135,7 +136,13 @@ export const createKernelFsClient = (
 				const length = typeof args[1] === 'number' ? args[1] : 0;
 				const data = streams.stdin.read();
 
+				// If no data available:
+				// - Return empty buffer if stream is ended (EOF)
+				// - Return empty buffer if stream still open (no data available right now)
 				if (!data) {
+					// Note: In a true blocking implementation, we'd wait for data here
+					// if the stream is not ended. But in the browser, we return 0 bytes
+					// to indicate no data available right now.
 					return new Uint8Array(0);
 				}
 
@@ -200,7 +207,13 @@ export const createKernelFsClient = (
 			const length = typeof args[1] === 'number' ? args[1] : 0;
 			const data = streams.stdin.read();
 
+			// If no data available:
+			// - Return empty buffer if stream is ended (EOF)
+			// - Return empty buffer if stream still open (no data available right now)
 			if (!data) {
+				// Note: In a true blocking implementation, we'd wait for data here
+				// if the stream is not ended. But in the browser, we return 0 bytes
+				// to indicate no data available right now.
 				return new Uint8Array(0);
 			}
 

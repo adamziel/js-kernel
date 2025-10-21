@@ -45,13 +45,13 @@ class BasicEventEmitter<Events extends Record<string, unknown>> {
 	}
 }
 
-interface ReadableEvents {
+interface ReadableEvents extends Record<string, unknown> {
 	data: KernelStdioChunk
 	end: void
 	close: void
 }
 
-interface WritableEvents {
+interface WritableEvents extends Record<string, unknown> {
 	close: void
 }
 
@@ -66,6 +66,7 @@ export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents>
 			this.emit('data', payload.payload)
 			this.buffer.push(payload.payload)
 		} else if (payload.type === 'end') {
+			this.ended = true
 			this.emit('end', undefined as unknown as void)
 			this.close()
 		} else if (payload.type === 'close') {
@@ -74,6 +75,7 @@ export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents>
 	}
 
 	private closed = false
+	private ended = false
 
 	constructor(private readonly port: MessagePort) {
 		super()
@@ -90,6 +92,14 @@ export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents>
 			return null;
 		}
 		return this.buffer.shift()
+	}
+
+	isClosed() {
+		return this.closed
+	}
+
+	isEnded() {
+		return this.ended
 	}
 
 	close() {

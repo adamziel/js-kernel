@@ -175,6 +175,14 @@ class NullReadableStream extends BasicEventEmitter<ChildReadableEvents> {
 		return null
 	}
 
+	isClosed() {
+		return true
+	}
+
+	isEnded() {
+		return true
+	}
+
 	close() {
 		this.clearAll()
 	}
