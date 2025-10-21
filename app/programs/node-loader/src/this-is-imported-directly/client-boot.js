@@ -2242,6 +2242,7 @@ globalThis.internalModules = {
 			// Super naive replacement of import() to require(). It won't even
 			// return a promise. 
 			content = globalThis.coreModules.module.Module.wrap(`
+				console.log('fs require', require('fs'));
 				${content}
 			`);
 			let fn = '';
@@ -6415,3 +6416,4 @@ globalThis.fetch = async (input, init) => {
 
 	return originalFetch(input, init);
 };
+

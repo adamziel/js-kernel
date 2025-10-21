@@ -99,13 +99,14 @@ interface KernelProcessRecord {
 	exitListeners?: Set<ExitListener>
 	stdio?: {
 		stdin?: MessagePortWritableStream
-		stdout?: MessagePortReadableStream
-		stderr?: MessagePortReadableStream
-	}
-	controlCleanup: () => void
-	fsCleanup: () => void
-	spawnSyncCleanup: () => void
-	setExitCode?: (code: number) => void
+	stdout?: MessagePortReadableStream
+	stderr?: MessagePortReadableStream
+}
+controlCleanup: () => void
+fsCleanup: () => void
+spawnSyncCleanup: () => void
+setExitCode?: (code: number) => void
+logPrefix?: string
 }
 
 export interface KernelSubprocessExtras {
@@ -311,6 +312,13 @@ export class Kernel extends InMemoryFileSystem {
 		let parentStdin: MessagePortWritableStream | undefined
 		let parentStdout: MessagePortReadableStream | undefined
 		let parentStderr: MessagePortReadableStream | undefined
+		const stdioModesArray = (
+			resources.stdioModes ?? ['inherit', 'inherit', 'inherit']
+		) as [StdioMode, StdioMode, StdioMode]
+		const stdinLogPrefix =
+			options.name && options.name.length > 0
+				? `${options.name}:${resources.pid}`
+				: `pid ${resources.pid}`
 
 		const transferList: MessagePort[] = [
 			resources.control.processPort,
@@ -325,7 +333,8 @@ export class Kernel extends InMemoryFileSystem {
 			if (descriptor.mode === 'pipe' && descriptor.hostPort) {
 				if (descriptor.fd === 0) {
 					parentStdin = new MessagePortWritableStream(
-						descriptor.hostPort
+						descriptor.hostPort,
+						{ debugLabel: `stdin -> ${stdinLogPrefix}` }
 					)
 				} else if (descriptor.fd === 1) {
 					parentStdout = new MessagePortReadableStream(
@@ -390,22 +399,28 @@ export class Kernel extends InMemoryFileSystem {
 		messagePort: resources.message?.parentPort ?? null,
 		threadId,
 		threadName,
-			children: new Set<number>(),
-			hostType: 'kernel',
-			hostPid: null,
-			worker,
-			exitCode: null,
-			exitListeners,
-			stdio: {
-				stdin: parentStdin,
-				stdout: parentStdout,
-				stderr: parentStderr,
-			},
-			controlCleanup: () => undefined,
-			fsCleanup: () => undefined,
-			spawnSyncCleanup: () => undefined,
-			setExitCode: (code: number) => {
-				exitCode = code
+		children: new Set<number>(),
+		hostType: 'kernel',
+		hostPid: null,
+		worker,
+		exitCode: null,
+		exitListeners,
+		stdio: {
+			stdin: parentStdin,
+			stdout: parentStdout,
+			stderr: parentStderr,
+		},
+		stdioModes: {
+			stdin: stdioModesArray[0],
+			stdout: stdioModesArray[1],
+			stderr: stdioModesArray[2],
+		},
+		logPrefix: stdinLogPrefix,
+		controlCleanup: () => undefined,
+		fsCleanup: () => undefined,
+		spawnSyncCleanup: () => undefined,
+		setExitCode: (code: number) => {
+			exitCode = code
 			},
 		}
 

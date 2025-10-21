@@ -57,6 +57,10 @@ interface WritableEvents extends Record<string, unknown> {
 
 export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents> {
 	private buffer: KernelStdioChunk[] = []
+	private readonly waitBuffer: SharedArrayBuffer | null
+	private readonly waitView: Int32Array | null
+	private remoteClosed = false
+	private static readonly WAIT_TIMEOUT_MS = 5000
 	private readonly handleMessage = (event: MessageEvent) => {
 		const payload = event.data
 		if (!payload || typeof payload !== 'object') {
@@ -65,20 +69,33 @@ export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents>
 		if (payload.type === 'data') {
 			this.emit('data', payload.payload)
 			this.buffer.push(payload.payload)
+			if (this.waitView) {
+				Atomics.store(this.waitView, 0, 1)
+				Atomics.notify(this.waitView, 0)
+			}
 		} else if (payload.type === 'end') {
 			this.ended = true
+			this.remoteClosed = true
 			this.emit('end', undefined as unknown as void)
-			this.close()
+			this.close(true)
 		} else if (payload.type === 'close') {
-			this.close()
+			this.remoteClosed = true
+			this.close(true)
 		}
-	}
+}
 
 	private closed = false
 	private ended = false
 
 	constructor(private readonly port: MessagePort) {
 		super()
+		if (typeof Atomics === 'object' && typeof Atomics.wait === 'function') {
+			this.waitBuffer = new SharedArrayBuffer(4)
+			this.waitView = new Int32Array(this.waitBuffer)
+		} else {
+			this.waitBuffer = null
+			this.waitView = null
+		}
 		port.addEventListener('message', this.handleMessage)
 		port.start()
 	}
@@ -88,10 +105,31 @@ export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents>
 	 *        stdin chunk or the end of the stream.
 	 */
 	read() {
-		if(!this.buffer.length) {
-			return null;
+		if (this.buffer.length > 0) {
+			return this.buffer.shift()!
 		}
-		return this.buffer.shift()
+		if (this.ended || this.closed) {
+			return null
+		}
+		if (this.waitView) {
+			while (!this.ended && !this.closed && this.buffer.length === 0) {
+				Atomics.store(this.waitView, 0, 0)
+				const result = Atomics.wait(
+					this.waitView,
+					0,
+					0,
+					MessagePortReadableStream.WAIT_TIMEOUT_MS
+				)
+				if (result === 'timed-out') {
+					continue
+				}
+			}
+		} else {
+			while (!this.ended && !this.closed && this.buffer.length === 0) {
+				Atomics.fence()
+			}
+		}
+		return this.buffer.length > 0 ? this.buffer.shift()! : null
 	}
 
 	isClosed() {
@@ -102,11 +140,22 @@ export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents>
 		return this.ended
 	}
 
-	close() {
+	close(fromRemote = false) {
 		if (this.closed) return
 		this.closed = true
+		if (!fromRemote && !this.remoteClosed) {
+			try {
+				this.port.postMessage({ type: 'close' })
+			} catch {
+				// ignore signalling errors
+			}
+		}
 		this.port.removeEventListener('message', this.handleMessage)
 		this.port.close()
+		if (this.waitView) {
+			Atomics.store(this.waitView, 0, 1)
+			Atomics.notify(this.waitView, 0)
+		}
 		this.emit('close', undefined as unknown as void)
 		this.clearAll()
 	}
@@ -118,15 +167,34 @@ export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents>
 
 export class MessagePortWritableStream extends BasicEventEmitter<WritableEvents> {
 	private closed = false
+	private remoteClosed = false
+	private readonly logLabel: string | null
+	private readonly handleMessage = (event: MessageEvent) => {
+		const payload = event.data
+		if (!payload || typeof payload !== 'object') {
+			return
+		}
+		if (payload.type === 'end' || payload.type === 'close') {
+			this.remoteClosed = true
+			this.logClose('<remote closed>')
+			this.destroy()
+		}
+	}
 
-	constructor(private readonly port: MessagePort) {
+	constructor(
+		private readonly port: MessagePort,
+		options?: { debugLabel?: string }
+	) {
 		super()
+		this.logLabel = options?.debugLabel ?? null
 		port.start()
+		port.addEventListener('message', this.handleMessage)
 	}
 
 	write(chunk: KernelStdioChunk) {
 		if (this.closed) return false
 		try {
+			this.logChunk(chunk)
 			this.port.postMessage({ type: 'data', payload: chunk })
 			return true
 		} catch {
@@ -138,14 +206,17 @@ export class MessagePortWritableStream extends BasicEventEmitter<WritableEvents>
 	end(chunk?: KernelStdioChunk) {
 		if (this.closed) return false
 		if (typeof chunk !== 'undefined') {
+			this.logChunk(chunk)
 			this.write(chunk)
 		}
+		this.logClose('<EOF>')
 		this.signalAndClose('end')
 		return true
 	}
 
 	close() {
 		if (this.closed) return false
+		this.logClose('<closed>')
 		this.signalAndClose('close')
 		return true
 	}
@@ -153,6 +224,7 @@ export class MessagePortWritableStream extends BasicEventEmitter<WritableEvents>
 	destroy() {
 		if (this.closed) return
 		this.closed = true
+		this.port.removeEventListener('message', this.handleMessage)
 		this.port.close()
 		this.emit('close', undefined as unknown as void)
 		this.clearAll()
@@ -160,9 +232,38 @@ export class MessagePortWritableStream extends BasicEventEmitter<WritableEvents>
 
 	private signalAndClose(type: 'end' | 'close') {
 		try {
-			this.port.postMessage({ type })
+			if (!this.remoteClosed) {
+				this.port.postMessage({ type })
+			}
 		} finally {
 			this.destroy()
+		}
+	}
+
+	private logChunk(chunk: KernelStdioChunk) {
+		if (!this.logLabel) {
+			return
+		}
+		const text =
+			typeof chunk === 'string'
+				? chunk
+				: MessagePortWritableStream.decodeForLog(chunk)
+		console.log(`[${this.logLabel}] ${text}`)
+	}
+
+	private logClose(reason: string) {
+		if (!this.logLabel) {
+			return
+		}
+		console.log(`[${this.logLabel}] ${reason}`)
+	}
+
+	private static decodeForLog(bytes: Uint8Array): string {
+		try {
+			const decoder = new TextDecoder()
+			return decoder.decode(bytes)
+		} catch {
+			return `<${bytes.length} bytes>`
 		}
 	}
 }
