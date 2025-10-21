@@ -20,6 +20,7 @@ import {
 	type NormalizedSpawnOptions,
 	type StdioMode,
 } from '../spawn-options.ts'
+import { joinPaths } from '../../util/paths.ts'
 import { createKernelFsClient, type KernelFsClient } from './fs-client.ts'
 import {
 	createSpawnSyncClient,
@@ -162,6 +163,91 @@ interface LocalChildProcessRecord {
 	worker: Worker
 	exitListeners: Set<ExitListener>
 	setExitCode: (code: number) => void
+}
+
+type ProcessControllerFs = KernelFsClient['async'] & {
+	async: KernelFsClient['async']
+	sync: KernelFsClient['sync']
+}
+
+const FS_METHOD_PATH_ARGUMENTS: Record<string, number[]> = {
+	access: [0],
+	appendFile: [0],
+	chmod: [0],
+	chown: [0],
+	copyFile: [0, 1],
+	link: [0, 1],
+	lstat: [0],
+	mkdir: [0],
+	mkdtemp: [0],
+	open: [0],
+	opendir: [0],
+	readFile: [0],
+	readdir: [0],
+	readlink: [0],
+	realpath: [0],
+	rename: [0, 1],
+	rm: [0],
+	rmdir: [0],
+	stat: [0],
+	symlink: [0, 1],
+	truncate: [0],
+	unlink: [0],
+	utimes: [0],
+	writeFile: [0],
+}
+
+const createProcessControllerFs = (
+	client: KernelFsClient,
+	getCwd: () => string
+): ProcessControllerFs => {
+	const asyncApi = client.async as Record<string, unknown>
+	return new Proxy(asyncApi, {
+		get(target, property, receiver) {
+			if (property === 'async') {
+				return receiver
+			}
+			if (property === 'promises') {
+				return receiver
+			}
+			if (property === 'sync') {
+				return client.sync
+			}
+			if (property === 'then') {
+				return undefined
+			}
+			if (typeof property === 'string') {
+				const original = Reflect.get(target, property, receiver)
+				if (typeof original === 'function') {
+					const pathArgs = FS_METHOD_PATH_ARGUMENTS[property]
+					if (Array.isArray(pathArgs) && pathArgs.length > 0) {
+						return (...args: unknown[]) => {
+							const adjustedArgs = [...args]
+							const isAbsolutePath = (path: string) =>
+								path.startsWith('/') || /^[a-zA-Z]+:/.test(path)
+							for (const index of pathArgs) {
+								if (index < adjustedArgs.length) {
+									const value = adjustedArgs[index]
+									if (typeof value === 'string' && value.length > 0) {
+										const cwd = getCwd()
+										const absolute = isAbsolutePath(value)
+											? value
+											: joinPaths(
+													cwd && cwd.length > 0 ? cwd : '/',
+													value
+											  )
+										adjustedArgs[index] = absolute
+									}
+								}
+							}
+							return Reflect.apply(original, target, adjustedArgs)
+						}
+					}
+				}
+			}
+			return Reflect.get(target, property, receiver)
+		},
+	}) as ProcessControllerFs
 }
 
 interface ChildReadableEvents extends Record<string, unknown> {
@@ -472,6 +558,10 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 
 	disposeFsClient()
 	fsClient = createKernelFsClient(options.fsPort, stdioStreams)
+	const processFs = createProcessControllerFs(
+		fsClient!,
+		() => childProcessState?.cwd ?? clonedOptions.cwd
+	)
 	disposeSpawnSyncClient()
 	spawnSyncClient = createSpawnSyncClient(options.spawnSyncPort)
 
@@ -544,7 +634,7 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 		threadName() {
 			return clonedOptions.threadName ?? null
 		},
-		fs: fsClient!.async,
+		fs: processFs,
 		fsSync: fsClient!.sync,
 		exit(code: number) {
 			console.log('processController.exit', { code })
@@ -859,6 +949,14 @@ function createChildProcessHandle(
 		threadId,
 		threadName,
 		onExit(listener: ExitListener) {
+			if (exitCode !== null) {
+				try {
+					listener(exitCode)
+				} catch {
+					// Ignore listener failures if process already exited.
+				}
+				return
+			}
 			exitListeners.add(listener)
 		},
 		offExit(listener: ExitListener) {

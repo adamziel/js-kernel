@@ -377,6 +377,14 @@ export class Kernel extends InMemoryFileSystem {
 		threadId,
 		threadName,
 		onExit: (listener: ExitListener) => {
+			if (exitCode !== null) {
+				try {
+					listener(exitCode)
+				} catch {
+					// Ignore listener failures for already exited processes.
+				}
+				return
+			}
 			exitListeners.add(listener)
 		},
 		offExit: (listener: ExitListener) => {
