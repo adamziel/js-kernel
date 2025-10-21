@@ -1172,12 +1172,12 @@ export class InMemoryFileSystem {
 			const buffer = this.readSync(fd, length, position);
 			if (callback) {
 				// Async-style callback with (error, bytesRead, buffer)
-				setImmediate(() => callback(null, buffer.length, buffer));
+				setTimeout(() => callback(null, buffer.length, buffer));
 			}
 			return buffer;
 		} catch (err) {
 			if (callback) {
-				setImmediate(() => callback(err));
+				setTimeout(() => callback(err));
 			}
 			throw err;
 		}
@@ -1378,7 +1378,7 @@ export class InMemoryFileSystem {
 			'oncomplete' in reqOrPromise
 		) {
 			// Async callback pattern
-			setImmediate(() => {
+			setTimeout(() => {
 				try {
 					const bytesWritten = this.writeBufferSync(
 						fd,
@@ -1970,7 +1970,7 @@ export class InMemoryFileSystem {
 
 	// Async wrappers for FSReqCallback pattern
 	readFileAsync(path, options, req) {
-		setImmediate(() => {
+		setTimeout(() => {
 			try {
 				const result = this.readFileSync(path, options);
 				if (req && req.oncomplete) {
@@ -1985,7 +1985,7 @@ export class InMemoryFileSystem {
 	}
 
 	writeFileAsync(path, data, options, req) {
-		setImmediate(() => {
+		setTimeout(() => {
 			try {
 				this.writeFileSync(path, data, options);
 				if (req && req.oncomplete) {
@@ -2000,7 +2000,7 @@ export class InMemoryFileSystem {
 	}
 
 	openAsync(path, flags, mode, req) {
-		setImmediate(() => {
+		setTimeout(() => {
 			try {
 				const fd = this.openSync(path, flags, mode);
 				if (req && req.oncomplete) {
@@ -2015,7 +2015,7 @@ export class InMemoryFileSystem {
 	}
 
 	closeAsync(fd, req) {
-		setImmediate(() => {
+		setTimeout(() => {
 			try {
 				this.closeSync(fd);
 				if (req && req.oncomplete) {
@@ -2030,7 +2030,7 @@ export class InMemoryFileSystem {
 	}
 
 	readAsync(fd, length, position, req) {
-		setImmediate(() => {
+		setTimeout(() => {
 			try {
 				const buffer = this.readSync(fd, length, position);
 				if (req && req.oncomplete) {
@@ -2045,7 +2045,7 @@ export class InMemoryFileSystem {
 	}
 
 	writeAsync(fd, buffer, offset, length, position, req) {
-		setImmediate(() => {
+		setTimeout(() => {
 			try {
 				const bytesWritten = this.writeSync(
 					fd,
@@ -2066,7 +2066,7 @@ export class InMemoryFileSystem {
 	}
 
 	statAsync(path, bigint, req) {
-		setImmediate(() => {
+		setTimeout(() => {
 			try {
 				const stats = this.statSync(path);
 				if (req && req.oncomplete) {
@@ -2081,7 +2081,7 @@ export class InMemoryFileSystem {
 	}
 
 	fstatAsync(fd, bigint, req) {
-		setImmediate(() => {
+		setTimeout(() => {
 			try {
 				const stats = this.fstatSync(fd);
 				if (req && req.oncomplete) {
@@ -2096,7 +2096,7 @@ export class InMemoryFileSystem {
 	}
 
 	lstatAsync(path, bigint, req) {
-		setImmediate(() => {
+		setTimeout(() => {
 			try {
 				const stats = this.lstatSync(path);
 				if (req && req.oncomplete) {
@@ -2111,7 +2111,7 @@ export class InMemoryFileSystem {
 	}
 
 	mkdirAsync(path, options, req) {
-		setImmediate(() => {
+		setTimeout(() => {
 			try {
 				this.mkdirSync(path, options);
 				if (req && req.oncomplete) {
@@ -2126,7 +2126,7 @@ export class InMemoryFileSystem {
 	}
 
 	unlinkAsync(path, req) {
-		setImmediate(() => {
+		setTimeout(() => {
 			try {
 				this.unlinkSync(path);
 				if (req && req.oncomplete) {
@@ -2141,7 +2141,7 @@ export class InMemoryFileSystem {
 	}
 
 	rmdirAsync(path, options, req) {
-		setImmediate(() => {
+		setTimeout(() => {
 			try {
 				this.rmdirSync(path, options);
 				if (req && req.oncomplete) {
@@ -2156,7 +2156,7 @@ export class InMemoryFileSystem {
 	}
 
 	renameAsync(oldPath, newPath, req) {
-		setImmediate(() => {
+		setTimeout(() => {
 			try {
 				this.renameSync(oldPath, newPath);
 				if (req && req.oncomplete) {

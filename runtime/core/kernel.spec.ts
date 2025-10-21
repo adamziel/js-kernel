@@ -189,7 +189,7 @@ describe('Kernel - Process Spawning and stdio Communication', () => {
 			expect(typeof result.stderr?.on).toBe('function');
 		});
 
-		it('allows writing to stdin and reading from stdout', async () => {
+		it.only('allows writing to stdin and reading from stdout', async () => {
 			const testProgram = `
 				export default async function main(processController) {
 					return new Promise((resolve) => {

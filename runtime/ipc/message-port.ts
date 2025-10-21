@@ -67,8 +67,8 @@ export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents>
 			return
 		}
 		if (payload.type === 'data') {
-			this.emit('data', payload.payload)
 			this.buffer.push(payload.payload)
+			this.emit('data', payload.payload)
 			if (this.waitView) {
 				Atomics.store(this.waitView, 0, 1)
 				Atomics.notify(this.waitView, 0)
@@ -83,6 +83,23 @@ export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents>
 			this.close(true)
 		}
 }
+
+	// Override on() to replay buffered data for 'data' events
+	on<K extends keyof ReadableEvents>(event: K, listener: Listener<ReadableEvents[K]>) {
+		const unsubscribe = super.on(event, listener)
+
+		// If this is the first 'data' listener and we have buffered data, replay it
+		if (event === 'data' && this.buffer.length > 0) {
+			// Replay all buffered chunks asynchronously to avoid reentrancy issues
+			queueMicrotask(() => {
+				for (const chunk of this.buffer) {
+					;(listener as Listener<KernelStdioChunk>)(chunk)
+				}
+			})
+		}
+
+		return unsubscribe
+	}
 
 	private closed = false
 	private ended = false
@@ -189,6 +206,25 @@ export class MessagePortWritableStream extends BasicEventEmitter<WritableEvents>
 		this.logLabel = options?.debugLabel ?? null
 		port.start()
 		port.addEventListener('message', this.handleMessage)
+	}
+
+	on<K extends keyof ReadableEvents>(
+		event: K,
+		listener: (value: ReadableEvents[K]) => void
+	) {
+		const unsubscribe = super.on(event, listener)
+		if (event === 'data' && this.buffer.length > 0) {
+			while (this.buffer.length > 0) {
+				listener(this.buffer.shift() as ReadableEvents[K])
+			}
+		}
+		if (event === 'end' && (this.ended || this.closed)) {
+			queueMicrotask(() => listener(undefined as ReadableEvents[K]))
+		}
+		if (event === 'close' && this.closed) {
+			queueMicrotask(() => listener(undefined as ReadableEvents[K]))
+		}
+		return unsubscribe
 	}
 
 	write(chunk: KernelStdioChunk) {
