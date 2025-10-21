@@ -45,6 +45,11 @@ globalThis.runProgram = function(argv: string[], cwd: string = '/bin') {
 		cwd,
 		name: argv[0],
 		debug: true,
+		stdio: {
+			stdin: 'pipe',
+			stdout: 'pipe',
+			stderr: 'pipe',
+		},
 	});
 	if (typeof worker === 'number') {
 		throw new Error('Failed to spawn program');

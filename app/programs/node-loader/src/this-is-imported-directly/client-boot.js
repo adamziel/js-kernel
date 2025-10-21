@@ -805,14 +805,14 @@ const normalizeEncodingName = (encoding) => {
 		if (map && typeof map === 'object') {
 			for (const [name, value] of Object.entries(map)) {
 				if (value === encoding) {
-					return name;
+					return normalizeEncodingName(name);
 				}
 			}
 		}
-		return 'utf8';
+		return undefined;
 	}
-	if (!encoding) {
-		return 'utf8';
+	if (encoding === undefined || encoding === null || encoding === '') {
+		return undefined;
 	}
 	const lower = String(encoding).toLowerCase();
 	switch (lower) {
@@ -835,9 +835,59 @@ const normalizeEncodingName = (encoding) => {
 			return 'base64url';
 		case 'hex':
 			return 'hex';
+		case 'buffer':
+			return 'buffer';
 		default:
-			return 'utf8';
+			return lower;
 	}
+};
+
+const ENCODING_VALUE_TO_NAME =
+	globalThis.internalModules?.util?.encodingsMap &&
+	typeof globalThis.internalModules.util.encodingsMap === 'object'
+		? new Map(
+				Object.entries(
+					globalThis.internalModules.util.encodingsMap
+				).map(([name, value]) => [value, name])
+		  )
+		: null;
+
+const resolveFsEncodingValue = (encoding) => {
+	if (encoding === undefined || encoding === null || encoding === '') {
+		return encoding;
+	}
+	if (
+		typeof encoding === 'number' &&
+		ENCODING_VALUE_TO_NAME &&
+		ENCODING_VALUE_TO_NAME.has(encoding)
+	) {
+		return normalizeEncodingName(
+			ENCODING_VALUE_TO_NAME.get(encoding)
+		);
+	}
+	if (typeof encoding === 'string') {
+		return normalizeEncodingName(encoding) ?? encoding;
+	}
+	return encoding;
+};
+
+const resolveFsEncodingOptions = (options) => {
+	if (typeof options === 'string') {
+		return resolveFsEncodingValue(options);
+	}
+	if (options && typeof options === 'object') {
+		if (Object.prototype.hasOwnProperty.call(options, 'encoding')) {
+			const normalized = resolveFsEncodingValue(options.encoding);
+			if (
+				normalized !== undefined &&
+				normalized !== options.encoding
+			) {
+				return { ...options, encoding: normalized };
+			}
+		}
+		return options;
+	}
+	return options;
 };
 
 const encodeStringToBytes = (string, encoding) => {
@@ -2450,7 +2500,11 @@ globalThis.internalModules = {
 			readdir(path, encoding, withFileTypes, kUsePromises) {
 				return maybePromiseFromSync(
 					() =>
-						globalFs.readdirBinding(path, encoding, withFileTypes),
+						globalFs.readdirBinding(
+							path,
+							resolveFsEncodingValue(encoding),
+							withFileTypes
+						),
 					kUsePromises
 				);
 			},
@@ -2486,13 +2540,22 @@ globalThis.internalModules = {
 			},
 			readFile(path, options, kUsePromises) {
 				return maybePromiseFromSync(
-					() => globalFs.readFileSync(path, options),
+					() =>
+						globalFs.readFileSync(
+							path,
+							resolveFsEncodingOptions(options)
+						),
 					kUsePromises
 				);
 			},
 			writeFile(path, data, options, kUsePromises) {
 				return maybePromiseFromSync(
-					() => globalFs.writeFileSync(path, data, options),
+					() =>
+						globalFs.writeFileSync(
+							path,
+							data,
+							resolveFsEncodingOptions(options)
+						),
 					kUsePromises
 				);
 			},
@@ -2551,7 +2614,11 @@ globalThis.internalModules = {
 			},
 			mkdtemp(prefix, encoding, kUsePromises) {
 				return maybePromiseFromSync(
-					() => globalFs.mkdtemp(prefix, encoding),
+					() =>
+						globalFs.mkdtemp(
+							prefix,
+							resolveFsEncodingValue(encoding)
+						),
 					kUsePromises
 				);
 			},
@@ -2682,7 +2749,12 @@ globalThis.internalModules = {
 			writeString(fd, string, position, encoding, reqOrPromise) {
 				// Promise or sync pattern
 				return maybePromiseFromSync(() => {
-					return globalFs.writeSync(fd, string, position, encoding);
+					return globalFs.writeSync(
+						fd,
+						string,
+						position,
+						resolveFsEncodingValue(encoding)
+					);
 				}, reqOrPromise);
 			},
 			writeBuffers(fd, buffers, position, kUsePromises) {
@@ -2721,7 +2793,11 @@ globalThis.internalModules = {
 			},
 			readlink(path, encoding, kUsePromises) {
 				return maybePromiseFromSync(
-					() => globalFs.readlinkSync(path, encoding),
+					() =>
+						globalFs.readlinkSync(
+							path,
+							resolveFsEncodingValue(encoding)
+						),
 					kUsePromises
 				);
 			},
@@ -5464,6 +5540,8 @@ globalThis.coreModules.http2 = {
 
 const crypto = await import('../../dist/crypto.js');
 globalThis.coreModules.crypto = crypto.default;
+Object.assign(globalThis.crypto, crypto.default);
+console.log('crypto.default', crypto.default);
 
 const https = await import('../../dist/https.js');
 globalThis.coreModules.https = https.default;

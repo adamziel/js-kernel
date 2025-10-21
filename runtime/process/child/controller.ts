@@ -630,7 +630,7 @@ const handleKernelInit = (event: MessageEvent) => {
 
 	const payload = event.data.payload as ChildProcessInitOptions
 	initChildProcess(payload)
-	// redirectConsoleToStdio(payload.debug)
+	redirectConsoleToStdio(payload.debug)
 	queueMicrotask(() => startProgram(payload))
 }
 

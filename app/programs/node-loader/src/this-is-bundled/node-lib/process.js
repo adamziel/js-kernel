@@ -9,7 +9,7 @@ const sharedDecoder =
 
 // ESM exports for process methods
 const exit = (code) => {
-	console.log('exit', { code });
+	console.trace('exit', { code });
 	emit('exit', code ?? 0);
 	globalThis.processController.exit(code ?? 0);
 };
