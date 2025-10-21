@@ -1050,9 +1050,11 @@ class TestCases {
 }
 
 // await TestCases.testWorker();
+// await TestCases.testPnpm();
+await TestCases.testWorker();
 try {
 	// await TestCases.testWpScriptsLocal();
-	await TestCases.testEsbuild();
+	// await TestCases.testEsbuild();
 } catch (error) {
 	console.error('Error', error);
 }

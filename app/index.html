@@ -122,7 +122,7 @@
 
             term.open(document.getElementById('terminal'));
 
-            await ensureServiceWorkerControl();
+            // await ensureServiceWorkerControl();
 
             const worker = new Worker('./main-app.ts', {
                 type: 'module',
