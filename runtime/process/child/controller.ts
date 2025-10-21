@@ -722,14 +722,28 @@ const startProgram = async (options: ChildProcessInitOptions) => {
 			encodeURIComponent(programBody)
 		/**
 		 * We can choose here if we want CJS or ESM.
-		 * 
+		 *
 		 * * Regular eval() works for CJS, but not for ESM – it's not recognized as
 		 *   a module and we can't use top-level imports or awaits.
 		 * * ESM import() works for both.
-		 * 
+		 *
 		 * Let's go with import() and re-evaluate this decision later if needed
 		 */
-		await import(/* @vite-ignore */dataUrl)
+		const module = await import(/* @vite-ignore */dataUrl)
+
+		// Execute the program's main function
+		if (typeof module.default === 'function') {
+			const exitCode = await module.default((globalThis as any).processController)
+			if (typeof exitCode === 'number') {
+				;(globalThis as any).processController.exit(exitCode)
+			} else {
+				;(globalThis as any).processController.exit(0)
+			}
+		} else {
+			// If no default export, the module executed at import time
+			// Exit with success
+			;(globalThis as any).processController.exit(0)
+		}
 	} catch (error) {
 		reportProgramError(error)
 	} finally {

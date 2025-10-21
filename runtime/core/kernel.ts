@@ -367,7 +367,8 @@ export class Kernel extends InMemoryFileSystem {
 	let exitCode: number | null = null
 	const exitListeners = new Set<ExitListener>()
 
-	const subprocess = Object.assign(worker, {
+	// Use Object.defineProperties to preserve the getter for exitCode
+	Object.assign(worker, {
 		pid: resources.pid,
 		stdin: parentStdin,
 		stdout: parentStdout,
@@ -375,19 +376,26 @@ export class Kernel extends InMemoryFileSystem {
 		messagePort: resources.message?.parentPort ?? null,
 		threadId,
 		threadName,
-			onExit: (listener: ExitListener) => {
-				exitListeners.add(listener)
-			},
-			offExit: (listener: ExitListener) => {
-				exitListeners.delete(listener)
-			},
-			kill: () => {
-				this.kill(resources.pid)
-			},
-			get exitCode() {
-				return exitCode
-			},
-		}) as KernelSubprocess
+		onExit: (listener: ExitListener) => {
+			exitListeners.add(listener)
+		},
+		offExit: (listener: ExitListener) => {
+			exitListeners.delete(listener)
+		},
+		kill: () => {
+			this.kill(resources.pid)
+		},
+	})
+
+	Object.defineProperty(worker, 'exitCode', {
+		get() {
+			return exitCode
+		},
+		enumerable: true,
+		configurable: true,
+	})
+
+	const subprocess = worker as KernelSubprocess
 
 	const record: KernelProcessRecord = {
 		pid: resources.pid,
