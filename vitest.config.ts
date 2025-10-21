@@ -10,7 +10,7 @@ export default defineConfig({
 			provider: 'playwright',
 			headless: true,
 		},
-		include: ['**/*.spec.ts'],
+		include: ['**/*.spec.ts', '../app/**/*.spec.ts'],
 		exclude: ['node_modules', 'dist'],
 	},
 	server: {

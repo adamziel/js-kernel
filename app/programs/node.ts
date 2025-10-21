@@ -1,6 +1,7 @@
 declare const processController: {
 	argv(): string[]
 	exit(code: number): void
+	getEnv?(name: string): string
 }
 
 const utilsModuleUrl = new URL(
@@ -22,10 +23,21 @@ const createProgramSource = (): string => {
 		)
 
 		try {
+			let loaderUrl = urls.nodeLoaderUrl
+			try {
+				const override =
+					typeof processController?.getEnv === 'function'
+						? processController.getEnv('NODE_LOADER_URL')
+						: ''
+				if (override && override.length > 0) {
+					loaderUrl = override
+				}
+			} catch {
+				// Ignore env lookup failures.
+			}
 			const { loadNode } = await import(
-				/* @vite-ignore */ urls.nodeLoaderUrl
+				/* @vite-ignore */ loaderUrl
 			)
-			console.log({ loadNode })
 			const runtime = await loadNode()
 			await runtime.runMain()
 			// We can't just exit for the process – this would kill it

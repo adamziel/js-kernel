@@ -541,15 +541,15 @@ class TestCases {
 		kernel.writeFileSync(
 			'/script.js',
 			`
-			console.log('Hello from script');
+			process.stdout.write('Hello from script\\n');
 			const { Worker } = require('worker_threads');
 			const worker = new Worker('/worker.js');
-			console.log('Hello 2 from script');
+			process.stdout.write('Hello 2 from script\\n');
 			worker.on('message', (message) => {
-				console.log('parent message listener:', message);
+				process.stdout.write('parent message listener:', message);
 			});
 			worker.on('error', (error) => {
-				console.log('error', error);
+				process.stdout.write('error\\n', error);
 			});
 			setTimeout(() => {
 				worker.postMessage('Message from the parent – after 100ms');
@@ -568,13 +568,13 @@ class TestCases {
 			'/worker.js',
 			`
 			//require('fs').writeFileSync('/worker.txt', 'Hello from worker');
-			console.log('Hello from worker');
+			process.stdout.write('Hello from worker');
 			const { parentPort } = require('worker_threads');
 			parentPort.on('message', (message) => {
-				console.log('worker message listener: ', message);
+				process.stdout.write('worker message listener: \\n', message);
 			});
 			parentPort.postMessage('Message from the worker');
-			console.log('Hello 2 from worker');
+			process.stdout.write('Hello 2 from worker\\n');
 			setTimeout(() => {
 				process.exit(0);
 			}, 2000);
@@ -1109,8 +1109,8 @@ class TestCases {
 }
 
 // await TestCases.testWorker();
-// await TestCases.testPnpm();
-await TestCases.testWorker();
+await TestCases.testPnpm();
+// await TestCases.testWorker();
 try {
 	// await TestCases.testWpScriptsLocal();
 	// await TestCases.testEsbuild();
