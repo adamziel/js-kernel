@@ -1179,6 +1179,7 @@ describe('Kernel - Process Spawning and stdio Communication', () => {
 
 			const fullOutput = output.join('');
 			const lines = fullOutput.trim().split('\n');
+			console.log({ lines });
 
 			// Should have all 100 numbers
 			expect(lines.length).toBe(100);
