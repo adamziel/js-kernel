@@ -265,7 +265,7 @@ const createWritableStream = (
 	if (descriptor.mode === 'ignore' || !descriptor.port) {
 		return new NullWritableStream()
 	}
-	return new MessagePortWritableStream(descriptor.port)
+	return new MessagePortWritableStream(descriptor.port, { debugLabel: descriptor.fd === 1 ? "stdout" : "stderr" })
 }
 
 const toKernelChunk = (value: unknown): KernelStdioChunk => {

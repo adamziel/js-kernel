@@ -183,11 +183,6 @@ export class MessagePortWritableStream extends BasicEventEmitter<WritableEvents>
 	private readonly logLabel: string | null
 	private static logDecoder =
 		typeof TextDecoder === 'function' ? new TextDecoder() : null
-	private readonly queue: Array<
-		| { type: 'data'; chunk: KernelStdioChunk }
-		| { type: 'signal'; signal: 'end' | 'close'; label?: string }
-	> = []
-	private flushing = false
 
 	constructor(
 		private readonly port: MessagePort,
@@ -201,25 +196,28 @@ export class MessagePortWritableStream extends BasicEventEmitter<WritableEvents>
 
 	write(chunk: KernelStdioChunk) {
 		if (this.closed) return false
-		this.queue.push({ type: 'data', chunk })
-		this.scheduleFlush()
-		return true
+		try {
+			this.logChunk(chunk)
+			this.port.postMessage({ type: 'data', payload: chunk })
+			return true
+		} catch {
+			this.destroy()
+			return false
+		}
 	}
 
 	end(chunk?: KernelStdioChunk) {
 		if (this.closed) return false
 		if (typeof chunk !== 'undefined') {
-			this.queue.push({ type: 'data', chunk })
+			this.write(chunk)
 		}
-		this.queue.push({ type: 'signal', signal: 'end', label: '<EOF>' })
-		this.scheduleFlush()
+		this.signalAndClose('end', '<EOF>')
 		return true
 	}
 
 	close() {
 		if (this.closed) return false
-		this.queue.push({ type: 'signal', signal: 'close', label: '<closed>' })
-		this.scheduleFlush()
+		this.signalAndClose('close', '<closed>')
 		return true
 	}
 
@@ -230,47 +228,6 @@ export class MessagePortWritableStream extends BasicEventEmitter<WritableEvents>
 		this.port.close()
 		this.emit('close', undefined as unknown as void)
 		this.clearAll()
-		this.queue.length = 0
-	}
-
-	private scheduleFlush() {
-		if (this.flushing || this.closed) {
-			return
-		}
-		this.flushing = true
-		queueMicrotask(() => this.flushQueue())
-	}
-
-	private flushQueue() {
-		this.flushing = false
-		if (this.closed) {
-			this.queue.length = 0
-			return
-		}
-		while (this.queue.length > 0 && !this.closed) {
-			const item = this.queue.shift()!
-			if (item.type === 'data') {
-				try {
-					this.logChunk(item.chunk)
-					this.port.postMessage({ type: 'data', payload: item.chunk })
-				} catch {
-					this.destroy()
-					return
-				}
-				continue
-			}
-			this.logClose(item.label ?? '<closed>')
-			try {
-				if (!this.remoteClosed) {
-					this.port.postMessage({ type: item.signal })
-				}
-			} finally {
-				this.destroy()
-			}
-		}
-		if (!this.closed && this.queue.length > 0) {
-			this.scheduleFlush()
-		}
 	}
 
 	private handleMessage = (event: MessageEvent) => {
@@ -281,6 +238,18 @@ export class MessagePortWritableStream extends BasicEventEmitter<WritableEvents>
 		if (payload.type === 'end' || payload.type === 'close') {
 			this.remoteClosed = true
 			this.logClose('<remote closed>')
+			this.destroy()
+		}
+	}
+
+	private signalAndClose(type: 'end' | 'close', label: string) {
+		if (this.closed) return
+		this.logClose(label)
+		try {
+			if (!this.remoteClosed) {
+				this.port.postMessage({ type })
+			}
+		} finally {
 			this.destroy()
 		}
 	}

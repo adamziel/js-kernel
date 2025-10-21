@@ -22,6 +22,8 @@ type AsyncResolver = {
 export interface KernelFsClient {
 	async: Record<string, (...args: unknown[]) => Promise<unknown>>;
 	sync: Record<string, (...args: unknown[]) => unknown>;
+	writeToStdout?(chunk: KernelStdioChunk): void;
+	writeToStderr?(chunk: KernelStdioChunk): void;
 	dispose(): void;
 }
 
@@ -32,8 +34,8 @@ interface StdioStreams {
 		isEnded(): boolean;
 		destroy(): void;
 	};
-	stdout: { write(chunk: unknown): boolean; destroy(): void };
-	stderr: { write(chunk: unknown): boolean; destroy(): void };
+	stdout: { write(chunk: KernelStdioChunk): boolean; destroy(): void };
+	stderr: { write(chunk: KernelStdioChunk): boolean; destroy(): void };
 }
 
 export const createKernelFsClient = (
@@ -237,10 +239,10 @@ export const createKernelFsClient = (
 		return null;
 	};
 
-	const requestAsync = (
-		method: string,
-		args: unknown[]
-	): Promise<unknown> => {
+const requestAsync = (
+	method: string,
+	args: unknown[]
+): Promise<unknown> => {
 		if (disposed) {
 			return Promise.reject(
 				new Error('Filesystem bridge has been disposed')
@@ -385,6 +387,12 @@ export const createKernelFsClient = (
 	return {
 		async: asyncProxy,
 		sync: syncProxy,
+		writeToStdout(chunk: KernelStdioChunk) {
+			stdio?.stdout?.write(chunk);
+		},
+		writeToStderr(chunk: KernelStdioChunk) {
+			stdio?.stderr?.write(chunk);
+		},
 		dispose,
 	};
 };
