@@ -2,7 +2,7 @@ import {
 	decodeSerializedResponse,
 	deserializeFsResponse,
 	type SerializedFsResponse,
-} from '../../fs/serialization.ts'
+} from '../../fs/serialization.ts';
 import {
 	SYNC_HEADER_BYTES,
 	SYNC_HEADER_INT_COUNT,
@@ -12,67 +12,77 @@ import {
 	SYNC_STATUS_PENDING,
 	SYNC_STATUS_READY,
 	SYNC_TOTAL_BYTES,
-} from '../../ipc/sync/shared-buffer.ts'
+} from '../../ipc/sync/shared-buffer.ts';
+import type {
+	MessagePortReadableStream,
+	MessagePortWritableStream,
+} from '../../ipc/message-port.ts';
 
 type AsyncResolver = {
-	resolve(value: unknown): void
-	reject(reason: unknown): void
-}
+	resolve(value: unknown): void;
+	reject(reason: unknown): void;
+};
 
 export interface KernelFsClient {
-	async: Record<string, (...args: unknown[]) => Promise<unknown>>
-	sync: Record<string, (...args: unknown[]) => unknown>
-	dispose(): void
+	async: Record<string, (...args: unknown[]) => Promise<unknown>>;
+	sync: Record<string, (...args: unknown[]) => unknown>;
+	dispose(): void;
+}
+
+interface StdioStreams {
+	stdin: { read(): unknown; destroy(): void };
+	stdout: { write(chunk: unknown): boolean; destroy(): void };
+	stderr: { write(chunk: unknown): boolean; destroy(): void };
 }
 
 export const createKernelFsClient = (
-	fsPort: MessagePort
+	fsPort: MessagePort,
+	stdio?: StdioStreams
 ): KernelFsClient => {
 	const pumpWorker = new Worker(
 		new URL('../../ipc/sync/pump-worker.ts', import.meta.url),
 		{ type: 'module', name: 'sync-pump(fs)' }
-	)
+	);
 
-	let disposed = false
-	let nextRequestId = 1
-	const pendingAsync = new Map<number, AsyncResolver>()
+	let disposed = false;
+	let nextRequestId = 1;
+	const pendingAsync = new Map<number, AsyncResolver>();
 
 	const handlePumpMessage = (event: MessageEvent) => {
-		const payload = event.data
+		const payload = event.data;
 		if (!payload || typeof payload !== 'object') {
-			return
+			return;
 		}
 		if (payload.type !== 'asyncResponse') {
-			return
+			return;
 		}
 
-		const requestId = payload.requestId
-		const response: SerializedFsResponse | undefined =
-			payload.response
+		const requestId = payload.requestId;
+		const response: SerializedFsResponse | undefined = payload.response;
 
 		if (typeof requestId !== 'number') {
-			return
+			return;
 		}
 
-		const resolver = pendingAsync.get(requestId)
+		const resolver = pendingAsync.get(requestId);
 		if (!resolver) {
-			return
+			return;
 		}
-		pendingAsync.delete(requestId)
+		pendingAsync.delete(requestId);
 
 		if (!response) {
-			resolver.reject(new Error('Missing filesystem response'))
-			return
+			resolver.reject(new Error('Missing filesystem response'));
+			return;
 		}
-		const materialized = deserializeFsResponse(response)
+		const materialized = deserializeFsResponse(response);
 		if (materialized.ok) {
-			resolver.resolve(materialized.value)
+			resolver.resolve(materialized.value);
 		} else {
-			resolver.reject(materialized.error)
+			resolver.reject(materialized.error);
 		}
-	}
+	};
 
-	pumpWorker.addEventListener('message', handlePumpMessage)
+	pumpWorker.addEventListener('message', handlePumpMessage);
 	pumpWorker.postMessage(
 		{
 			type: 'init',
@@ -80,7 +90,139 @@ export const createKernelFsClient = (
 			port: fsPort,
 		},
 		[fsPort]
-	)
+	);
+
+	const tryHandleStdioAsync = (
+		method: string,
+		args: unknown[],
+		streams: StdioStreams
+	): Promise<unknown> | null => {
+		const fd = typeof args[0] === 'number' ? args[0] : null;
+		if (fd === null || (fd !== 0 && fd !== 1 && fd !== 2)) {
+			return null;
+		}
+
+		// Handle write operations to stdout (1) or stderr (2)
+		// writeSync(fd, data, offsetOrPos, lengthOrEnc, position)
+		if (
+			(method === 'write' || method === 'writeSync') &&
+			(fd === 1 || fd === 2)
+		) {
+			return Promise.resolve().then(() => {
+				const stream = fd === 1 ? streams.stdout : streams.stderr;
+				const data = args[1];
+				const offsetOrPos = args[2];
+				const lengthOrEnc = args[3];
+				const position = args[4];
+
+				const chunk = extractWriteData(
+					data,
+					offsetOrPos,
+					lengthOrEnc,
+					position
+				);
+				stream.write(chunk);
+				return chunk instanceof Uint8Array
+					? chunk.byteLength
+					: chunk.length;
+			});
+		}
+
+		// Handle read operations from stdin (0)
+		// readSync(fd, length, position)
+		if ((method === 'read' || method === 'readSync') && fd === 0) {
+			return Promise.resolve().then(() => {
+				const length = typeof args[1] === 'number' ? args[1] : 0;
+				const data = streams.stdin.read();
+
+				if (!data) {
+					return new Uint8Array(0);
+				}
+
+				// Convert data to Uint8Array if needed
+				let bytes: Uint8Array;
+				if (typeof data === 'string') {
+					bytes = new TextEncoder().encode(data);
+				} else if (data instanceof Uint8Array) {
+					bytes = data;
+				} else {
+					bytes = new Uint8Array(0);
+				}
+
+				// Return up to 'length' bytes
+				if (length > 0 && bytes.byteLength > length) {
+					return bytes.slice(0, length);
+				}
+				return bytes;
+			});
+		}
+
+		return null;
+	};
+
+	const tryHandleStdioSync = (
+		method: string,
+		args: unknown[],
+		streams: StdioStreams
+	): unknown | null => {
+		const fd = typeof args[0] === 'number' ? args[0] : null;
+		if (fd === null || (fd !== 0 && fd !== 1 && fd !== 2)) {
+			return null;
+		}
+
+		// Handle write operations to stdout (1) or stderr (2)
+		// writeSync(fd, data, offsetOrPos, lengthOrEnc, position)
+		if (
+			(method === 'writeSync' || method === 'write') &&
+			(fd === 1 || fd === 2)
+		) {
+			const stream = fd === 1 ? streams.stdout : streams.stderr;
+			const data = args[1];
+			const offsetOrPos = args[2];
+			const lengthOrEnc = args[3];
+			const position = args[4];
+
+			const chunk = extractWriteData(
+				data,
+				offsetOrPos,
+				lengthOrEnc,
+				position
+			);
+			stream.write(chunk);
+			return chunk instanceof Uint8Array
+				? chunk.byteLength
+				: chunk.length;
+		}
+
+		// Handle read operations from stdin (0)
+		// readSync(fd, length, position)
+		if ((method === 'readSync' || method === 'read') && fd === 0) {
+			const length = typeof args[1] === 'number' ? args[1] : 0;
+			const data = streams.stdin.read();
+
+			if (!data) {
+				return new Uint8Array(0);
+			}
+
+			// Convert data to Uint8Array if needed
+			let bytes: Uint8Array;
+			if (typeof data === 'string') {
+				bytes = new TextEncoder().encode(data);
+			} else if (data instanceof Uint8Array) {
+				bytes = data;
+			} else {
+				bytes = new Uint8Array(0);
+			}
+
+			// Return up to 'length' bytes
+			if (length > 0 && bytes.byteLength > length) {
+				return bytes.slice(0, length);
+			}
+			return bytes;
+		}
+
+		return null;
+	};
 
 	const requestAsync = (
 		method: string,
@@ -89,42 +231,59 @@ export const createKernelFsClient = (
 		if (disposed) {
 			return Promise.reject(
 				new Error('Filesystem bridge has been disposed')
-			)
+			);
 		}
-		const requestId = nextRequestId++
+
+		// Intercept stdio operations
+		if (stdio) {
+			const stdioResult = tryHandleStdioAsync(method, args, stdio);
+			if (stdioResult !== null) {
+				return stdioResult;
+			}
+		}
+
+		const requestId = nextRequestId++;
 		return new Promise<unknown>((resolve, reject) => {
-			pendingAsync.set(requestId, { resolve, reject })
+			pendingAsync.set(requestId, { resolve, reject });
 			try {
 				pumpWorker.postMessage({
 					type: 'asyncRequest',
 					requestId,
 					method,
 					args,
-				})
+				});
 			} catch (error) {
-				pendingAsync.delete(requestId)
+				pendingAsync.delete(requestId);
 				reject(
 					error instanceof Error
 						? error
 						: new Error(String(error ?? 'Async request failed'))
-				)
+				);
 			}
-		})
-	}
+		});
+	};
 
 	const requestSync = (method: string, args: unknown[]): unknown => {
 		if (disposed) {
-			throw new Error('Filesystem bridge has been disposed')
+			throw new Error('Filesystem bridge has been disposed');
 		}
 
-		const normalizedArgs = Array.isArray(args) ? [...args] : []
-		let bufferBytes = SYNC_TOTAL_BYTES
-		const MAX_BUFFER_BYTES = 64 * 1024 * 1024
+		// Intercept stdio operations
+		if (stdio) {
+			const stdioResult = tryHandleStdioSync(method, args, stdio);
+			if (stdioResult !== null) {
+				return stdioResult;
+			}
+		}
+
+		const normalizedArgs = Array.isArray(args) ? [...args] : [];
+		let bufferBytes = SYNC_TOTAL_BYTES;
+		const MAX_BUFFER_BYTES = 64 * 1024 * 1024;
 
 		for (let attempt = 0; attempt < 6; attempt += 1) {
-			const buffer = new SharedArrayBuffer(bufferBytes)
-			const header = new Int32Array(buffer, 0, SYNC_HEADER_INT_COUNT)
-			const requestId = nextRequestId++
+			const buffer = new SharedArrayBuffer(bufferBytes);
+			const header = new Int32Array(buffer, 0, SYNC_HEADER_INT_COUNT);
+			const requestId = nextRequestId++;
 
 			try {
 				pumpWorker.postMessage({
@@ -133,130 +292,188 @@ export const createKernelFsClient = (
 					method,
 					args: normalizedArgs,
 					buffer,
-				})
+				});
 			} catch (error) {
 				throw error instanceof Error
 					? error
-					: new Error(String(error ?? 'Sync request failed'))
+					: new Error(String(error ?? 'Sync request failed'));
 			}
 
-			waitForSyncResult(header)
+			waitForSyncResult(header);
 
-			const status = Atomics.load(header, SYNC_STATUS_INDEX)
+			const status = Atomics.load(header, SYNC_STATUS_INDEX);
 			if (status === SYNC_STATUS_OVERFLOW) {
-				const required = Atomics.load(header, SYNC_LENGTH_INDEX)
+				const required = Atomics.load(header, SYNC_LENGTH_INDEX);
 				const minimum =
 					required > 0
 						? SYNC_HEADER_BYTES + required
-						: bufferBytes * 2
-				const nextSize = Math.max(bufferBytes * 2, minimum + 1024)
+						: bufferBytes * 2;
+				const nextSize = Math.max(bufferBytes * 2, minimum + 1024);
 				if (nextSize > MAX_BUFFER_BYTES) {
 					throw new Error(
 						`Synchronous filesystem response exceeded ${MAX_BUFFER_BYTES} bytes`
-					)
+					);
 				}
-				bufferBytes = Math.min(nextSize, MAX_BUFFER_BYTES)
-				continue
+				bufferBytes = Math.min(nextSize, MAX_BUFFER_BYTES);
+				continue;
 			}
 			if (status !== SYNC_STATUS_READY) {
 				throw new Error(
 					`Unexpected synchronous filesystem status: ${status}`
-				)
+				);
 			}
 
-			const length = Atomics.load(header, SYNC_LENGTH_INDEX)
+			const length = Atomics.load(header, SYNC_LENGTH_INDEX);
 			if (length <= 0) {
-				throw new Error('Empty filesystem response payload')
+				throw new Error('Empty filesystem response payload');
 			}
-			const payload = new Uint8Array(buffer, SYNC_HEADER_BYTES, length)
-			const response = decodeSerializedResponse(payload.slice())
-			const materialized = deserializeFsResponse(response)
+			const payload = new Uint8Array(buffer, SYNC_HEADER_BYTES, length);
+			const response = decodeSerializedResponse(payload.slice());
+			const materialized = deserializeFsResponse(response);
 			if (materialized.ok) {
-				return materialized.value
+				return materialized.value;
 			}
-			throw materialized.error
+			throw materialized.error;
 		}
 
 		throw new Error(
 			'Synchronous filesystem response exceeded retry budget'
-		)
-	}
+		);
+	};
 
 	const asyncProxy = createMethodProxy(
 		resolveKernelMethodName,
 		(method, args) => requestAsync(method, args)
-	)
-	;(asyncProxy as any).promises = asyncProxy
+	);
+	(asyncProxy as any).promises = asyncProxy;
 	const syncProxy = createMethodProxy(
 		resolveKernelMethodName,
 		(method, args) => requestSync(method, args)
-	)
+	);
 
 	const dispose = () => {
 		if (disposed) {
-			return
+			return;
 		}
-		disposed = true
+		disposed = true;
 		try {
-			pumpWorker.postMessage({ type: 'dispose' })
+			pumpWorker.postMessage({ type: 'dispose' });
 		} catch {
 			// ignore errors while disposing
 		}
-		pumpWorker.removeEventListener('message', handlePumpMessage)
-		pumpWorker.terminate()
+		pumpWorker.removeEventListener('message', handlePumpMessage);
+		pumpWorker.terminate();
 		for (const { reject } of pendingAsync.values()) {
-			reject(new Error('Filesystem bridge disposed'))
+			reject(new Error('Filesystem bridge disposed'));
 		}
-		pendingAsync.clear()
-	}
+		pendingAsync.clear();
+	};
 
 	return {
 		async: asyncProxy,
 		sync: syncProxy,
 		dispose,
-	}
-}
+	};
+};
 
 const createMethodProxy = <T>(
 	resolveMethod: (method: string) => string | null,
 	invoke: (method: string, args: unknown[]) => T
 ): Record<string, (...args: unknown[]) => T> => {
-	const target = {} as Record<string, (...args: unknown[]) => T>
+	const target = {} as Record<string, (...args: unknown[]) => T>;
 	return new Proxy(target, {
 		get(currentTarget, property, receiver) {
 			if (property === 'then') {
-				return undefined
+				return undefined;
 			}
 			if (Reflect.has(currentTarget, property)) {
-				return Reflect.get(currentTarget, property, receiver)
+				return Reflect.get(currentTarget, property, receiver);
 			}
 			if (typeof property !== 'string') {
-				return undefined
+				return undefined;
 			}
-			const kernelMethod = resolveMethod(property)
+			const kernelMethod = resolveMethod(property);
 			if (!kernelMethod) {
-				return undefined
+				return undefined;
 			}
-			return (...args: unknown[]) => invoke(kernelMethod, args)
+			return (...args: unknown[]) => invoke(kernelMethod, args);
 		},
-	})
-}
+	});
+};
 
 const resolveKernelMethodName = (method: string): string => {
 	if (method.endsWith('Sync') || method.endsWith('Async')) {
-		return method
+		return method;
 	}
-	return `${method}Sync`
-}
+	return `${method}Sync`;
+};
 
 const waitForSyncResult = (header: Int32Array) => {
-	let status = Atomics.load(header, SYNC_STATUS_INDEX)
+	let status = Atomics.load(header, SYNC_STATUS_INDEX);
 	while (status === SYNC_STATUS_PENDING) {
-		Atomics.wait(
-			header,
-			SYNC_STATUS_INDEX,
-			SYNC_STATUS_PENDING
-		)
-		status = Atomics.load(header, SYNC_STATUS_INDEX)
+		Atomics.wait(header, SYNC_STATUS_INDEX, SYNC_STATUS_PENDING);
+		status = Atomics.load(header, SYNC_STATUS_INDEX);
 	}
-}
+};
+
+/**
+ * Extract data for writing based on writeSync signature:
+ * writeSync(fd, data, offsetOrPos, lengthOrEnc, position)
+ *
+ * If data is a string:
+ *   - offsetOrPos is the position (ignored for stdio)
+ *   - lengthOrEnc is the encoding
+ *
+ * If data is a buffer:
+ *   - offsetOrPos is the offset into the buffer
+ *   - lengthOrEnc is the length to write
+ *   - position is the file position (ignored for stdio)
+ */
+const extractWriteData = (
+	data: unknown,
+	offsetOrPos: unknown,
+	lengthOrEnc: unknown,
+	position: unknown
+): string | Uint8Array => {
+	if (typeof data === 'string') {
+		// For string data, offsetOrPos is position (ignored), lengthOrEnc is encoding
+		return data;
+	}
+
+	// For buffer data, extract the relevant portion
+	const offset = typeof offsetOrPos === 'number' ? offsetOrPos : 0;
+
+	if (data instanceof Uint8Array) {
+		const length =
+			typeof lengthOrEnc === 'number'
+				? lengthOrEnc
+				: data.byteLength - offset;
+		return data.slice(offset, offset + length);
+	}
+
+	if (data instanceof ArrayBuffer) {
+		const view = new Uint8Array(data);
+		const length =
+			typeof lengthOrEnc === 'number'
+				? lengthOrEnc
+				: view.byteLength - offset;
+		return view.slice(offset, offset + length);
+	}
+
+	if (ArrayBuffer.isView(data)) {
+		const view = data as ArrayBufferView;
+		const bytes = new Uint8Array(
+			view.buffer,
+			view.byteOffset,
+			view.byteLength
+		);
+		const length =
+			typeof lengthOrEnc === 'number'
+				? lengthOrEnc
+				: bytes.byteLength - offset;
+		return bytes.slice(offset, offset + length);
+	}
+
+	// Fallback: convert to string
+	return String(data);
+};

@@ -2477,24 +2477,33 @@ globalThis.internalModules = {
 			},
 			read(fd, buffer, offset, length, position, reqOrPromise) {
 				return maybePromiseFromSync(() => {
-					// Read data from the filesystem
-					const sourceBuffer = globalFs.readSync(
-						fd,
-						length,
-						position
-					);
-
-					// Copy the data into the provided buffer at the specified offset
-					const bytesToCopy = Math.min(sourceBuffer.length, length);
-					if (bytesToCopy > 0) {
-						buffer.set(
-							sourceBuffer.subarray(0, bytesToCopy),
-							offset
+					try {
+						if (fd === 0) {
+							console.log('about to read from stdin');
+						}
+						// Read data from the filesystem
+						const sourceBuffer = globalFs.readSync(
+							fd,
+							length,
+							position
 						);
-					}
+						console.log('read from stdin', { sourceBuffer });
 
-					// Return the number of bytes actually read
-					return bytesToCopy;
+						// Copy the data into the provided buffer at the specified offset
+						const bytesToCopy = Math.min(sourceBuffer.length, length);
+						if (bytesToCopy > 0) {
+							buffer.set(
+								sourceBuffer.subarray(0, bytesToCopy),
+								offset
+							);
+						}
+
+						// Return the number of bytes actually read
+						return bytesToCopy;
+					} catch (e) {
+						console.error(e);
+						throw e;
+					}
 				}, reqOrPromise);
 			},
 			readdir(path, encoding, withFileTypes, kUsePromises) {

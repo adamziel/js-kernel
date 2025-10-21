@@ -164,13 +164,17 @@ interface LocalChildProcessRecord {
 	setExitCode: (code: number) => void
 }
 
-interface ChildReadableEvents {
+interface ChildReadableEvents extends Record<string, unknown> {
 	data: KernelStdioChunk
 	end: void
 	close: void
 }
 
 class NullReadableStream extends BasicEventEmitter<ChildReadableEvents> {
+	read() {
+		return null
+	}
+
 	close() {
 		this.clearAll()
 	}
@@ -180,7 +184,7 @@ class NullReadableStream extends BasicEventEmitter<ChildReadableEvents> {
 	}
 }
 
-interface ChildWritableEvents {
+interface ChildWritableEvents extends Record<string, unknown> {
 	close: void
 }
 
@@ -332,7 +336,7 @@ const disposeSpawnSyncClient = () => {
 	spawnSyncClient = null
 }
 
-const failAllPendingSpawnRequests = (reason: string) => {
+const failAllPendingSpawnRequests = (reason: string | Error) => {
 	const error =
 		reason instanceof Error
 			? reason
@@ -459,7 +463,7 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 	controlPort.start()
 
 	disposeFsClient()
-	fsClient = createKernelFsClient(options.fsPort)
+	fsClient = createKernelFsClient(options.fsPort, stdioStreams)
 	disposeSpawnSyncClient()
 	spawnSyncClient = createSpawnSyncClient(options.spawnSyncPort)
 
@@ -573,6 +577,7 @@ export function redirectConsoleToStdio(isDebug: boolean) {
 		throw new Error('installStdIo called before initChildProcess')
 	}
 
+	const originalConsole = (globalThis as any).originalConsole
 	;(globalThis as any).__webPolyfillsOriginalConsole = originalConsole
 
 	const joinArgs = (args: unknown[]) =>
@@ -742,6 +747,7 @@ function requestSpawnFromKernel(
 		)
 	}
 
+	const port = controlPort
 	const requestId = nextSpawnRequestId++
 
 	return new Promise<ChildProcessHandle>((resolve, reject) => {
@@ -752,7 +758,7 @@ function requestSpawnFromKernel(
 			if (options.ipcPort) {
 				transferList.push(options.ipcPort)
 			}
-			controlPort.postMessage(
+			port.postMessage(
 				{
 					type: CONTROL_MESSAGE_SPAWN_REQUEST,
 					requestId,
