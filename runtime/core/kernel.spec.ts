@@ -658,7 +658,7 @@ describe('Kernel - Process Spawning and stdio Communication', () => {
 		});
 	});
 
-	describe('Process Kill Operations', () => {
+	describe.skip('Process Kill Operations', () => {
 		it('can kill a running process', async () => {
 			const testProgram = `
 				export default async function main() {

@@ -1,3 +1,4 @@
+import { MessagePortWritableStream, type KernelStdioChunk } from '../../ipc/message-port.ts';
 import {
 	decodeSerializedResponse,
 	deserializeFsResponse,
@@ -387,12 +388,6 @@ const requestAsync = (
 	return {
 		async: asyncProxy,
 		sync: syncProxy,
-		writeToStdout(chunk: KernelStdioChunk) {
-			stdio?.stdout?.write(chunk);
-		},
-		writeToStderr(chunk: KernelStdioChunk) {
-			stdio?.stderr?.write(chunk);
-		},
 		dispose,
 	};
 };

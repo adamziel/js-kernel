@@ -265,7 +265,7 @@ const createWritableStream = (
 	if (descriptor.mode === 'ignore' || !descriptor.port) {
 		return new NullWritableStream()
 	}
-	return new MessagePortWritableStream(descriptor.port, { debugLabel: descriptor.fd === 1 ? "stdout" : "stderr" })
+	return new MessagePortWritableStream(descriptor.port)
 }
 
 const toKernelChunk = (value: unknown): KernelStdioChunk => {
@@ -601,21 +601,20 @@ export function redirectConsoleToStdio(isDebug: boolean) {
 	const writeStdout = (...args: unknown[]) => {
 		if (isDebug) {
 			originalConsole.log(...args)
-		} else {
-			const value = joinArgs(args)
-			const chunk = appendTrailingNewlineIfText(toKernelChunk(value))
-			stdioStreams!.stdout.write(chunk)
 		}
+
+		const value = joinArgs(args)
+		const chunk = appendTrailingNewlineIfText(toKernelChunk(value))
+		stdioStreams!.stdout.write(chunk)
 	}
 
 	const writeStderr = (...args: unknown[]) => {
 		if (isDebug) {
 			originalConsole.trace(...args)
-		} else {
-			const value = joinArgs(args)
-			const chunk = appendTrailingNewlineIfText(toKernelChunk(value))
-			stdioStreams!.stderr.write(chunk)
 		}
+		const value = joinArgs(args)
+		const chunk = appendTrailingNewlineIfText(toKernelChunk(value))
+		stdioStreams!.stderr.write(chunk)
 	}
 
 	globalThis.console = {

@@ -428,9 +428,25 @@ export class Kernel extends InMemoryFileSystem {
 		fsCleanup: () => undefined,
 		spawnSyncCleanup: () => undefined,
 		setExitCode: (code: number) => {
+			if (exitCode !== null) {
+				return
+			}
 			exitCode = code
-			},
-		}
+			try {
+				parentStdin?.destroy()
+			} catch {
+				// Ignore stream cleanup errors.
+			}
+			for (const listener of Array.from(exitListeners)) {
+				try {
+					listener(code)
+				} catch {
+					// Ignore listener failures.
+				}
+			}
+			exitListeners.clear()
+		},
+	}
 
 		this.processes.set(resources.pid, record)
 		record.controlCleanup = this.installProcessControl(record)
