@@ -38,20 +38,28 @@ const createProgramSource = (): string => {
 			const { loadNode } = await import(
 				/* @vite-ignore */ loaderUrl
 			)
+			console.log('[node.ts] loadNode imported, calling loadNode()...');
 			const runtime = await loadNode()
+			console.log('[node.ts] loadNode() returned, calling runMain()...');
 			await runtime.runMain()
+			console.log('[node.ts] runMain() completed, returning never-resolving Promise');
 			// We can't just exit for the process – this would kill it
 			// even when it starts async work, e.g. npm install.
 			// We also can't not exit for the process – this would keep it
 			// running even when there's no more work to do.
 			// @TODO: How can we ensure all the Node scripts exit at the
 			//        end once there's no more pending timers or sockets?
-			// exitSafely(0)
+			// For now, return a Promise that never resolves - the script
+			// must explicitly call processController.exit()
+			return new Promise(() => {
+				console.log('[node.ts] Inside never-resolving Promise executor');
+			})
 		} catch (error) {
 			console.trace(error);
 			writeStderr(`node: <internal>: ${errorToString(error)}`)
 			// See above.
 			// exitSafely(1)
+			return new Promise(() => {}) // Don't exit automatically even on error
 		}
 	}
 

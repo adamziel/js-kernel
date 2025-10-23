@@ -235,13 +235,13 @@ function createDebugProxy(name, target) {
 	return new Proxy(target, {
 		get(obj, prop) {
 			const value = obj[prop];
-			if (value === undefined) {
-				console.log(
-					`${name} binding: undefined property '${String(
-						prop
-					)}' accessed`
-				);
-			}
+			// if (value === undefined) {
+			// 	console.log(
+			// 		`${name} binding: undefined property '${String(
+			// 			prop
+			// 		)}' accessed`
+			// 	);
+			// }
 			return value;
 		},
 	});
@@ -2214,6 +2214,10 @@ globalThis.internalModules = {
 			console.warn('containsModuleSyntax called', { arguments });
 			return false;
 		},
+		compileFunction() {
+			console.error('compileFunction not implemented');
+			throw new Error('compileFunction not implemented');
+		},
 		compileFunctionForCJSLoader: (
 			content,
 			filename,
@@ -3905,7 +3909,7 @@ globalThis.internalModules = {
 		},
 		{
 			get(target, prop) {
-				console.log('stream get', prop);
+				// console.log('stream get', prop);
 				return target[prop];
 			},
 		}
@@ -4835,6 +4839,7 @@ globalThis.internalModules.fs_dir_exports =
 	globalThis.__moduleRegistry.get('internal/fs/dir');
 
 globalThis.coreModules.fs = fs.default;
+globalThis.fs = globalThis.coreModules.fs;
 
 const fsPromises = await import('../../dist/fs/promises.js');
 globalThis.coreModules['fs/promises'] = fsPromises.default.exports;
@@ -5551,7 +5556,7 @@ globalThis.coreModules.http2 = {
 const crypto = await import('../../dist/crypto.js');
 globalThis.coreModules.crypto = crypto.default;
 Object.assign(globalThis.crypto, crypto.default);
-console.log('crypto.default', crypto.default);
+// console.log('crypto.default', crypto.default);
 
 const https = await import('../../dist/https.js');
 globalThis.coreModules.https = https.default;
@@ -6416,4 +6421,3 @@ globalThis.fetch = async (input, init) => {
 
 	return originalFetch(input, init);
 };
-

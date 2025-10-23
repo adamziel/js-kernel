@@ -835,7 +835,13 @@ export class Kernel extends InMemoryFileSystem {
 			}
 		});
 
-		worker.addEventListener('error', () => {
+		worker.addEventListener('error', (event) => {
+			console.error('[kernel] Worker error event:', event);
+			console.error('[kernel] Worker error message:', event.message);
+			console.error('[kernel] Worker error filename:', event.filename);
+			console.error('[kernel] Worker error lineno:', event.lineno);
+			console.error('[kernel] Worker error colno:', event.colno);
+			console.error('[kernel] Worker error error:', event.error);
 			finalize(null, 'Process worker crashed');
 			this.handleProcessExit(resources.pid, ExitCode.ERROR);
 		});

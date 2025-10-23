@@ -158,7 +158,21 @@ const splitPath = (input) => {
 	if (normalised === '/') {
 		return [];
 	}
-	return normalised.split('/').filter(Boolean);
+	const rawSegments = normalised.split('/').filter(Boolean);
+	const resolved: string[] = [];
+	for (const segment of rawSegments) {
+		if (segment === '.' || segment === '') {
+			continue;
+		}
+		if (segment === '..') {
+			if (resolved.length > 0) {
+				resolved.pop();
+			}
+			continue;
+		}
+		resolved.push(segment);
+	}
+	return resolved;
 };
 
 const updateTimestamps = (node, type) => {

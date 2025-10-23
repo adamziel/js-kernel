@@ -637,9 +637,12 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 		fs: processFs,
 		fsSync: fsClient!.sync,
 		exit(code: number) {
-			console.log('processController.exit', { code })
+			const pid = childProcessState?.pid ?? -1;
+			// console.error('[processController.exit] CALLED! PID:', pid, 'code:', code);
+			console.log('[processController.exit] PID:', pid, 'code:', code);
 			// Give all the streams and async actions chance to flush.
 			setTimeout(() => {
+				// console.error('[processController.exit] In setTimeout, sending exit message');
 				if (controlPort) {
 					try {
 						controlPort.postMessage({
@@ -689,14 +692,14 @@ export function redirectConsoleToStdio(isDebug: boolean) {
 			.join(' ')
 
 	const writeStdout = (...args: unknown[]) => {
-		if (!isDebug) return
+		// if (!isDebug) return
 		const value = joinArgs(args)
 		const chunk = appendTrailingNewlineIfText(toKernelChunk(value))
 		stdioStreams!.stdout.write(chunk)
 	}
 
 	const writeStderr = (...args: unknown[]) => {
-		if (!isDebug) return
+		// if (!isDebug) return
 		const value = joinArgs(args)
 		const chunk = appendTrailingNewlineIfText(toKernelChunk(value))
 		stdioStreams!.stderr.write(chunk)
@@ -817,18 +820,31 @@ const startProgram = async (options: ChildProcessInitOptions) => {
 
 		// Execute the program's main function
 		if (typeof module.default === 'function') {
-			const exitCode = await module.default((globalThis as any).processController)
-			if (typeof exitCode === 'number') {
-				;(globalThis as any).processController.exit(exitCode)
-			} else {
-				;(globalThis as any).processController.exit(0)
+			console.log('[controller] About to call module.default()');
+			try {
+				const exitCode = await module.default((globalThis as any).processController)
+				console.log('[controller] module.default() returned, exitCode:', exitCode, 'type:', typeof exitCode);
+				if (typeof exitCode === 'number') {
+					console.log('[controller] exitCode is number, calling exit');
+					;(globalThis as any).processController.exit(exitCode)
+				} else {
+					console.log('[controller] exitCode is NOT number, calling exit(0)');
+					;(globalThis as any).processController.exit(0)
+				}
+			} catch (moduleError) {
+				console.error('[controller] ERROR calling/awaiting module.default():', moduleError);
+				console.error('[controller] Error type:', typeof moduleError);
+				console.error('[controller] Error message:', moduleError instanceof Error ? moduleError.message : String(moduleError));
+				throw moduleError;
 			}
 		} else {
+			console.log('[controller] No default export, calling exit(0)');
 			// If no default export, the module executed at import time
 			// Exit with success
 			;(globalThis as any).processController.exit(0)
 		}
 	} catch (error) {
+		console.error('[controller] CAUGHT ERROR in try block:', error);
 		reportProgramError(error)
 	} finally {
 		if (typeof originalFilename === 'undefined') {
