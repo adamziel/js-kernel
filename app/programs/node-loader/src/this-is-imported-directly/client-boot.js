@@ -4929,16 +4929,16 @@ globalThis.internalModules.fs_dir_exports =
 globalThis.coreModules.fs = fs.default;
 globalThis.fs = globalThis.coreModules.fs;
 
-const shouldReturnString = (options) => {
+const supportsBinaryResult = (options) => {
+	if (options === undefined || options === null) {
+		return true;
+	}
 	if (typeof options === 'string') {
-		return options !== 'buffer';
+		return options === 'buffer';
 	}
 	if (options && typeof options === 'object') {
-		if (!Object.prototype.hasOwnProperty.call(options, 'encoding')) {
-			return false;
-		}
 		const encoding = options.encoding;
-		return encoding !== undefined && encoding !== null && encoding !== 'buffer';
+		return encoding === undefined || encoding === null || encoding === 'buffer';
 	}
 	return false;
 };
@@ -4953,36 +4953,49 @@ if (
 		path,
 		options
 	) {
-		if (typeof path === 'number' || shouldReturnString(options)) {
-			return originalReadFileSync(path, options);
-		}
-		const raw = globalThis.processController.fsSync.readFileSync(
-			path,
-			null
-		);
+		const result = originalReadFileSync(path, options);
 		if (
+			!supportsBinaryResult(options) ||
 			typeof Buffer === 'undefined' ||
 			typeof Buffer.from !== 'function'
 		) {
-			return raw;
+			return result;
 		}
-		let view;
-		if (raw instanceof Uint8Array) {
-			view = raw;
-		} else if (
-			raw &&
-			typeof raw === 'object' &&
-			raw.buffer instanceof ArrayBuffer
-		) {
-			const byteOffset =
-				raw.byteOffset ?? raw.offset ?? 0;
-			const length =
-				raw.byteLength ?? raw.length ?? 0;
-			view = new Uint8Array(raw.buffer, byteOffset, length);
-		} else {
-			view = new Uint8Array(0);
+		const availableLength =
+			typeof result === 'string'
+				? result.length
+				: result &&
+				  typeof result === 'object' &&
+				  typeof (result.byteLength ?? result.length) === 'number'
+				? result.byteLength ?? result.length
+				: 0;
+		if (availableLength > 0 || typeof path !== 'string') {
+			return result;
 		}
-		return Buffer.from(view);
+		let fallback;
+		try {
+			fallback = globalThis.processController.fsSync.readFileSync(path, null);
+		} catch {
+			return result;
+		}
+		if (!(fallback instanceof Uint8Array)) {
+			if (
+				!fallback ||
+				typeof fallback !== 'object' ||
+				!(fallback.buffer instanceof ArrayBuffer)
+			) {
+				return result;
+			}
+			fallback = new Uint8Array(
+				fallback.buffer,
+				fallback.byteOffset ?? fallback.offset ?? 0,
+				fallback.byteLength ?? fallback.length ?? 0
+			);
+		}
+		if (fallback.byteLength === 0) {
+			return result;
+		}
+		return Buffer.from(fallback);
 	};
 	Object.defineProperty(
 		globalThis.coreModules.fs.readFileSync,
