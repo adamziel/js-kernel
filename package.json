@@ -1,26 +1,27 @@
 {
-  "name": "app",
-  "version": "1.0.0",
-  "main": "index.js",
-  "scripts": {
-    "test": "vitest run"
-  },
-  "type": "module",
-  "author": "",
-  "license": "ISC",
-  "description": "",
-  "dependencies": {
-    "@php-wasm/node": "^3.0.12",
-    "@php-wasm/web": "^3.0.12",
-    "@zip.js/zip.js": "^2.8.8",
-    "esbuild-node-externals": "^1.18.0",
-    "fflate": "^0.8.2",
-    "vite": "^7.1.11"
-  },
-  "devDependencies": {
-    "@types/node": "^22.0.0",
-    "@vitest/browser": "^1.6.1",
-    "playwright": "^1.40.0",
-    "vitest": "^1.6.1"
-  }
+	"name": "app",
+	"version": "1.0.0",
+	"main": "index.js",
+	"scripts": {
+		"test": "vitest run",
+		"dev": "vite & cd app/programs/node-loader && node build.js --watch"
+	},
+	"type": "module",
+	"author": "",
+	"license": "ISC",
+	"description": "",
+	"dependencies": {
+		"@php-wasm/node": "^3.0.12",
+		"@php-wasm/web": "^3.0.12",
+		"@zip.js/zip.js": "^2.8.8",
+		"esbuild-node-externals": "^1.18.0",
+		"fflate": "^0.8.2",
+		"vite": "^7.1.11"
+	},
+	"devDependencies": {
+		"@types/node": "^22.0.0",
+		"@vitest/browser": "^1.6.1",
+		"playwright": "^1.40.0",
+		"vitest": "^1.6.1"
+	}
 }
