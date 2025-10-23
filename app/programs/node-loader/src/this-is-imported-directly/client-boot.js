@@ -890,6 +890,46 @@ const resolveFsEncodingOptions = (options) => {
 	return options;
 };
 
+const ensureNodeBuffer = (value) => {
+	if (
+		value == null ||
+		typeof Buffer === 'undefined' ||
+		typeof Buffer.from !== 'function'
+	) {
+		return value;
+	}
+	if (Buffer.isBuffer && Buffer.isBuffer(value)) {
+		return value;
+	}
+	if (value instanceof Uint8Array) {
+		return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+	}
+	if (ArrayBuffer.isView(value)) {
+		return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+	}
+	if (value instanceof ArrayBuffer) {
+		return Buffer.from(value);
+	}
+	return value;
+};
+
+const shouldReturnBuffer = (options) => {
+	if (options === undefined || options === null) {
+		return true;
+	}
+	if (typeof options === 'string') {
+		return false;
+	}
+	if (typeof options === 'object') {
+		if (Object.prototype.hasOwnProperty.call(options, 'encoding')) {
+			const normalized = resolveFsEncodingValue(options.encoding);
+			return normalized === undefined || normalized === null;
+		}
+		return true;
+	}
+	return false;
+};
+
 const encodeStringToBytes = (string, encoding) => {
 	const format = normalizeEncodingName(encoding);
 	switch (format) {
@@ -2553,14 +2593,15 @@ globalThis.internalModules = {
 				}
 			},
 			readFile(path, options, kUsePromises) {
-				return maybePromiseFromSync(
-					() =>
-						globalFs.readFileSync(
-							path,
-							resolveFsEncodingOptions(options)
-						),
-					kUsePromises
-				);
+		const wantsBuffer = shouldReturnBuffer(options);
+		const resolvedOptions = resolveFsEncodingOptions(options);
+		return maybePromiseFromSync(
+			() => {
+				const result = globalFs.readFileSync(path, resolvedOptions);
+				return wantsBuffer ? ensureNodeBuffer(result) : result;
+			},
+			kUsePromises
+		);
 			},
 			writeFile(path, data, options, kUsePromises) {
 				return maybePromiseFromSync(

@@ -92,6 +92,12 @@ async function main() {
 		console.log('[uncaughtException]', error && error.stack ? error.stack : error);
 	});
 	console.log('[runner] starting main, entryType: ${entryType}');
+	const __origWebAssemblyModule = WebAssembly.Module;
+	WebAssembly.Module = function(bytes, importObject) {
+		const len = bytes && (bytes.length || bytes.byteLength || 0);
+		console.log('[runner] WebAssembly.Module called with length', len);
+		return new __origWebAssemblyModule(bytes, importObject);
+	};
 	const esbuild = require('/esbuild/node_modules/esbuild-wasm/lib/main.js');
 	console.log('[runner] required esbuild main');
 	const fsSync = processController.fsSync;

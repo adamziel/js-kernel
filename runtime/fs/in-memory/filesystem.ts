@@ -2532,10 +2532,10 @@ function toUint8Array(data, encoding) {
 }
 
 function fromUint8Array(data, encoding) {
-	const format = normalizeEncoding(encoding);
-	if (!format) {
-		return data;
-	}
+    const format = normalizeEncoding(encoding);
+    if (!format) {
+        return data;
+    }
 	const view = data instanceof Uint8Array ? data : new Uint8Array(data);
 	switch (format) {
 		case 'utf8': {
