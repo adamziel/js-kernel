@@ -2597,8 +2597,32 @@ globalThis.internalModules = {
 		const resolvedOptions = resolveFsEncodingOptions(options);
 		return maybePromiseFromSync(
 			() => {
-				const result = globalFs.readFileSync(path, resolvedOptions);
-				return wantsBuffer ? ensureNodeBuffer(result) : result;
+				const raw = globalFs.readFileSync(path, resolvedOptions);
+				const rawLength =
+					raw &&
+					(typeof raw === 'string'
+						? raw.length
+						: (raw.byteLength ?? raw.length ?? 0));
+				console.error(
+					'[fs-binding] readFileSync raw',
+					path,
+					rawLength,
+					raw && raw.constructor && raw.constructor.name
+				);
+				const result = wantsBuffer ? ensureNodeBuffer(raw) : raw;
+				if (wantsBuffer) {
+					const bufLength =
+						result &&
+						(typeof result === 'string'
+							? result.length
+							: (result.byteLength ?? result.length ?? 0));
+					console.error(
+						'[fs-binding] readFileSync buffer result',
+						bufLength,
+						result && result.constructor && result.constructor.name
+					);
+				}
+				return result;
 			},
 			kUsePromises
 		);

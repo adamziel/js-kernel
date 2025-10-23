@@ -43,6 +43,35 @@ class BasicEventEmitter<Events extends Record<string, unknown>> {
 	}
 }
 
+const describeChunk = (chunk: KernelStdioChunk): string => {
+	if (typeof chunk === 'string') {
+		return `string:${chunk.length}`
+	}
+	const bufferCtor = (globalThis as any).Buffer
+	if (
+		bufferCtor &&
+		typeof bufferCtor.isBuffer === 'function' &&
+		bufferCtor.isBuffer(chunk)
+	) {
+		return `buffer:${chunk.length}`
+	}
+	if (chunk instanceof Uint8Array) {
+		return `uint8:${chunk.byteLength}`
+	}
+	if (
+		typeof chunk === 'object' &&
+		chunk !== null &&
+		('byteLength' in chunk || 'length' in chunk)
+	) {
+		const size =
+			(chunk as { byteLength?: number }).byteLength ??
+			(chunk as { length?: number }).length ??
+			0
+		return `object:${size}`
+	}
+	return typeof chunk
+}
+
 interface ReadableEvents {
 	data: KernelStdioChunk
 	end: void
@@ -159,6 +188,12 @@ export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents>
 			return
 		}
 		if (payload.type === 'data') {
+			if (typeof payload.payload !== 'string') {
+				console.log(
+					'[ipc:readable] received',
+					describeChunk(payload.payload)
+				)
+			}
 			this.buffer.push(payload.payload)
 			this.emit('data', payload.payload)
 			if (this.waitView) {
@@ -252,6 +287,12 @@ export class MessagePortWritableStream extends BasicEventEmitter<WritableEvents>
 			if (item.type === 'data') {
 				try {
 					this.logChunk(item.chunk)
+					if (typeof item.chunk !== 'string') {
+						console.log(
+							'[ipc:writable] sending',
+							describeChunk(item.chunk)
+						)
+					}
 					this.port.postMessage({ type: 'data', payload: item.chunk })
 				} catch {
 					this.destroy()
@@ -289,10 +330,10 @@ export class MessagePortWritableStream extends BasicEventEmitter<WritableEvents>
 		if (!this.logLabel) {
 			return
 		}
-		const text =
-			typeof chunk === 'string'
-				? chunk
-				: MessagePortWritableStream.decodeForLog(chunk)
+		if (typeof chunk === 'string') {
+			return
+		}
+		const text = describeChunk(chunk)
 		console.log(`[${this.logLabel}] ${text}`)
 	}
 

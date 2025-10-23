@@ -224,9 +224,24 @@ main().catch((error) => {
 		stderr += text;
 	});
 
-		const exitCode = await new Promise<number>((resolve) => {
-			subprocess.onExit((code) => resolve(code ?? 0));
-		});
+	const exitCode = await new Promise<number>((resolve) => {
+		subprocess.onExit((code) => resolve(code ?? 0));
+	});
+	console.log('[test] subprocess exit code', exitCode);
+	try {
+		if (kernel.existsSync('/esbuild-wasm-dump.bin')) {
+			const dump = kernel.readFileSync('/esbuild-wasm-dump.bin', null) as
+				| Uint8Array
+				| string;
+			const length =
+				typeof dump === 'string' ? dump.length : dump.byteLength ?? dump.length;
+			console.log('[test] wasm dump length', length);
+		} else {
+			console.log('[test] wasm dump missing');
+		}
+	} catch (error) {
+		console.log('[test] wasm dump read error', error);
+	}
 
 		expect(exitCode).toBe(0);
 		expect(stderr).toBe('');
