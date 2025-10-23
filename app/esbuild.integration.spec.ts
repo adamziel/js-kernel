@@ -163,7 +163,11 @@ async function main() {
 }
 
 main().catch((error) => {
-	processController.stderr.write(String(error));
+	const message =
+		error && typeof error === 'object' && 'stack' in error
+			? String(error.stack)
+			: String(error);
+	processController.stderr.write(message);
 	processController.exit(1);
 });
 `;
@@ -228,6 +232,10 @@ main().catch((error) => {
 		subprocess.onExit((code) => resolve(code ?? 0));
 	});
 	console.log('[test] subprocess exit code', exitCode);
+	if (exitCode !== 0) {
+		console.log('[test] failing stdout', stdout);
+		console.log('[test] failing stderr', stderr);
+	}
 	try {
 		if (kernel.existsSync('/esbuild-wasm-dump.bin')) {
 			const dump = kernel.readFileSync('/esbuild-wasm-dump.bin', null) as

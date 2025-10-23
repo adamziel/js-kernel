@@ -8,6 +8,7 @@ export type SerializedFsValue =
 	| { type: 'string'; value: string }
 	| { type: 'bigint'; value: string }
 	| { type: 'uint8array'; value: number[] }
+	| { type: 'uint8array-base64'; value: string }
 	| { type: 'array'; value: SerializedFsValue[] }
 	| { type: 'map'; value: [string, SerializedFsValue][] }
 	| { type: 'set'; value: SerializedFsValue[] }
@@ -40,6 +41,42 @@ export interface SerializedFsResponse {
 
 const textEncoder = new TextEncoder()
 const textDecoder = new TextDecoder()
+
+const encodeUint8ArrayToBase64 = (bytes: Uint8Array): string => {
+	if (typeof Buffer !== 'undefined' && typeof Buffer.from === 'function') {
+		return Buffer.from(bytes).toString('base64')
+	}
+	const chunkSize = 0x8000
+	let binary = ''
+	for (let i = 0; i < bytes.length; i += chunkSize) {
+		const chunk = bytes.subarray(i, i + chunkSize)
+		let chunkStr = ''
+		for (let j = 0; j < chunk.length; j += 1) {
+			chunkStr += String.fromCharCode(chunk[j])
+		}
+		binary += chunkStr
+	}
+	return btoa(binary)
+}
+
+const decodeBase64ToUint8Array = (value: string): Uint8Array => {
+	if (typeof Buffer !== 'undefined' && typeof Buffer.from === 'function') {
+		return new Uint8Array(Buffer.from(value, 'base64'))
+	}
+	const binary = atob(value)
+	const bytes = new Uint8Array(binary.length)
+	for (let i = 0; i < binary.length; i += 1) {
+		bytes[i] = binary.charCodeAt(i)
+	}
+	return bytes
+}
+
+const serializeUint8Array = (value: Uint8Array): SerializedFsValue => {
+	return {
+		type: 'uint8array-base64',
+		value: encodeUint8ArrayToBase64(value),
+	}
+}
 
 export const serializeFsResponse = (
 	value: unknown
@@ -99,22 +136,16 @@ function serializeFsValue(
 	}
 
 	if (value instanceof Uint8Array) {
-		return { type: 'uint8array', value: Array.from(value) }
+		return serializeUint8Array(value)
 	}
 	if (value instanceof ArrayBuffer) {
-		return {
-			type: 'uint8array',
-			value: Array.from(new Uint8Array(value)),
-		}
+		return serializeUint8Array(new Uint8Array(value))
 	}
 	if (ArrayBuffer.isView(value)) {
 		const view = value as ArrayBufferView
-		return {
-			type: 'uint8array',
-			value: Array.from(
-				new Uint8Array(view.buffer, view.byteOffset, view.byteLength)
-			),
-		}
+		return serializeUint8Array(
+			new Uint8Array(view.buffer, view.byteOffset, view.byteLength)
+		)
 	}
 
 	if (value instanceof Stats) {
@@ -227,6 +258,8 @@ export const deserializeFsValue = (
 			return BigInt(value.value)
 		case 'uint8array':
 			return new Uint8Array(value.value)
+		case 'uint8array-base64':
+			return decodeBase64ToUint8Array(value.value)
 		case 'dirent':
 			return hydrateDirent(value.value)
 		case 'stats':

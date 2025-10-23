@@ -2523,31 +2523,54 @@ globalThis.internalModules = {
 			read(fd, buffer, offset, length, position, reqOrPromise) {
 				return maybePromiseFromSync(() => {
 					try {
-						if (fd === 0) {
-							console.log('about to read from stdin');
-						}
-						// Read data from the filesystem
 						const sourceBuffer = globalFs.readSync(
 							fd,
 							length,
 							position
 						);
-						console.log('read from stdin', { sourceBuffer });
-
-						// Copy the data into the provided buffer at the specified offset
 						const bytesToCopy = Math.min(sourceBuffer.length, length);
 						if (bytesToCopy > 0) {
-							buffer.set(
+							let targetView;
+							if (
+								buffer instanceof Uint8Array ||
+								(typeof Buffer !== 'undefined' &&
+									Buffer.isBuffer?.(buffer))
+							) {
+								targetView = buffer;
+							} else if (
+								buffer &&
+								typeof buffer === 'object' &&
+								buffer.buffer instanceof ArrayBuffer
+							) {
+								const byteOffset =
+									buffer.byteOffset ?? buffer.offset ?? 0;
+								const viewLength =
+									buffer.byteLength ??
+									buffer.length ??
+									length;
+								targetView = new Uint8Array(
+									buffer.buffer,
+									byteOffset,
+									viewLength
+								);
+							} else {
+								throw new TypeError(
+									`Unsupported buffer type for read(): ${
+										buffer &&
+										buffer.constructor &&
+										buffer.constructor.name
+									}`
+								);
+							}
+							targetView.set(
 								sourceBuffer.subarray(0, bytesToCopy),
 								offset
 							);
 						}
-
-						// Return the number of bytes actually read
 						return bytesToCopy;
-					} catch (e) {
-						console.error(e);
-						throw e;
+					} catch (error) {
+						console.error('[fs-binding] read error', error);
+						throw error;
 					}
 				}, reqOrPromise);
 			},
@@ -2603,7 +2626,7 @@ globalThis.internalModules = {
 					(typeof raw === 'string'
 						? raw.length
 						: (raw.byteLength ?? raw.length ?? 0));
-				console.error(
+				console.log(
 					'[fs-binding] readFileSync raw',
 					path,
 					rawLength,
@@ -2616,7 +2639,7 @@ globalThis.internalModules = {
 						(typeof result === 'string'
 							? result.length
 							: (result.byteLength ?? result.length ?? 0));
-					console.error(
+					console.log(
 						'[fs-binding] readFileSync buffer result',
 						bufLength,
 						result && result.constructor && result.constructor.name
@@ -4905,6 +4928,73 @@ globalThis.internalModules.fs_dir_exports =
 
 globalThis.coreModules.fs = fs.default;
 globalThis.fs = globalThis.coreModules.fs;
+
+const shouldReturnString = (options) => {
+	if (typeof options === 'string') {
+		return options !== 'buffer';
+	}
+	if (options && typeof options === 'object') {
+		if (!Object.prototype.hasOwnProperty.call(options, 'encoding')) {
+			return false;
+		}
+		const encoding = options.encoding;
+		return encoding !== undefined && encoding !== null && encoding !== 'buffer';
+	}
+	return false;
+};
+
+if (
+	globalThis.coreModules.fs &&
+	!globalThis.coreModules.fs.__patchedProcessControllerReadFile
+) {
+	const originalReadFileSync =
+		globalThis.coreModules.fs.readFileSync.bind(globalThis.coreModules.fs);
+	globalThis.coreModules.fs.readFileSync = function patchedReadFileSync(
+		path,
+		options
+	) {
+		if (typeof path === 'number' || shouldReturnString(options)) {
+			return originalReadFileSync(path, options);
+		}
+		const raw = globalThis.processController.fsSync.readFileSync(
+			path,
+			null
+		);
+		if (
+			typeof Buffer === 'undefined' ||
+			typeof Buffer.from !== 'function'
+		) {
+			return raw;
+		}
+		let view;
+		if (raw instanceof Uint8Array) {
+			view = raw;
+		} else if (
+			raw &&
+			typeof raw === 'object' &&
+			raw.buffer instanceof ArrayBuffer
+		) {
+			const byteOffset =
+				raw.byteOffset ?? raw.offset ?? 0;
+			const length =
+				raw.byteLength ?? raw.length ?? 0;
+			view = new Uint8Array(raw.buffer, byteOffset, length);
+		} else {
+			view = new Uint8Array(0);
+		}
+		return Buffer.from(view);
+	};
+	Object.defineProperty(
+		globalThis.coreModules.fs.readFileSync,
+		'__patchedProcessControllerReadFile',
+		{
+			value: true,
+			configurable: false,
+			enumerable: false,
+			writable: false,
+		}
+	);
+}
 
 const fsPromises = await import('../../dist/fs/promises.js');
 globalThis.coreModules['fs/promises'] = fsPromises.default.exports;
