@@ -18,7 +18,12 @@ self.addEventListener('error', (event) => {
 });
 
 self.addEventListener('unhandledrejection', (event) => {
-	console.error('[node-loader] UNHANDLED REJECTION:', event.reason);
+	const reason = event.reason;
+	const formatted =
+		reason && typeof reason === 'object' && 'stack' in reason
+			? (reason as { stack?: string }).stack || String(reason)
+			: String(reason);
+	console.error('[node-loader] UNHANDLED REJECTION:', formatted);
 	console.error('[node-loader] Promise:', event.promise);
 });
 
