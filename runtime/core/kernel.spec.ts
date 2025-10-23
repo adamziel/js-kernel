@@ -12,6 +12,37 @@ describe('Kernel - Process Spawning and stdio Communication', () => {
 		kernel.setEnv('PATH', '/bin');
 	});
 
+	it.only('executes programs written in CommonJS style (module.exports)', async () => {
+		const program = `
+module.exports = async function main(processController) {
+	processController.stdout.write('cjs-ok');
+	return 0;
+};
+`;
+		kernel.writeFileSync('/bin/cjs-test', program);
+
+		const result = kernel.spawn({
+			argv: ['cjs-test'],
+			env: {},
+			cwd: '/',
+			name: 'cjs-test',
+			stdio: { stdout: 'pipe', stderr: 'pipe' },
+		}) as KernelSubprocess;
+
+		const decoder = new TextDecoder();
+		let stdout = '';
+		result.stdout?.on('data', (chunk) => {
+			stdout += typeof chunk === 'string' ? chunk : decoder.decode(chunk);
+		});
+
+		const exitCode = await new Promise<number>((resolve) => {
+			result.onExit((code) => resolve(code ?? 0));
+		});
+
+		expect(exitCode).toBe(0);
+		expect(stdout).toBe('cjs-ok');
+	});
+
 	afterEach(() => {
 		// Clean up any running processes (if killAll exists)
 		if (typeof (kernel as any).killAll === 'function') {
@@ -215,7 +246,9 @@ describe('Kernel - Process Spawning and stdio Communication', () => {
 			const outputChunks: string[] = [];
 			result.stdout!.on('data', (chunk) => {
 				outputChunks.push(
-					typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk)
+					typeof chunk === 'string'
+						? chunk
+						: new TextDecoder().decode(chunk)
 				);
 			});
 
@@ -255,7 +288,9 @@ describe('Kernel - Process Spawning and stdio Communication', () => {
 			const outputChunks: string[] = [];
 			result.stdout!.on('data', (chunk) => {
 				outputChunks.push(
-					typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk)
+					typeof chunk === 'string'
+						? chunk
+						: new TextDecoder().decode(chunk)
 				);
 			});
 
@@ -291,13 +326,17 @@ describe('Kernel - Process Spawning and stdio Communication', () => {
 
 			result.stdout!.on('data', (chunk) => {
 				stdoutChunks.push(
-					typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk)
+					typeof chunk === 'string'
+						? chunk
+						: new TextDecoder().decode(chunk)
 				);
 			});
 
 			result.stderr!.on('data', (chunk) => {
 				stderrChunks.push(
-					typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk)
+					typeof chunk === 'string'
+						? chunk
+						: new TextDecoder().decode(chunk)
 				);
 			});
 
@@ -781,7 +820,9 @@ describe('Kernel - Process Spawning and stdio Communication', () => {
 			const output: string[] = [];
 			result.stdout!.on('data', (chunk) => {
 				output.push(
-					typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk)
+					typeof chunk === 'string'
+						? chunk
+						: new TextDecoder().decode(chunk)
 				);
 			});
 
@@ -816,7 +857,9 @@ describe('Kernel - Process Spawning and stdio Communication', () => {
 			const output: string[] = [];
 			result.stdout!.on('data', (chunk) => {
 				output.push(
-					typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk)
+					typeof chunk === 'string'
+						? chunk
+						: new TextDecoder().decode(chunk)
 				);
 			});
 
@@ -1095,7 +1138,9 @@ describe('Kernel - Process Spawning and stdio Communication', () => {
 			const output: string[] = [];
 			result.stdout!.on('data', (chunk) => {
 				output.push(
-					typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk)
+					typeof chunk === 'string'
+						? chunk
+						: new TextDecoder().decode(chunk)
 				);
 			});
 
@@ -1169,7 +1214,9 @@ describe('Kernel - Process Spawning and stdio Communication', () => {
 			const output: string[] = [];
 			result.stdout!.on('data', (chunk) => {
 				output.push(
-					typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk)
+					typeof chunk === 'string'
+						? chunk
+						: new TextDecoder().decode(chunk)
 				);
 			});
 
