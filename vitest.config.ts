@@ -1,11 +1,15 @@
-import { defineConfig } from 'vitest/config'
-import path from 'path'
+import { defineConfig } from 'vitest/config';
+import path from 'path';
+
+const enableBrowser =
+	process.env.VITEST_BROWSER === undefined ||
+	process.env.VITEST_BROWSER.toLowerCase() === 'true';
 
 export default defineConfig({
 	root: path.resolve(__dirname, 'runtime'),
 	test: {
 		browser: {
-			enabled: true,
+			enabled: enableBrowser,
 			name: 'chromium',
 			provider: 'playwright',
 			headless: true,
@@ -19,4 +23,4 @@ export default defineConfig({
 			'Cross-Origin-Embedder-Policy': 'require-corp',
 		},
 	},
-})
+});
