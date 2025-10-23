@@ -770,6 +770,43 @@ export const execFile = (file, args, options, callback) => {
 	});
 	return child;
 };
+export const execFileSync = (file, args, options) => {
+	let actualArgs = [];
+	let actualOptions = {};
+	if (Array.isArray(args)) {
+		actualArgs = args;
+		if (options && typeof options === 'object') {
+			actualOptions = options;
+		}
+	} else if (args && typeof args === 'object') {
+		actualOptions = args;
+	} else if (args !== undefined && args !== null) {
+		actualArgs = [String(args)];
+	}
+	const normalizedOptions = { ...actualOptions };
+	if (!('encoding' in normalizedOptions)) {
+		normalizedOptions.encoding = null;
+	} else if (normalizedOptions.encoding === 'buffer') {
+		normalizedOptions.encoding = null;
+	}
+	const result = spawnSync(file, actualArgs, normalizedOptions);
+	if (result.error) {
+		throw result.error;
+	}
+	if (typeof result.status === 'number' && result.status !== 0) {
+		const error = Object.assign(
+			new Error(`Command failed: ${file}`),
+			{
+				code: result.status,
+				signal: result.signal ?? null,
+				stdout: result.stdout,
+				stderr: result.stderr,
+			}
+		);
+		throw error;
+	}
+	return result.stdout;
+};
 export const exec = (command, options, callback) => {
 	var _a;
 	let actualOptions = {};
@@ -812,6 +849,7 @@ export const ChildProcess = ChildProcessPolyfill;
 export default {
 	spawn,
 	spawnSync,
+	execFileSync,
 	exec,
 	execFile,
 	fork,

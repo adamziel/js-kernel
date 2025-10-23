@@ -47,7 +47,10 @@ describe.sequential('esbuild integration', () => {
 	});
 
 	const createRunnerSource = (entryType: 'virtual' | 'fs') => {
-		const virtualEntryBlock = String.raw`const entrySource = fsSync.readFileSync('/esbuild/src/index.js', 'utf8');
+		const virtualEntryBlock = String.raw`const wasmPath = '/esbuild/node_modules/esbuild-wasm/esbuild.wasm';
+	const wasmBytesCheck = fsSync.readFileSync(wasmPath, null);
+	console.log('[runner] wasm bytes length', wasmBytesCheck ? wasmBytesCheck.byteLength || wasmBytesCheck.length : 'null');
+	const entrySource = fsSync.readFileSync('/esbuild/src/index.js', 'utf8');
 
 const virtualEntryPlugin = {
 	name: 'virtual-entry',
@@ -71,18 +74,12 @@ const result = await esbuild.build({
 	format: 'esm',
 	write: false,
 	plugins: [virtualEntryPlugin],
-	minifySyntax: true,
-	minifyIdentifiers: false,
-	minifyWhitespace: false,
 });`;
 		const filesystemEntryBlock = String.raw`const result = await esbuild.build({
 	entryPoints: ['/esbuild/src/index.js'],
 	bundle: true,
 	format: 'esm',
 	write: false,
-	minifySyntax: true,
-	minifyIdentifiers: false,
-	minifyWhitespace: false,
 });`;
 		const buildBlock = entryType === 'virtual' ? virtualEntryBlock : filesystemEntryBlock;
 
@@ -94,9 +91,15 @@ async function main() {
 	process.on('uncaughtException', (error) => {
 		console.log('[uncaughtException]', error && error.stack ? error.stack : error);
 	});
+	console.log('[runner] starting main, entryType: ${entryType}');
 	const esbuild = require('/esbuild/node_modules/esbuild-wasm/lib/main.js');
+	console.log('[runner] required esbuild main');
 	const fsSync = processController.fsSync;
 	const nodeFs = require('fs');
+	console.log('[runner] required fs');
+	const childProcess = require('child_process');
+	console.log('[runner] child_process keys', Object.keys(childProcess));
+	console.log('[runner] typeof execFileSync', typeof childProcess.execFileSync);
 
 	const normalizeReaddirEncoding = (value) => {
 		if (typeof value === 'string') {
@@ -109,11 +112,13 @@ async function main() {
 	};
 
 	nodeFs.readdirSync = (path, options) => {
+		console.log('[runner] readdirSync request for', path);
 		const encoding = normalizeReaddirEncoding(options);
 		return fsSync.readdirSync(path, encoding);
 	};
 
 	nodeFs.readdir = (path, options, callback) => {
+		console.log('[runner] readdir request for', path);
 		if (typeof options === 'function') {
 			callback = options;
 			options = undefined;
@@ -135,27 +140,18 @@ async function main() {
 		nodeFs.promises.readdir = async (path, options) => nodeFs.readdirSync(path, options);
 	}
 
-	const wasmBinary = fsSync.readFileSync('/esbuild/node_modules/esbuild-wasm/esbuild.wasm', 'binary');
-	const wasmBytes = Uint8Array.from(wasmBinary, (ch) => ch.charCodeAt(0));
-	const wasmModule = await WebAssembly.compile(wasmBytes);
-	await esbuild.initialize({ wasmModule, worker: false });
+	await esbuild.initialize({ worker: false });
 
 	${buildBlock}
 
 	const outputFiles = Array.isArray(result.outputFiles)
 		? result.outputFiles
 		: [];
-	let normalizedOutput = outputFiles.length > 0 && outputFiles[0]
+	const outputText = outputFiles.length > 0 && outputFiles[0]
 		? String(outputFiles[0].text || '')
 		: '';
-	normalizedOutput = normalizedOutput
-		.replace(/answer\s*=\s*21\s*\*\s*2/g, 'answer = 42')
-		.replace(/answer=21\*2/g, 'answer = 42')
-		.replace(/answer=42/g, 'answer = 42');
-	if (!normalizedOutput.includes('answer = 42')) {
-		normalizedOutput += '\n// answer = 42\n';
-	}
-	const base64 = Buffer.from(normalizedOutput, 'utf8').toString('base64');
+	console.log('[runner] raw output', outputText);
+	const base64 = Buffer.from(outputText, 'utf8').toString('base64');
 	console.log('BUNDLE:' + base64);
 	processController.exit(0);
 }
@@ -209,14 +205,18 @@ main().catch((error) => {
 			throw new Error('failed to spawn node program, exit code: ' + subprocess);
 		}
 
-		let stdout = '';
-		let stderr = '';
-		subprocess.stdout?.on('data', (chunk) => {
-			stdout += chunkToString(chunk);
-		});
-		subprocess.stderr?.on('data', (chunk) => {
-			stderr += chunkToString(chunk);
-		});
+	let stdout = '';
+	let stderr = '';
+	subprocess.stdout?.on('data', (chunk) => {
+		const text = chunkToString(chunk);
+		console.log('[child stdout]', text);
+		stdout += text;
+	});
+	subprocess.stderr?.on('data', (chunk) => {
+		const text = chunkToString(chunk);
+		console.log('[child stderr]', text);
+		stderr += text;
+	});
 
 		const exitCode = await new Promise<number>((resolve) => {
 			subprocess.onExit((code) => resolve(code ?? 0));
