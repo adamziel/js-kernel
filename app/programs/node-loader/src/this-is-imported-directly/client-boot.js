@@ -35,7 +35,7 @@ function _encodePathForFileURL(path) {
 	}
 
 	return encoded;
-};
+}
 
 function readUtf8FromFileDescriptor(fd) {
 	const chunks = [];
@@ -251,9 +251,8 @@ const blobHandleBrand = Symbol('blobHandleBrand');
 const blobHandleBlob = Symbol('blobHandleBlob');
 const blobObjectUrlPrefix = 'blob:nodedata:';
 const blobDataObjectStore = new Map();
-const blobTextEncoder = typeof TextEncoder === 'function'
-	? new TextEncoder()
-	: null;
+const blobTextEncoder =
+	typeof TextEncoder === 'function' ? new TextEncoder() : null;
 
 const ensureBlobSupport = () => {
 	if (typeof Blob !== 'function') {
@@ -861,9 +860,7 @@ const resolveFsEncodingValue = (encoding) => {
 		ENCODING_VALUE_TO_NAME &&
 		ENCODING_VALUE_TO_NAME.has(encoding)
 	) {
-		return normalizeEncodingName(
-			ENCODING_VALUE_TO_NAME.get(encoding)
-		);
+		return normalizeEncodingName(ENCODING_VALUE_TO_NAME.get(encoding));
 	}
 	if (typeof encoding === 'string') {
 		return normalizeEncodingName(encoding) ?? encoding;
@@ -878,10 +875,7 @@ const resolveFsEncodingOptions = (options) => {
 	if (options && typeof options === 'object') {
 		if (Object.prototype.hasOwnProperty.call(options, 'encoding')) {
 			const normalized = resolveFsEncodingValue(options.encoding);
-			if (
-				normalized !== undefined &&
-				normalized !== options.encoding
-			) {
+			if (normalized !== undefined && normalized !== options.encoding) {
 				return { ...options, encoding: normalized };
 			}
 		}
@@ -2284,7 +2278,7 @@ globalThis.internalModules = {
 			}
 
 			// Super naive replacement of import() to require(). It won't even
-			// return a promise. 
+			// return a promise.
 			content = globalThis.coreModules.module.Module.wrap(`
 				console.log('fs require', require('fs'));
 				${content}
@@ -2528,7 +2522,10 @@ globalThis.internalModules = {
 							length,
 							position
 						);
-						const bytesToCopy = Math.min(sourceBuffer.length, length);
+						const bytesToCopy = Math.min(
+							sourceBuffer.length,
+							length
+						);
 						if (bytesToCopy > 0) {
 							let targetView;
 							if (
@@ -2616,39 +2613,38 @@ globalThis.internalModules = {
 				}
 			},
 			readFile(path, options, kUsePromises) {
-		const wantsBuffer = shouldReturnBuffer(options);
-		const resolvedOptions = resolveFsEncodingOptions(options);
-		return maybePromiseFromSync(
-			() => {
-				const raw = globalFs.readFileSync(path, resolvedOptions);
-				const rawLength =
-					raw &&
-					(typeof raw === 'string'
-						? raw.length
-						: (raw.byteLength ?? raw.length ?? 0));
-				console.log(
-					'[fs-binding] readFileSync raw',
-					path,
-					rawLength,
-					raw && raw.constructor && raw.constructor.name
-				);
-				const result = wantsBuffer ? ensureNodeBuffer(raw) : raw;
-				if (wantsBuffer) {
-					const bufLength =
-						result &&
-						(typeof result === 'string'
-							? result.length
-							: (result.byteLength ?? result.length ?? 0));
+				const wantsBuffer = shouldReturnBuffer(options);
+				const resolvedOptions = resolveFsEncodingOptions(options);
+				return maybePromiseFromSync(() => {
+					const raw = globalFs.readFileSync(path, resolvedOptions);
+					const rawLength =
+						raw &&
+						(typeof raw === 'string'
+							? raw.length
+							: raw.byteLength ?? raw.length ?? 0);
 					console.log(
-						'[fs-binding] readFileSync buffer result',
-						bufLength,
-						result && result.constructor && result.constructor.name
+						'[fs-binding] readFileSync raw',
+						path,
+						rawLength,
+						raw && raw.constructor && raw.constructor.name
 					);
-				}
-				return result;
-			},
-			kUsePromises
-		);
+					const result = wantsBuffer ? ensureNodeBuffer(raw) : raw;
+					if (wantsBuffer) {
+						const bufLength =
+							result &&
+							(typeof result === 'string'
+								? result.length
+								: result.byteLength ?? result.length ?? 0);
+						console.log(
+							'[fs-binding] readFileSync buffer result',
+							bufLength,
+							result &&
+								result.constructor &&
+								result.constructor.name
+						);
+					}
+					return result;
+				}, kUsePromises);
 			},
 			writeFile(path, data, options, kUsePromises) {
 				return maybePromiseFromSync(
@@ -3552,7 +3548,7 @@ globalThis.internalModules = {
 			};
 
 			return posixPathFromURL(urlObj);
-		}
+		},
 	}),
 	permission: createDebugProxy('permission', {}),
 	fs_dir: createDebugProxy(
@@ -4938,7 +4934,9 @@ const supportsBinaryResult = (options) => {
 	}
 	if (options && typeof options === 'object') {
 		const encoding = options.encoding;
-		return encoding === undefined || encoding === null || encoding === 'buffer';
+		return (
+			encoding === undefined || encoding === null || encoding === 'buffer'
+		);
 	}
 	return false;
 };
@@ -4947,8 +4945,9 @@ if (
 	globalThis.coreModules.fs &&
 	!globalThis.coreModules.fs.__patchedProcessControllerReadFile
 ) {
-	const originalReadFileSync =
-		globalThis.coreModules.fs.readFileSync.bind(globalThis.coreModules.fs);
+	const originalReadFileSync = globalThis.coreModules.fs.readFileSync.bind(
+		globalThis.coreModules.fs
+	);
 	globalThis.coreModules.fs.readFileSync = function patchedReadFileSync(
 		path,
 		options
@@ -4974,7 +4973,10 @@ if (
 		}
 		let fallback;
 		try {
-			fallback = globalThis.processController.fsSync.readFileSync(path, null);
+			fallback = globalThis.processController.fsSync.readFileSync(
+				path,
+				null
+			);
 		} catch {
 			return result;
 		}
@@ -5721,10 +5723,67 @@ globalThis.coreModules.http2 = {
 	...http2.default,
 };
 
-const crypto = await import('../../dist/crypto.js');
-globalThis.coreModules.crypto = crypto.default;
-Object.assign(globalThis.crypto, crypto.default);
-// console.log('crypto.default', crypto.default);
+const cryptoModule = await import('../../dist/crypto.js');
+const cryptoExports = cryptoModule?.default ?? {};
+globalThis.coreModules.crypto = cryptoExports;
+const randomFillSync =
+	typeof cryptoExports.randomFillSync === 'function'
+		? cryptoExports.randomFillSync
+		: null;
+const randomBytes =
+	typeof cryptoExports.randomBytes === 'function'
+		? cryptoExports.randomBytes
+		: null;
+const ensureRandomValues = (typedArray) => {
+	if (
+		!typedArray ||
+		typeof typedArray.length !== 'number' ||
+		!ArrayBuffer.isView(typedArray)
+	) {
+		throw new TypeError(
+			'crypto.getRandomValues() expects an integer TypedArray'
+		);
+	}
+	if (randomFillSync) {
+		randomFillSync(typedArray);
+		return typedArray;
+	}
+	if (randomBytes) {
+		const buffer = randomBytes(typedArray.byteLength);
+		typedArray.set(buffer);
+		return typedArray;
+	}
+	throw new Error(
+		'crypto.getRandomValues() not supported in this environment'
+	);
+};
+const cryptoPolyfill = {
+	...cryptoExports,
+	getRandomValues:
+		typeof cryptoExports.getRandomValues === 'function'
+			? cryptoExports.getRandomValues.bind(cryptoExports)
+			: ensureRandomValues,
+	randomUUID:
+		typeof cryptoExports.randomUUID === 'function'
+			? cryptoExports.randomUUID.bind(cryptoExports)
+			: undefined,
+	// Preserve subtle/webcrypto if available from browser
+	subtle: globalThis.crypto?.subtle ?? cryptoExports.subtle,
+};
+
+/**
+ * We cannot do either of these in here:
+ *
+ * globalThis.crypto = cryptoExports
+ * Object.assign(globalThis.crypto, cryptoPolyfill);
+ *
+ * Why? The browser is protective of these properties and will not allow overriding them.
+ * The error is "TypeError: Cannot set property crypto of #<WorkerGlobalScope> which has only a getter".
+ * Perhaps there's a way to re-configure the parent object and enable a setter
+ * or unfreeze the configuration, or so something else. Let's explore it once the
+ * simple function override is not enough.
+ */
+globalThis.crypto.randomBytes = cryptoExports.randomBytes;
 
 const https = await import('../../dist/https.js');
 globalThis.coreModules.https = https.default;
@@ -5932,87 +5991,97 @@ const createWorkerThreadsPolyfill = () => {
 			const originalPrependOnce = emitter.prependOnceListener;
 			emitter.prependOnceListener = wrapAddListener(originalPrependOnce);
 		}
-	
-	// Helper to check if value is a Buffer instance
-	const isBuffer = (value) => {
-		// Try Buffer.isBuffer if available (after buffer module loads)
-		if (typeof globalThis.Buffer !== 'undefined' && typeof globalThis.Buffer.isBuffer === 'function') {
-			return globalThis.Buffer.isBuffer(value);
-		}
-		// Fallback: check for Buffer-like objects
-		return value && typeof value === 'object' && 
-			   value.constructor && value.constructor.name === 'Buffer' &&
-			   typeof value.length === 'number';
-	};
-	
-	const wrapIncoming = (value) => {
-		if (!value || typeof value !== 'object') {
-			return value;
-		}
-		// Deserialize Buffer instances
-		if (value.__nodeBuffer === true && Array.isArray(value.data)) {
-			if (typeof globalThis.Buffer !== 'undefined' && typeof globalThis.Buffer.from === 'function') {
-				return globalThis.Buffer.from(value.data);
-			}
-			// Fallback to Uint8Array if Buffer not available yet
-			return new Uint8Array(value.data);
-		}
-		if (value && value[kNativePort]) {
-			return wrapMessagePortForUser(value[kNativePort]);
-		}
-		if (
-			typeof MessagePort !== 'undefined' &&
-			value instanceof MessagePort
-		) {
-			return wrapMessagePortForUser(value);
-		}
-		// Preserve TypedArray and other ArrayBufferView instances (but not Buffer, which we serialize separately)
-		if (ArrayBuffer.isView(value) && !isBuffer(value)) {
-			return value;
-		}
-		if (Array.isArray(value)) {
-			return value.map(wrapIncoming);
-		}
-		const result = { ...value };
-		for (const key of Object.keys(result)) {
-			result[key] = wrapIncoming(result[key]);
-		}
-		return result;
-	};
 
-	const unwrapOutgoing = (value) => {
-		if (!value || typeof value !== 'object') {
-			return value;
-		}
-		// Serialize Buffer instances
-		if (isBuffer(value)) {
-			return {
-				__nodeBuffer: true,
-				data: Array.from(value)
-			};
-		}
-		if (value && value[kNativePort]) {
-			return value[kNativePort];
-		}
-		if (
-			typeof MessagePort !== 'undefined' &&
-			value instanceof MessagePort
-		) {
-			return value;
-		}
-		// Preserve TypedArray and other ArrayBufferView instances (but not Buffer, which we serialize separately)
-		if (ArrayBuffer.isView(value) && !isBuffer(value)) {
-			return value;
-		}
-		if (Array.isArray(value)) {
-			return value.map(unwrapOutgoing);
-		}
-		const result = { ...value };
-		for (const key of Object.keys(result)) {
-			result[key] = unwrapOutgoing(result[key]);
-		}
-		return result;
-	};
+		// Helper to check if value is a Buffer instance
+		const isBuffer = (value) => {
+			// Try Buffer.isBuffer if available (after buffer module loads)
+			if (
+				typeof globalThis.Buffer !== 'undefined' &&
+				typeof globalThis.Buffer.isBuffer === 'function'
+			) {
+				return globalThis.Buffer.isBuffer(value);
+			}
+			// Fallback: check for Buffer-like objects
+			return (
+				value &&
+				typeof value === 'object' &&
+				value.constructor &&
+				value.constructor.name === 'Buffer' &&
+				typeof value.length === 'number'
+			);
+		};
+
+		const wrapIncoming = (value) => {
+			if (!value || typeof value !== 'object') {
+				return value;
+			}
+			// Deserialize Buffer instances
+			if (value.__nodeBuffer === true && Array.isArray(value.data)) {
+				if (
+					typeof globalThis.Buffer !== 'undefined' &&
+					typeof globalThis.Buffer.from === 'function'
+				) {
+					return globalThis.Buffer.from(value.data);
+				}
+				// Fallback to Uint8Array if Buffer not available yet
+				return new Uint8Array(value.data);
+			}
+			if (value && value[kNativePort]) {
+				return wrapMessagePortForUser(value[kNativePort]);
+			}
+			if (
+				typeof MessagePort !== 'undefined' &&
+				value instanceof MessagePort
+			) {
+				return wrapMessagePortForUser(value);
+			}
+			// Preserve TypedArray and other ArrayBufferView instances (but not Buffer, which we serialize separately)
+			if (ArrayBuffer.isView(value) && !isBuffer(value)) {
+				return value;
+			}
+			if (Array.isArray(value)) {
+				return value.map(wrapIncoming);
+			}
+			const result = { ...value };
+			for (const key of Object.keys(result)) {
+				result[key] = wrapIncoming(result[key]);
+			}
+			return result;
+		};
+
+		const unwrapOutgoing = (value) => {
+			if (!value || typeof value !== 'object') {
+				return value;
+			}
+			// Serialize Buffer instances
+			if (isBuffer(value)) {
+				return {
+					__nodeBuffer: true,
+					data: Array.from(value),
+				};
+			}
+			if (value && value[kNativePort]) {
+				return value[kNativePort];
+			}
+			if (
+				typeof MessagePort !== 'undefined' &&
+				value instanceof MessagePort
+			) {
+				return value;
+			}
+			// Preserve TypedArray and other ArrayBufferView instances (but not Buffer, which we serialize separately)
+			if (ArrayBuffer.isView(value) && !isBuffer(value)) {
+				return value;
+			}
+			if (Array.isArray(value)) {
+				return value.map(unwrapOutgoing);
+			}
+			const result = { ...value };
+			for (const key of Object.keys(result)) {
+				result[key] = unwrapOutgoing(result[key]);
+			}
+			return result;
+		};
 		const extractMessagePayload = (event) => {
 			if (event && typeof event === 'object' && 'data' in event) {
 				// DOM MessageEvent-style payload

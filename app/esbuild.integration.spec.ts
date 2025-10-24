@@ -85,6 +85,81 @@ const result = await esbuild.build({
 
 		return `
 async function main() {
+	console.log('[runner] buffer check', Buffer.from('').constructor.name, Buffer.from('') instanceof Uint8Array);
+	const originalReadFileSync = processController.fsSync.readFileSync;
+	processController.fsSync.readFileSync = function (...args) {
+		const [path, options] = args;
+		try {
+			const result = originalReadFileSync.apply(this, args);
+			const length =
+				typeof result === 'string'
+					? result.length
+					: result && typeof result === 'object'
+					? result.byteLength ?? result.length ?? 0
+					: 0;
+			console.log('[fsSync.readFileSync]', path, { length, options });
+			return result;
+		} catch (error) {
+			console.log('[fsSync.readFileSync] error', path, error && error.message);
+			throw error;
+		}
+	};
+	const wrapFsSyncMethod = (name) => {
+		const original = processController.fsSync?.[name];
+		if (typeof original !== 'function') {
+			return;
+		}
+		processController.fsSync[name] = function (...methodArgs) {
+			const describeArg = (arg) => {
+				if (typeof arg === 'string') {
+					return arg;
+				}
+				if (typeof arg === 'number' || typeof arg === 'boolean') {
+					return arg;
+				}
+				if (arg && typeof arg === 'object') {
+					const ctor = arg.constructor && arg.constructor.name ? arg.constructor.name : Object.prototype.toString.call(arg);
+					const length = arg.byteLength ?? arg.length ?? undefined;
+					if (length !== undefined) {
+						return '[' + ctor + ' len=' + length + ']';
+					}
+					return ctor;
+				}
+				return typeof arg;
+			};
+			const summary = methodArgs.map(describeArg);
+			try {
+				const result = original.apply(this, methodArgs);
+				const resultSummary = result && typeof result === 'object'
+					? '[' + (result.constructor && result.constructor.name ? result.constructor.name : 'Object') + ' len=' + (result.byteLength ?? result.length ?? '') + ']'
+					: result;
+				console.log('[fsSync.' + name + ']', summary, '->', resultSummary);
+				return result;
+			} catch (err) {
+				console.log('[fsSync.' + name + '] error', summary, err && err.message);
+				throw err;
+			}
+		};
+	};
+	[
+		'writeFileSync',
+		'mkdirSync',
+		'mkdtempSync',
+		'unlinkSync',
+		'renameSync',
+		'openSync',
+		'closeSync',
+		'statSync',
+		'fstatSync',
+		'lstatSync',
+		'realpathSync',
+		'existsSync',
+		'chmodSync',
+		'chownSync',
+		'cpSync',
+		'writeFileUtf8Sync',
+		'writeBufferSync'
+	].forEach(wrapFsSyncMethod);
 	process.on('unhandledRejection', (reason) => {
 		console.log('[unhandledRejection]', reason && reason.stack ? reason.stack : reason);
 	});
@@ -178,14 +253,106 @@ main().catch((error) => {
 		if (!response.ok) {
 			throw new Error('Failed to fetch es-bundler.zip');
 		}
-		const bundleZip = await response.arrayBuffer();
-		kernel.mkdirSync('/esbuild', { recursive: true });
-		kernel.writeFileSync(
+	const bundleZip = await response.arrayBuffer();
+	kernel.mkdirSync('/esbuild', { recursive: true });
+	kernel.mkdirSync('/tmp', { recursive: true });
+	kernel.writeFileSync(
 			'/esbuild/es-bundler.zip',
 			new Uint8Array(bundleZip),
 			null
 		);
-		await unzipKernelFile(kernel, '/esbuild/es-bundler.zip', '/esbuild');
+	await unzipKernelFile(kernel, '/esbuild/es-bundler.zip', '/esbuild');
+
+	const esbuildBinPath =
+		'/esbuild/node_modules/esbuild-wasm/bin/esbuild';
+	const originalEsbuildBin = kernel.readFileSync(esbuildBinPath, 'utf8');
+const envFilterBlock = `for (let key in process.env) {
+  if (esbuildUsedEnvVars.indexOf(key) < 0) {
+    delete process.env[key]
+  }
+}
+
+`;
+const instrumentedEsbuildBin = originalEsbuildBin
+	.replace(
+		"const module_ = require('module');",
+		`process.on('exit', (code) => {
+	console.error('[esbuild-bin] exit', code);
+});
+process.on('uncaughtException', (error) => {
+	console.error('[esbuild-bin] uncaughtException', error && error.stack ? error.stack : error);
+});
+process.on('unhandledRejection', (reason) => {
+	console.error('[esbuild-bin] unhandledRejection', reason && reason.stack ? reason.stack : reason);
+});
+const originalProcessExit = process.exit.bind(process);
+process.exit = (code = 0) => {
+	const trace = new Error('process.exit trace');
+	console.error('[esbuild-bin] process.exit', code, trace.stack || trace.message);
+	return originalProcessExit(code);
+};
+const module_ = require('module');`
+	)
+	.replace(envFilterBlock, '// Disabled env filtering for kernel diagnostics\n');
+	kernel.writeFileSync(
+		esbuildBinPath,
+		encoder.encode(instrumentedEsbuildBin)
+	);
+
+	const wasmExecPath =
+		'/esbuild/node_modules/esbuild-wasm/wasm_exec_node.js';
+	const originalWasmExec = kernel.readFileSync(wasmExecPath, 'utf8');
+const instrumentedWasmExec = originalWasmExec
+	.replace(
+		'const go = new Go();',
+		`const go = new Go();
+console.error('[wasm-exec] argv', JSON.stringify(process.argv));
+console.error('[wasm-exec] env keys', Object.keys(process.env));
+const __originalProcessExitForWasm = process.exit.bind(process);
+process.exit = (code = 0) => {
+	const trace = new Error('process.exit trace');
+	console.error('[wasm-exec] process.exit', code, trace.stack || trace.message);
+	return __originalProcessExitForWasm(code);
+};
+const originalRun = go.run.bind(go);
+go.run = async (instance) => {
+	console.error('[wasm-exec] go.run start');
+	try {
+		const result = await originalRun(instance);
+		console.error('[wasm-exec] go.run resolved', go.exitCode);
+		return result;
+	} catch (err) {
+		console.error('[wasm-exec] go.run error', err && err.stack ? err.stack : err);
+		throw err;
+	}
+};
+process.on('exit', (code) => {
+	const trace = new Error('process.exit trace (listener)');
+	console.error('[wasm-exec] process exit listener', code, trace.stack || trace.message);
+});
+process.on('uncaughtException', (error) => {
+	console.error('[wasm-exec] uncaughtException', error && error.stack ? error.stack : error);
+});
+process.on('unhandledRejection', (reason) => {
+	console.error('[wasm-exec] unhandledRejection', reason && reason.stack ? reason.stack : reason);
+});`
+	)
+	.replace('go.exit = process.exit;', '// go.exit instrumentation handled via process.exit override\n');
+	kernel.writeFileSync(
+		wasmExecPath,
+		encoder.encode(instrumentedWasmExec)
+	);
+	const mainJsPath =
+		'/esbuild/node_modules/esbuild-wasm/lib/main.js';
+	const mainJsOriginal = kernel.readFileSync(mainJsPath, 'utf8');
+	if (!mainJsOriginal.includes('[esbuild-channel] afterClose')) {
+		const mainJsInstrumented = mainJsOriginal.replace(
+			'let afterClose = (error) => {',
+			`let afterClose = (error) => {
+	console.error('[esbuild-channel] afterClose', { reason: closeData.reason, error });`
+		);
+		kernel.writeFileSync(mainJsPath, mainJsInstrumented);
+	}
 
 		kernel.mkdirSync('/esbuild/src', { recursive: true });
 		kernel.writeFileSync(
@@ -198,9 +365,14 @@ main().catch((error) => {
 		console.log(runnerSource);
 		kernel.writeFileSync('/test-esbuild.js', runnerSource);
 
-		const subprocess = kernel.spawn({
-			argv: ['node', '/test-esbuild.js'],
-			env: {},
+	const subprocess = kernel.spawn({
+		argv: ['node', '/test-esbuild.js'],
+		env: {
+			PATH: '/bin',
+			TMPDIR: '/tmp',
+			HOME: '/home',
+			ESBUILD_LOG_LEVEL: 'debug',
+		},
 			cwd: '/',
 			name: 'esbuild',
 			stdio: {
