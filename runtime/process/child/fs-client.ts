@@ -51,6 +51,7 @@ export const createKernelFsClient = (
 	let disposed = false;
 	let nextRequestId = 1;
 	const pendingAsync = new Map<number, AsyncResolver>();
+	let warnedEmptyStdin = false;
 
 	const handlePumpMessage = (event: MessageEvent) => {
 		const payload = event.data;
@@ -96,6 +97,69 @@ export const createKernelFsClient = (
 		[fsPort]
 	);
 
+const stdinRemainders = new WeakMap<StdioStreams['stdin'], Uint8Array>();
+const textEncoder =
+	typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
+
+	const toUint8Array = (chunk: unknown): Uint8Array => {
+		if (chunk instanceof Uint8Array) {
+			return chunk;
+		}
+		if (
+			typeof Buffer !== 'undefined' &&
+			typeof Buffer.from === 'function' &&
+			Buffer.isBuffer?.(chunk)
+		) {
+			return Uint8Array.from(chunk);
+		}
+		if (typeof chunk === 'string') {
+			return textEncoder ? textEncoder.encode(chunk) : Uint8Array.from([]);
+		}
+		if (
+			typeof ArrayBuffer !== 'undefined' &&
+			chunk instanceof ArrayBuffer
+		) {
+			return new Uint8Array(chunk);
+		}
+		return new Uint8Array(0);
+	};
+
+	const consumeStdin = (
+		streams: StdioStreams,
+		length: number
+	): Uint8Array | null => {
+		const stdinStream = streams.stdin;
+		if (!stdinStream) {
+			return null;
+		}
+
+		let buffered = stdinRemainders.get(stdinStream);
+		if (!buffered || buffered.byteLength === 0) {
+			stdinRemainders.delete(stdinStream);
+			const data = stdinStream.read();
+			if (!data) {
+				return new Uint8Array(0);
+			}
+			buffered = toUint8Array(data);
+		} else {
+			stdinRemainders.delete(stdinStream);
+		}
+
+		if (length === 0) {
+			if (buffered && buffered.byteLength > 0) {
+				stdinRemainders.set(stdinStream, buffered);
+			}
+			return new Uint8Array(0);
+		}
+
+	if (length > 0 && buffered.byteLength > length) {
+		const head = buffered.slice(0, length);
+		stdinRemainders.set(stdinStream, buffered.slice(length));
+		return head;
+	}
+	return buffered;
+	};
+
 	const tryHandleStdioAsync = (
 		method: string,
 		args: unknown[],
@@ -129,41 +193,6 @@ export const createKernelFsClient = (
 				return chunk instanceof Uint8Array
 					? chunk.byteLength
 					: chunk.length;
-			});
-		}
-
-		// Handle read operations from stdin (0)
-		// readSync(fd, length, position)
-		if ((method === 'read' || method === 'readSync') && fd === 0) {
-			return Promise.resolve().then(() => {
-				const length = typeof args[1] === 'number' ? args[1] : 0;
-				const data = streams.stdin.read();
-
-				// If no data available:
-				// - Return empty buffer if stream is ended (EOF)
-				// - Return empty buffer if stream still open (no data available right now)
-				if (!data) {
-					// Note: In a true blocking implementation, we'd wait for data here
-					// if the stream is not ended. But in the browser, we return 0 bytes
-					// to indicate no data available right now.
-					return new Uint8Array(0);
-				}
-
-				// Convert data to Uint8Array if needed
-				let bytes: Uint8Array;
-				if (typeof data === 'string') {
-					bytes = new TextEncoder().encode(data);
-				} else if (data instanceof Uint8Array) {
-					bytes = data;
-				} else {
-					bytes = new Uint8Array(0);
-				}
-
-				// Return up to 'length' bytes
-				if (length > 0 && bytes.byteLength > length) {
-					return bytes.slice(0, length);
-				}
-				return bytes;
 			});
 		}
 
@@ -208,31 +237,15 @@ export const createKernelFsClient = (
 		// readSync(fd, length, position)
 		if ((method === 'readSync' || method === 'read') && fd === 0) {
 			const length = typeof args[1] === 'number' ? args[1] : 0;
-			const data = streams.stdin.read();
-
-			// If no data available:
-			// - Return empty buffer if stream is ended (EOF)
-			// - Return empty buffer if stream still open (no data available right now)
-			if (!data) {
-				// Note: In a true blocking implementation, we'd wait for data here
-				// if the stream is not ended. But in the browser, we return 0 bytes
-				// to indicate no data available right now.
+			const bytes = consumeStdin(streams, length);
+			if (!bytes) {
+				if (!warnedEmptyStdin) {
+					warnedEmptyStdin = true;
+					console.error(
+						'[kernel-fs] read(fd=0) returned no data; stdin piping is not implemented yet'
+					);
+				}
 				return new Uint8Array(0);
-			}
-
-			// Convert data to Uint8Array if needed
-			let bytes: Uint8Array;
-			if (typeof data === 'string') {
-				bytes = new TextEncoder().encode(data);
-			} else if (data instanceof Uint8Array) {
-				bytes = data;
-			} else {
-				bytes = new Uint8Array(0);
-			}
-
-			// Return up to 'length' bytes
-			if (length > 0 && bytes.byteLength > length) {
-				return bytes.slice(0, length);
 			}
 			return bytes;
 		}

@@ -2,23 +2,34 @@ import { describe, it, expect } from 'vitest';
 import { Kernel } from './kernel';
 import type { KernelSubprocess } from './kernel';
 
-describe('stdio Echo Test', () => {
-	it('echoes stdin to stdout', async () => {
+const decoder = new TextDecoder();
+
+const extractJson = (text: string) => {
+	const start = text.indexOf('{');
+	const end = text.lastIndexOf('}');
+	if (start === -1 || end === -1 || end < start) {
+		throw new Error(`Output did not contain JSON: ${text}`);
+	}
+	return JSON.parse(text.slice(start, end + 1));
+};
+
+describe('stdio integration', () => {
+	it('echoes stdin using stream API', async () => {
 		const kernel = new Kernel();
 		kernel.mkdirSync('/bin', { recursive: true });
 		kernel.setEnv('PATH', '/bin');
 
 		const program = `
+			const decoder = new TextDecoder();
 			export default async function main(processController) {
-				console.log('[echo] Program starting');
+				const chunks = [];
 				return new Promise((resolve) => {
 					processController.stdin.on('data', (chunk) => {
-						console.log('[echo] Received on stdin:', chunk);
-						processController.stdout.write(chunk);
-						console.log('[echo] Wrote to stdout');
+						const value = typeof chunk === 'string' ? chunk : decoder.decode(chunk);
+						chunks.push(value);
 					});
 					processController.stdin.on('end', () => {
-						console.log('[echo] stdin ended, exiting');
+						processController.stdout.write(JSON.stringify({ chunks }));
 						resolve(0);
 					});
 				});
@@ -26,34 +37,70 @@ describe('stdio Echo Test', () => {
 		`;
 		kernel.writeFileSync('/bin/echo', program);
 
-		const result = kernel.spawn({
+		const proc = kernel.spawn({
 			argv: ['echo'],
 			env: {},
 			cwd: '/',
-			name: 'echo-test',
+			name: 'echo',
 			stdio: { stdin: 'pipe', stdout: 'pipe' },
 		}) as KernelSubprocess;
 
-		const outputChunks: string[] = [];
-		result.stdout!.on('data', (chunk) => {
-			console.log('[test] Received on stdout:', chunk);
-			outputChunks.push(
-				typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk)
-			);
+		let output = '';
+		proc.stdout?.on('data', (chunk) => {
+			output += typeof chunk === 'string' ? chunk : decoder.decode(chunk);
 		});
 
-		console.log('[test] Writing to stdin');
-		result.stdin!.write('Hello!');
-		result.stdin!.end();
+		proc.stdin?.write('Hello!');
+		proc.stdin?.end();
 
-		await new Promise<void>((resolve) => {
-			result.onExit(() => {
-				console.log('[test] Process exited');
-				resolve();
-			});
+		await new Promise<void>((resolve) => proc.onExit(() => resolve()));
+
+		const payload = extractJson(output);
+		expect(payload.chunks).toEqual(['Hello!']);
+	}, 10000);
+
+	it('supports synchronous fsSync.readSync on stdin', async () => {
+		const kernel = new Kernel();
+		kernel.mkdirSync('/bin', { recursive: true });
+		kernel.setEnv('PATH', '/bin');
+
+		const program = `
+			const decoder = new TextDecoder();
+			export default async function main(processController) {
+				const first = processController.fsSync.readSync(0, 3, null);
+				const second = processController.fsSync.readSync(0, 5, null);
+				const toString = (chunk) =>
+					typeof chunk === 'string' ? chunk : decoder.decode(chunk ?? new Uint8Array());
+				processController.stdout.write(
+					JSON.stringify({
+						first: toString(first ?? new Uint8Array()),
+						second: toString(second ?? new Uint8Array()),
+					})
+				);
+				return 0;
+			}
+		`;
+		kernel.writeFileSync('/bin/read-sync', program);
+
+		const proc = kernel.spawn({
+			argv: ['read-sync'],
+			env: {},
+			cwd: '/',
+			name: 'read-sync',
+			stdio: { stdin: 'pipe', stdout: 'pipe' },
+		}) as KernelSubprocess;
+
+		let output = '';
+		proc.stdout?.on('data', (chunk) => {
+			output += typeof chunk === 'string' ? chunk : decoder.decode(chunk);
 		});
 
-		console.log('[test] Output chunks:', outputChunks);
-		expect(outputChunks.join('')).toContain('Hello!');
+		proc.stdin?.write('abcdefgh');
+		proc.stdin?.end();
+
+		await new Promise<void>((resolve) => proc.onExit(() => resolve()));
+
+		const payload = extractJson(output);
+		expect(payload).toEqual({ first: 'abc', second: 'defgh' });
 	}, 10000);
 });

@@ -844,26 +844,13 @@ const startProgram = async (options: ChildProcessInitOptions) => {
 
 		// Execute the program's main function
 		if (typeof module.default === 'function') {
-			console.log('[controller] About to call module.default()');
 			try {
 				const exitCode = await module.default(
 					(globalThis as any).processController
 				);
-				console.log(
-					'[controller] module.default() returned, exitCode:',
-					exitCode,
-					'type:',
-					typeof exitCode
-				);
 				if (typeof exitCode === 'number') {
-					console.log(
-						'[controller] exitCode is number, calling exit'
-					);
 					(globalThis as any).processController.exit(exitCode);
 				} else {
-					console.log(
-						'[controller] exitCode is NOT number, calling exit(0)'
-					);
 					(globalThis as any).processController.exit(0);
 				}
 			} catch (moduleError) {
@@ -881,7 +868,6 @@ const startProgram = async (options: ChildProcessInitOptions) => {
 				throw moduleError;
 			}
 		} else {
-			console.log('[controller] No default export, calling exit(0)');
 			// If no default export, the module executed at import time
 			// Exit with success
 			(globalThis as any).processController.exit(0);

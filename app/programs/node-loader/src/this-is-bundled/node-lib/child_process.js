@@ -587,41 +587,7 @@ export const spawn = (command, args = [], options = {}) => {
 				)
 			) {
 				const originalWrite = handle.stdin.write.bind(handle.stdin);
-				handle.stdin.write = (chunk) => {
-					try {
-						const length =
-							typeof chunk === 'string'
-								? chunk.length
-								: chunk && typeof chunk === 'object'
-							? chunk.byteLength ?? chunk.length ?? 0
-							: 0;
-					let preview;
-					if (typeof chunk === 'string') {
-						preview = chunk.slice(0, 80);
-					} else if (chunk && typeof chunk === 'object') {
-						const view = chunk instanceof Uint8Array
-							? chunk
-							: ArrayBuffer.isView(chunk)
-							? new Uint8Array(
-									chunk.buffer,
-									chunk.byteOffset ?? 0,
-									Math.min(chunk.byteLength ?? chunk.length ?? 0, 128)
-							  )
-							: null;
-						if (view) {
-							preview = Buffer.from(view).toString('base64');
-						}
-					}
-					console.log('[spawn] esbuild stdin write', {
-						length,
-						type: chunk && chunk.constructor && chunk.constructor.name,
-						preview,
-					});
-					} catch {
-						// ignore logging errors
-					}
-					return originalWrite(chunk);
-				};
+				handle.stdin.write = (chunk) => originalWrite(chunk);
 			}
 				if (typeof handle.threadId === 'number') {
 					child.pid = handle.threadId;
@@ -693,21 +659,6 @@ export const spawn = (command, args = [], options = {}) => {
 				queueMicrotask(() => child.emit('spawn'));
 			const exitInfo = await handle.waitForExit();
 			try {
-				if (
-					commandText === 'node' &&
-					Array.isArray(argumentList) &&
-					argumentList.some((arg) =>
-						typeof arg === 'string' && arg.includes('esbuild')
-					)
-				) {
-					console.log('[spawn] esbuild child exited', {
-						command: commandText,
-						args: argumentList,
-						code: exitInfo && 'code' in exitInfo ? exitInfo.code : null,
-						signal:
-							exitInfo && 'signal' in exitInfo ? exitInfo.signal : null,
-					});
-				}
 			} catch {
 				// ignore logging errors
 			}

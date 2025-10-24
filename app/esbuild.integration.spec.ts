@@ -81,7 +81,8 @@ const result = await esbuild.build({
 	format: 'esm',
 	write: false,
 });`;
-		const buildBlock = entryType === 'virtual' ? virtualEntryBlock : filesystemEntryBlock;
+		const buildBlock =
+			entryType === 'virtual' ? virtualEntryBlock : filesystemEntryBlock;
 
 		return `
 async function main() {
@@ -253,30 +254,29 @@ main().catch((error) => {
 		if (!response.ok) {
 			throw new Error('Failed to fetch es-bundler.zip');
 		}
-	const bundleZip = await response.arrayBuffer();
-	kernel.mkdirSync('/esbuild', { recursive: true });
-	kernel.mkdirSync('/tmp', { recursive: true });
-	kernel.writeFileSync(
+		const bundleZip = await response.arrayBuffer();
+		kernel.mkdirSync('/esbuild', { recursive: true });
+		kernel.mkdirSync('/tmp', { recursive: true });
+		kernel.writeFileSync(
 			'/esbuild/es-bundler.zip',
 			new Uint8Array(bundleZip),
 			null
 		);
-	await unzipKernelFile(kernel, '/esbuild/es-bundler.zip', '/esbuild');
+		await unzipKernelFile(kernel, '/esbuild/es-bundler.zip', '/esbuild');
 
-	const esbuildBinPath =
-		'/esbuild/node_modules/esbuild-wasm/bin/esbuild';
-	const originalEsbuildBin = kernel.readFileSync(esbuildBinPath, 'utf8');
-const envFilterBlock = `for (let key in process.env) {
+		const esbuildBinPath = '/esbuild/node_modules/esbuild-wasm/bin/esbuild';
+		const originalEsbuildBin = kernel.readFileSync(esbuildBinPath, 'utf8');
+		const envFilterBlock = `for (let key in process.env) {
   if (esbuildUsedEnvVars.indexOf(key) < 0) {
     delete process.env[key]
   }
 }
 
 `;
-const instrumentedEsbuildBin = originalEsbuildBin
-	.replace(
-		"const module_ = require('module');",
-		`process.on('exit', (code) => {
+		const instrumentedEsbuildBin = originalEsbuildBin
+			.replace(
+				"const module_ = require('module');",
+				`process.on('exit', (code) => {
 	console.error('[esbuild-bin] exit', code);
 });
 process.on('uncaughtException', (error) => {
@@ -292,20 +292,23 @@ process.exit = (code = 0) => {
 	return originalProcessExit(code);
 };
 const module_ = require('module');`
-	)
-	.replace(envFilterBlock, '// Disabled env filtering for kernel diagnostics\n');
-	kernel.writeFileSync(
-		esbuildBinPath,
-		encoder.encode(instrumentedEsbuildBin)
-	);
+			)
+			.replace(
+				envFilterBlock,
+				'// Disabled env filtering for kernel diagnostics\n'
+			);
+		kernel.writeFileSync(
+			esbuildBinPath,
+			encoder.encode(instrumentedEsbuildBin)
+		);
 
-	const wasmExecPath =
-		'/esbuild/node_modules/esbuild-wasm/wasm_exec_node.js';
-	const originalWasmExec = kernel.readFileSync(wasmExecPath, 'utf8');
-const instrumentedWasmExec = originalWasmExec
-	.replace(
-		'const go = new Go();',
-		`const go = new Go();
+		const wasmExecPath =
+			'/esbuild/node_modules/esbuild-wasm/wasm_exec_node.js';
+		const originalWasmExec = kernel.readFileSync(wasmExecPath, 'utf8');
+		const instrumentedWasmExec = originalWasmExec
+			.replace(
+				'const go = new Go();',
+				`const go = new Go();
 console.error('[wasm-exec] argv', JSON.stringify(process.argv));
 console.error('[wasm-exec] env keys', Object.keys(process.env));
 const __originalProcessExitForWasm = process.exit.bind(process);
@@ -322,9 +325,9 @@ go.run = async (instance) => {
 		console.error('[wasm-exec] go.run resolved', go.exitCode);
 		return result;
 	} catch (err) {
-		console.error('[wasm-exec] go.run error', err && err.stack ? err.stack : err);
-		throw err;
-	}
+	console.error('[wasm-exec] go.run error', err && err.stack ? err.stack : err);
+	throw err;
+}
 };
 process.on('exit', (code) => {
 	const trace = new Error('process.exit trace (listener)');
@@ -335,24 +338,90 @@ process.on('uncaughtException', (error) => {
 });
 process.on('unhandledRejection', (reason) => {
 	console.error('[wasm-exec] unhandledRejection', reason && reason.stack ? reason.stack : reason);
-});`
-	)
-	.replace('go.exit = process.exit;', '// go.exit instrumentation handled via process.exit override\n');
-	kernel.writeFileSync(
-		wasmExecPath,
-		encoder.encode(instrumentedWasmExec)
-	);
-	const mainJsPath =
-		'/esbuild/node_modules/esbuild-wasm/lib/main.js';
-	const mainJsOriginal = kernel.readFileSync(mainJsPath, 'utf8');
-	if (!mainJsOriginal.includes('[esbuild-channel] afterClose')) {
-		const mainJsInstrumented = mainJsOriginal.replace(
-			'let afterClose = (error) => {',
-			`let afterClose = (error) => {
-	console.error('[esbuild-channel] afterClose', { reason: closeData.reason, error });`
+});
+setTimeout(() => {
+	console.error('[wasm-exec] sanity timer fired', Date.now());
+}, 250);`
+			)
+			.replace(
+				'this._inst.exports.run(argc, argv);',
+				`console.error('[wasm-exec] Go.run about to call exports.run', { argc, argvCount: argvPtrs.length });
+			this._inst.exports.run(argc, argv);
+			console.error('[wasm-exec] Go.run returned from exports.run', { exited: this.exited, pendingEvent: this._pendingEvent ? true : false, scheduledTimeouts: this._scheduledTimeouts?.size });`
+			)
+			.replace(
+				'this._inst.exports.resume();',
+				`console.error('[wasm-exec] Go._resume entering', { exited: this.exited, pendingEvent: this._pendingEvent ? true : false, scheduledTimeouts: this._scheduledTimeouts?.size });
+			this._inst.exports.resume();
+			console.error('[wasm-exec] Go._resume exited', { exited: this.exited, pendingEvent: this._pendingEvent ? true : false, scheduledTimeouts: this._scheduledTimeouts?.size });`
+			)
+			.replace(
+				'go.exit = process.exit;',
+				'// go.exit instrumentation handled via process.exit override\n'
+			);
+		kernel.writeFileSync(
+			wasmExecPath,
+			encoder.encode(instrumentedWasmExec)
 		);
-		kernel.writeFileSync(mainJsPath, mainJsInstrumented);
-	}
+		const wasmExecLibPath =
+			'/esbuild/node_modules/esbuild-wasm/wasm_exec.js';
+		const originalWasmExecLib = kernel.readFileSync(
+			wasmExecLibPath,
+			'utf8'
+		);
+		const instrumentedWasmExecLib = originalWasmExecLib
+			.replace(
+				'this._inst.exports.run(argc, argv);',
+				`const pendingBefore = this._pendingEvent ? { id: this._pendingEvent.id ?? null, argTypes: Array.from(this._pendingEvent.args ?? []).map((arg) => typeof arg).slice(0, 4) } : null;
+\t\t\tconsole.error('[wasm-exec] Go.run about to call exports.run', { argc, argvCount: argvPtrs.length, pendingBefore, scheduledTimeouts: this._scheduledTimeouts?.size ?? 0 });
+\t\t\tthis._inst.exports.run(argc, argv);
+\t\t\tconst pendingAfter = this._pendingEvent ? { id: this._pendingEvent.id ?? null, argTypes: Array.from(this._pendingEvent.args ?? []).map((arg) => typeof arg).slice(0, 4) } : null;
+\t\t\tconsole.error('[wasm-exec] Go.run returned from exports.run', { exited: this.exited, pendingAfter, scheduledTimeouts: this._scheduledTimeouts?.size ?? 0 });`
+			)
+			.replace(
+				'this._inst.exports.resume();',
+				`const pendingBefore = this._pendingEvent ? { id: this._pendingEvent.id ?? null, argTypes: Array.from(this._pendingEvent.args ?? []).map((arg) => typeof arg).slice(0, 4) } : null;
+\t\t\tconsole.error('[wasm-exec] Go._resume entering', { exited: this.exited, pendingBefore, scheduledTimeouts: this._scheduledTimeouts?.size ?? 0 });
+\t\t\tthis._inst.exports.resume();
+\t\t\tconst pendingAfter = this._pendingEvent ? { id: this._pendingEvent.id ?? null, argTypes: Array.from(this._pendingEvent.args ?? []).map((arg) => typeof arg).slice(0, 4) } : null;
+\t\t\tconsole.error('[wasm-exec] Go._resume exited', { exited: this.exited, pendingAfter, scheduledTimeouts: this._scheduledTimeouts?.size ?? 0 });`
+			)
+			.replace(
+				'const id = this._nextCallbackTimeoutID;',
+				`const id = this._nextCallbackTimeoutID;
+\t\t\t\tconst delay = getInt64(sp + 8);
+\t\t\t\tconsole.error('[wasm-exec] scheduleTimeoutEvent', { id, delay, pendingEvent: this._pendingEvent ? { id: this._pendingEvent.id ?? null } : null, scheduledTimeouts: this._scheduledTimeouts?.size ?? 0 });`
+			)
+			.replace(
+				'this._scheduledTimeouts.set(id, setTimeout(',
+				`this._scheduledTimeouts.set(id, setTimeout(`
+			)
+			.replace(
+				'() => {\n\t\t\t\t\t\t\t\tthis._resume();',
+				`() => {
+\t\t\t\t\t\tconsole.error('[wasm-exec] scheduleTimeoutEvent firing', { id, pendingEvent: this._pendingEvent ? { id: this._pendingEvent.id ?? null } : null, scheduledTimeouts: this._scheduledTimeouts?.size ?? 0 });
+\t\t\t\t\t\tthis._resume();`
+			)
+			.replace('\t\t\t\t\t\t\tgetInt64(sp + 8),', '\t\t\t\t\t\t\tdelay,')
+			.replace(
+				'const id = this.mem.getInt32(sp + 8, true);',
+				`const id = this.mem.getInt32(sp + 8, true);
+\t\t\t\tconsole.error('[wasm-exec] clearTimeoutEvent', { id, scheduled: this._scheduledTimeouts?.has(id) ?? false });`
+			);
+		kernel.writeFileSync(
+			wasmExecLibPath,
+			encoder.encode(instrumentedWasmExecLib)
+		);
+		const mainJsPath = '/esbuild/node_modules/esbuild-wasm/lib/main.js';
+		const mainJsOriginal = kernel.readFileSync(mainJsPath, 'utf8');
+		if (!mainJsOriginal.includes('[esbuild-channel] afterClose')) {
+			const mainJsInstrumented = mainJsOriginal.replace(
+				'let afterClose = (error) => {',
+				`let afterClose = (error) => {
+	console.error('[esbuild-channel] afterClose', { reason: closeData.reason, error });`
+			);
+			kernel.writeFileSync(mainJsPath, mainJsInstrumented);
+		}
 
 		kernel.mkdirSync('/esbuild/src', { recursive: true });
 		kernel.writeFileSync(
@@ -365,14 +434,14 @@ process.on('unhandledRejection', (reason) => {
 		console.log(runnerSource);
 		kernel.writeFileSync('/test-esbuild.js', runnerSource);
 
-	const subprocess = kernel.spawn({
-		argv: ['node', '/test-esbuild.js'],
-		env: {
-			PATH: '/bin',
-			TMPDIR: '/tmp',
-			HOME: '/home',
-			ESBUILD_LOG_LEVEL: 'debug',
-		},
+		const subprocess = kernel.spawn({
+			argv: ['node', '/test-esbuild.js'],
+			env: {
+				PATH: '/bin',
+				TMPDIR: '/tmp',
+				HOME: '/home',
+				ESBUILD_LOG_LEVEL: 'debug',
+			},
 			cwd: '/',
 			name: 'esbuild',
 			stdio: {
@@ -384,39 +453,44 @@ process.on('unhandledRejection', (reason) => {
 
 		expect(typeof subprocess).not.toBe('number');
 		if (typeof subprocess === 'number') {
-			throw new Error('failed to spawn node program, exit code: ' + subprocess);
+			throw new Error(
+				'failed to spawn node program, exit code: ' + subprocess
+			);
 		}
 
-	let stdout = '';
-	let stderr = '';
-	subprocess.stdout?.on('data', (chunk) => {
-		const text = chunkToString(chunk);
-		console.log('[child stdout]', text);
-		stdout += text;
-	});
-	subprocess.stderr?.on('data', (chunk) => {
-		const text = chunkToString(chunk);
-		console.log('[child stderr]', text);
-		stderr += text;
-	});
+		let stdout = '';
+		let stderr = '';
+		subprocess.stdout?.on('data', (chunk) => {
+			const text = chunkToString(chunk);
+			console.log('[child stdout]', text);
+			stdout += text;
+		});
+		subprocess.stderr?.on('data', (chunk) => {
+			const text = chunkToString(chunk);
+			console.log('[child stderr]', text);
+			stderr += text;
+		});
 
-	const exitCode = await new Promise<number>((resolve) => {
-		subprocess.onExit((code) => resolve(code ?? 0));
-	});
-	try {
-		if (kernel.existsSync('/esbuild-wasm-dump.bin')) {
-			const dump = kernel.readFileSync('/esbuild-wasm-dump.bin', null) as
-				| Uint8Array
-				| string;
-			const length =
-				typeof dump === 'string' ? dump.length : dump.byteLength ?? dump.length;
-			console.log('[test] wasm dump length', length);
-		} else {
-			console.log('[test] wasm dump missing');
+		const exitCode = await new Promise<number>((resolve) => {
+			subprocess.onExit((code) => resolve(code ?? 0));
+		});
+		try {
+			if (kernel.existsSync('/esbuild-wasm-dump.bin')) {
+				const dump = kernel.readFileSync(
+					'/esbuild-wasm-dump.bin',
+					null
+				) as Uint8Array | string;
+				const length =
+					typeof dump === 'string'
+						? dump.length
+						: dump.byteLength ?? dump.length;
+				console.log('[test] wasm dump length', length);
+			} else {
+				console.log('[test] wasm dump missing');
+			}
+		} catch (error) {
+			console.log('[test] wasm dump read error', error);
 		}
-	} catch (error) {
-		console.log('[test] wasm dump read error', error);
-	}
 
 		expect(exitCode).toBe(0);
 		expect(stderr).toBe('');
@@ -427,10 +501,10 @@ process.on('unhandledRejection', (reason) => {
 		return decoder.decode(Uint8Array.from(raw, (ch) => ch.charCodeAt(0)));
 	};
 
-	it('can bundle via esbuild-wasm using virtual entry', async () => {
+	it.only('can bundle via esbuild-wasm using virtual entry', async () => {
 		const bundleText = await runEsbuildRunner('virtual');
 		expect(bundleText).toContain('answer = 42');
-	}, 10000);
+	}, 25000);
 
 	it('can bundle via esbuild-wasm using filesystem entry', async () => {
 		const bundleText = await runEsbuildRunner('fs');

@@ -62,9 +62,7 @@ async function importWithServiceWorker(url: string) {
 let runtimePromise: Promise<NodeRuntime> | null = null;
 
 export async function loadNode(): Promise<NodeRuntime> {
-	console.log('[node-loader] loadNode called, runtimePromise exists:', !!runtimePromise);
 	if (!runtimePromise) {
-		console.log('[node-loader] Creating new runtimePromise');
 		runtimePromise = bootstrapNodeRuntime().catch((error) => {
 			console.error('[node-loader] FATAL ERROR in bootstrapNodeRuntime:', error);
 			console.error('[node-loader] Error stack:', error?.stack);
@@ -75,12 +73,9 @@ export async function loadNode(): Promise<NodeRuntime> {
 }
 
 async function bootstrapNodeRuntime(): Promise<NodeRuntime> {
-	console.log('[node-loader] bootstrapNodeRuntime starting');
 	let module;
 	try {
-		console.log('[node-loader] About to import client-boot from:', clientBootUrl);
 		module = await importWithServiceWorker(clientBootUrl);
-		console.log('[node-loader] Imported client-boot successfully');
 	} catch (error) {
 		console.error(error);
 		console.trace('Error loading client-boot.js:', error);
@@ -90,12 +85,9 @@ async function bootstrapNodeRuntime(): Promise<NodeRuntime> {
 		throw new Error('client-boot.js did not export runMain');
 	}
 
-	console.log('[node-loader] Returning runtime object');
 	return {
 		runMain() {
-			console.log('[node-loader] runMain() called, calling module.runMain()...');
 			const result = module.runMain();
-			console.log('[node-loader] module.runMain() returned');
 			return Promise.resolve(result);
 		},
 	};

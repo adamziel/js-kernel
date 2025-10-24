@@ -5784,6 +5784,24 @@ const cryptoPolyfill = {
  * simple function override is not enough.
  */
 globalThis.crypto.randomBytes = cryptoExports.randomBytes;
+try {
+	globalThis.crypto.getRandomValues = cryptoPolyfill.getRandomValues;
+} catch (error) {
+	try {
+		Object.defineProperty(globalThis.crypto, 'getRandomValues', {
+			configurable: true,
+			enumerable: true,
+			writable: true,
+			value: cryptoPolyfill.getRandomValues,
+		});
+	} catch (defineError) {
+		console.warn(
+			'[client-boot] failed to install crypto.getRandomValues override',
+			error,
+			defineError
+		);
+	}
+}
 
 const https = await import('../../dist/https.js');
 globalThis.coreModules.https = https.default;

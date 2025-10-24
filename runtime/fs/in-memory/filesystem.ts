@@ -379,6 +379,8 @@ interface WalkResult {
 	missingParent?: boolean;
 }
 export class InMemoryFileSystem {
+	private warnedStdinRead = false;
+
 	constructor(initialFiles = {}) {
 		this.root = createDirectoryNode();
 		this.openFiles = new Map();
@@ -1142,6 +1144,12 @@ export class InMemoryFileSystem {
 	}
 	readSync(fd, length, position) {
 		if (fd === 0) {
+			if (!this.warnedStdinRead) {
+				this.warnedStdinRead = true;
+				console.error(
+					'[kernel-fs] readSync(0, ...) is not implemented yet; returning empty buffer'
+				);
+			}
 			return new Uint8Array(0);
 			// TODO: stdin support
 			// return processController.stdin.read(length, position);
@@ -2507,15 +2515,15 @@ function toUint8Array(data, encoding) {
 				}
 				return result;
 			}
-		case 'base64':
-			return base64DecodeToUint8Array(data);
-		case 'base64url':
-			return base64DecodeToUint8Array(base64UrlToBase64(data));
-		default: {
-			if (!textEncoderUtf8) {
-				throw new Error('TextEncoder not available');
-			}
-			return textEncoderUtf8.encode(data);
+			case 'base64':
+				return base64DecodeToUint8Array(data);
+			case 'base64url':
+				return base64DecodeToUint8Array(base64UrlToBase64(data));
+			default: {
+				if (!textEncoderUtf8) {
+					throw new Error('TextEncoder not available');
+				}
+				return textEncoderUtf8.encode(data);
 			}
 		}
 	}
@@ -2532,10 +2540,10 @@ function toUint8Array(data, encoding) {
 }
 
 function fromUint8Array(data, encoding) {
-    const format = normalizeEncoding(encoding);
-    if (!format) {
-        return data;
-    }
+	const format = normalizeEncoding(encoding);
+	if (!format) {
+		return data;
+	}
 	const view = data instanceof Uint8Array ? data : new Uint8Array(data);
 	switch (format) {
 		case 'utf8': {
@@ -2631,9 +2639,7 @@ function canUseOPFS() {
 const textEncoderUtf8 =
 	typeof TextEncoder === 'function' ? new TextEncoder() : null;
 const textDecoderUtf8 =
-	typeof TextDecoder === 'function'
-		? new TextDecoder('utf-8')
-		: null;
+	typeof TextDecoder === 'function' ? new TextDecoder('utf-8') : null;
 const textDecoderLatin1 =
 	typeof TextDecoder === 'function'
 		? (() => {
@@ -2704,7 +2710,7 @@ function base64DecodeToUint8Array(value) {
 	} else if (cleaned.endsWith('=')) {
 		padding = 1;
 	}
-	const outputLength = ((cleaned.length / 4) * 3) - padding;
+	const outputLength = (cleaned.length / 4) * 3 - padding;
 	const output = new Uint8Array(outputLength);
 	let outIndex = 0;
 	for (let i = 0; i < cleaned.length; i += 4) {
@@ -2734,8 +2740,7 @@ function base64EncodeFromUint8Array(bytes) {
 	let output = '';
 	let i = 0;
 	for (; i + 2 < bytes.length; i += 3) {
-		const triple =
-			(bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2];
+		const triple = (bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2];
 		output +=
 			BASE64_CHARS[(triple >> 18) & 0x3f] +
 			BASE64_CHARS[(triple >> 12) & 0x3f] +

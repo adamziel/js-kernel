@@ -189,9 +189,19 @@ export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents>
 		}
 		if (payload.type === 'data') {
 			if (typeof payload.payload !== 'string') {
+				const chunk = payload.payload
+				let preview = ''
+				if (
+					typeof Buffer !== 'undefined' &&
+					chunk instanceof Uint8Array
+				) {
+					const len = Math.min(chunk.byteLength, 32)
+					preview = Buffer.from(chunk.slice(0, len)).toString('hex')
+				}
 				console.log(
 					'[ipc:readable] received',
-					describeChunk(payload.payload)
+					describeChunk(chunk),
+					preview ? preview : ''
 				)
 			}
 			this.buffer.push(payload.payload)
