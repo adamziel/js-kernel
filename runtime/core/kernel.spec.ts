@@ -1274,57 +1274,67 @@ module.exports = async function main(processController) {
 	});
 
 	describe('Standard File Descriptors (stdin/stdout/stderr)', () => {
-		it('allows reading from stdin via fd 0', async () => {
-			const testProgram = `
+		it(
+			'allows reading from stdin via fd 0 (synchronous blocking)',
+			async () => {
+				const testProgram = `
 				export default async function main(processController) {
 					const fs = processController.fs;
-					// Read from fd 0 - fs methods are async when called through IPC
-					const buffer = await fs.readSync(0, 100, null);
+					processController.stdout.write('before read\\n');
+
+					// This call blocks synchronously until data is available
+					const buffer = fs.sync.readSync(0, 100, null);
+
+					processController.stdout.write('after read\\n');
 					const text = new TextDecoder().decode(buffer);
 					processController.stdout.write('read: ' + text);
 					return 0;
 				}
 			`;
-			kernel.writeFileSync('/bin/fd-stdin-test', testProgram);
+				kernel.writeFileSync('/bin/fd-stdin-test', testProgram, 'utf8');
 
-			const result = kernel.spawn({
-				argv: ['fd-stdin-test'],
-				env: {},
-				cwd: '/',
-				name: 'fd-stdin-test',
-				stdio: { stdin: 'pipe', stdout: 'pipe' },
-			}) as KernelSubprocess;
+				const result = kernel.spawn({
+					argv: ['fd-stdin-test'],
+					env: {},
+					cwd: '/',
+					name: 'fd-stdin-test',
+					stdio: { stdin: 'pipe', stdout: 'pipe' },
+				}) as KernelSubprocess;
 
-			const outputChunks: string[] = [];
-			result.stdout!.on('data', (chunk) => {
-				outputChunks.push(
-					typeof chunk === 'string'
-						? chunk
-						: new TextDecoder().decode(chunk)
-				);
-			});
+				const outputChunks: string[] = [];
+				result.stdout!.on('data', (chunk) => {
+					outputChunks.push(
+						typeof chunk === 'string'
+							? chunk
+							: new TextDecoder().decode(chunk)
+					);
+				});
 
-			// Write to stdin
-			result.stdin!.write('test input');
-			result.stdin!.end();
+				// Write to stdin immediately (before process blocks)
+				result.stdin!.write('test input');
+				result.stdin!.end();
 
-			await new Promise<void>((resolve) => {
-				result.onExit(() => resolve());
-			});
+				await new Promise<void>((resolve) => {
+					result.onExit(() => resolve());
+				});
 
-			const output = outputChunks.join('');
-			expect(output).toContain('read: test input');
-		});
+				const output = outputChunks.join('');
+				expect(output).toContain('before read');
+				expect(output).toContain('after read');
+				expect(output).toContain('read: test input');
+			},
+			10000
+		);
 
 		it('allows writing to stdout via fd 1', async () => {
 			const testProgram = `
 				export default async function main(processController) {
 					const fs = processController.fs;
-					// Write to fd 1 (stdout) - fs methods are async when called through IPC
+					// Write to fd 1 (stdout) - using truly synchronous API
 					const text = 'hello from fd 1';
 					const encoder = new TextEncoder();
 					const bytes = encoder.encode(text);
-					await fs.writeSync(1, bytes, 0, bytes.length, null);
+					fs.sync.writeSync(1, bytes, 0, bytes.length, null);
 					return 0;
 				}
 			`;
@@ -1359,11 +1369,11 @@ module.exports = async function main(processController) {
 			const testProgram = `
 				export default async function main(processController) {
 					const fs = processController.fs;
-					// Write to fd 2 (stderr) - fs methods are async when called through IPC
+					// Write to fd 2 (stderr) - using truly synchronous API
 					const text = 'error from fd 2';
 					const encoder = new TextEncoder();
 					const bytes = encoder.encode(text);
-					await fs.writeSync(2, bytes, 0, bytes.length, null);
+					fs.sync.writeSync(2, bytes, 0, bytes.length, null);
 					return 0;
 				}
 			`;
@@ -1394,19 +1404,69 @@ module.exports = async function main(processController) {
 			expect(stderr).toContain('error from fd 2');
 		});
 
+		it('demonstrates synchronous blocking stdin read with timeout', async () => {
+			const testProgram = `
+				export default async function main(processController) {
+					const fs = processController.fs;
+					processController.stdout.write('attempting read\\n');
+
+					// This will block for up to 5 seconds waiting for data
+					// If stdin is closed and no data arrives, it returns empty buffer
+					const buffer = fs.sync.readSync(0, 100, null);
+
+					if (buffer.length === 0) {
+						processController.stdout.write('got empty buffer (timeout or EOF)\\n');
+					} else {
+						const text = new TextDecoder().decode(buffer);
+						processController.stdout.write('got data: ' + text + '\\n');
+					}
+					return 0;
+				}
+			`;
+			kernel.writeFileSync('/bin/fd-timeout-test', testProgram);
+
+			const result = kernel.spawn({
+				argv: ['fd-timeout-test'],
+				env: {},
+				cwd: '/',
+				name: 'fd-timeout-test',
+				stdio: { stdin: 'pipe', stdout: 'pipe' },
+			}) as KernelSubprocess;
+
+			const outputChunks: string[] = [];
+			result.stdout!.on('data', (chunk) => {
+				outputChunks.push(
+					typeof chunk === 'string'
+						? chunk
+						: new TextDecoder().decode(chunk)
+				);
+			});
+
+			// Close stdin immediately - process should get empty buffer
+			result.stdin!.end();
+
+			await new Promise<void>((resolve) => {
+				result.onExit(() => resolve());
+			});
+
+			const output = outputChunks.join('');
+			expect(output).toContain('attempting read');
+			expect(output).toContain('got empty buffer');
+		});
+
 		it('handles mixed stdio operations via file descriptors', async () => {
 			const testProgram = `
 				export default async function main(processController) {
 					const fs = processController.fs;
 					const encoder = new TextEncoder();
 
-					// Write to stdout via fd 1 - fs methods are async when called through IPC
+					// Write to stdout via fd 1 - using truly synchronous API
 					const stdoutBytes = encoder.encode('fd1-out');
-					await fs.writeSync(1, stdoutBytes, 0, stdoutBytes.length, null);
+					fs.sync.writeSync(1, stdoutBytes, 0, stdoutBytes.length, null);
 
 					// Write to stderr via fd 2
 					const stderrBytes = encoder.encode('fd2-err');
-					await fs.writeSync(2, stderrBytes, 0, stderrBytes.length, null);
+					fs.sync.writeSync(2, stderrBytes, 0, stderrBytes.length, null);
 
 					return 0;
 				}
