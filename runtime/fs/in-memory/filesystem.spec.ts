@@ -26,7 +26,7 @@ const base64ToString = (value: string) => {
 	} else if (cleaned.endsWith('=')) {
 		padding = 1;
 	}
-	const outputLength = ((cleaned.length / 4) * 3) - padding;
+	const outputLength = (cleaned.length / 4) * 3 - padding;
 	const bytes = new Uint8Array(outputLength);
 	let outIndex = 0;
 	for (let i = 0; i < cleaned.length; i += 4) {
@@ -110,9 +110,9 @@ describe('InMemoryFileSystem', () => {
 		expect(latin1).toBe('\u00ffOK');
 
 		fs.writeFileSync('/buffer.bin', 'buffer!', 'utf8');
-	const bufferResult = fs.readFileSync('/buffer.bin', 'buffer');
-	expect(bufferResult instanceof Uint8Array).toBe(true);
-	expect(new TextDecoder().decode(bufferResult)).toBe('buffer!');
+		const bufferResult = fs.readFileSync('/buffer.bin', 'buffer');
+		expect(bufferResult instanceof Uint8Array).toBe(true);
+		expect(new TextDecoder().decode(bufferResult)).toBe('buffer!');
 	});
 
 	it('throws an ENOENT error when reading a missing file', () => {
@@ -154,6 +154,33 @@ describe('InMemoryFileSystem', () => {
 		expect(missingParentError.code).toBe('ENOENT');
 	});
 
+	it('reads from processController stdin when fd is 0', () => {
+		const readSequence: Array<string | null> = ['abcdefg', 'h', null];
+		const stdin = {
+			read: vi.fn(() => readSequence.shift()),
+		};
+		const original = (globalThis as any).processController;
+		(globalThis as any).processController = { stdin } as unknown;
+
+		try {
+			const first = fs.readSync(0, 3, null);
+			expect(first).toBeInstanceOf(Uint8Array);
+			expect(Array.from(first ?? [])).toEqual([97, 98, 99]); // 'abc'
+
+			const second = fs.readSync(0, 5, null);
+			expect(second).toBeInstanceOf(Uint8Array);
+			expect(Array.from(second ?? [])).toEqual([100, 101, 102, 103, 104]); // 'defgh'
+
+			const third = fs.readSync(0, 2, null);
+			expect(third).toBeInstanceOf(Uint8Array);
+			expect((third as Uint8Array).byteLength).toBe(0);
+		} finally {
+			(globalThis as any).processController = original;
+		}
+
+		expect(stdin.read).toHaveBeenCalledTimes(3);
+	});
+
 	it('lists directory entries with optional encodings and dirents', () => {
 		fs.mkdirSync('/dir');
 		fs.writeFileSync('/dir/file.txt', 'data');
@@ -168,12 +195,14 @@ describe('InMemoryFileSystem', () => {
 		const subDirent = dirents.find((entry) => entry.name === 'sub');
 		expect(subDirent?.isDirectory()).toBe(true);
 
-	const buffers = fs.readdirSync('/dir', 'buffer');
-	expect(buffers.every((entry) => entry instanceof Uint8Array)).toBe(true);
+		const buffers = fs.readdirSync('/dir', 'buffer');
+		expect(buffers.every((entry) => entry instanceof Uint8Array)).toBe(
+			true
+		);
 
-	const base64 = fs.readdirSync('/dir', 'base64');
-	const decoded = base64.map((name) => base64ToString(name));
-	expect(decoded).toEqual(entries);
+		const base64 = fs.readdirSync('/dir', 'base64');
+		const decoded = base64.map((name) => base64ToString(name));
+		expect(decoded).toEqual(entries);
 	});
 
 	it('supports the scandir binding variant and encoding validation', () => {
@@ -184,18 +213,22 @@ describe('InMemoryFileSystem', () => {
 		const names = fs.readdirBindingSync('/bind');
 		expect(names).toEqual(['file.txt', 'inner']);
 
-		const [encodedNames, types] = fs.readdirBindingSync('/bind', null, true);
+		const [encodedNames, types] = fs.readdirBindingSync(
+			'/bind',
+			null,
+			true
+		);
 		expect(encodedNames).toEqual(['file.txt', 'inner']);
 		expect(types).toEqual([1, 2]);
 
 		const bufferNames = fs.readdirBindingSync('/bind', 'buffer');
-		expect(
-			bufferNames.every((entry) => entry instanceof Uint8Array)
-		).toBe(true);
+		expect(bufferNames.every((entry) => entry instanceof Uint8Array)).toBe(
+			true
+		);
 
-		expect(() =>
-			fs.readdirBindingSync('/bind', 'utf16le')
-		).toThrowError(/Unsupported encoding/);
+		expect(() => fs.readdirBindingSync('/bind', 'utf16le')).toThrowError(
+			/Unsupported encoding/
+		);
 	});
 
 	it('handles symlinks with stat and lstat semantics', () => {
@@ -326,9 +359,9 @@ describe('InMemoryFileSystem', () => {
 		fs.copyFileSync('/source.txt', '/copy.txt');
 		expect(fs.readFileSync('/copy.txt', 'utf8')).toBe('payload');
 
-		expect(() => fs.copyFileSync('/source.txt', '/copy.txt', 1)).toThrowError(
-			/EEXIST/
-		);
+		expect(() =>
+			fs.copyFileSync('/source.txt', '/copy.txt', 1)
+		).toThrowError(/EEXIST/);
 	});
 
 	it('recursively copies directories with cpSync options', () => {
@@ -495,10 +528,12 @@ describe('InMemoryFileSystem', () => {
 		fs.writeFileUtf8('/write-utf8.txt', 'base', 0);
 		fs.writeFileUtf8('/write-utf8.txt', '++', O_APPEND);
 		expect(fs.readFileSync('/write-utf8.txt', 'utf8')).toBe('base++');
-		const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-		expect(() => fs.writeFileUtf8('/write-utf8.txt', 'nope', O_EXCL)).toThrow(
-			/EEXIST/
-		);
+		const errorSpy = vi
+			.spyOn(console, 'error')
+			.mockImplementation(() => {});
+		expect(() =>
+			fs.writeFileUtf8('/write-utf8.txt', 'nope', O_EXCL)
+		).toThrow(/EEXIST/);
 		errorSpy.mockRestore();
 
 		// writeFileAsync uses FSReqCallback semantics

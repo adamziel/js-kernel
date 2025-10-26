@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Kernel, ExitCode } from './kernel';
-import { InMemoryFileSystem } from '../fs/in-memory/filesystem';
-import type { SpawnOptions, KernelSubprocess } from './kernel';
+import type { KernelSubprocess } from './kernel';
 
 describe('Kernel - Process Spawning and stdio Communication', () => {
 	let kernel: Kernel;
@@ -12,7 +11,7 @@ describe('Kernel - Process Spawning and stdio Communication', () => {
 		kernel.setEnv('PATH', '/bin');
 	});
 
-	it.only('executes programs written in CommonJS style (module.exports)', async () => {
+	it('executes programs written in CommonJS style (module.exports)', async () => {
 		const program = `
 module.exports = async function main(processController) {
 	processController.stdout.write('cjs-ok');
@@ -1271,6 +1270,185 @@ module.exports = async function main(processController) {
 			}) as KernelSubprocess;
 
 			expect(result.pid).toBeGreaterThan(0);
+		});
+	});
+
+	describe('Standard File Descriptors (stdin/stdout/stderr)', () => {
+		it('allows reading from stdin via fd 0', async () => {
+			const testProgram = `
+				export default async function main(processController) {
+					const fs = processController.fs;
+					// Read from fd 0 - fs methods are async when called through IPC
+					const buffer = await fs.readSync(0, 100, null);
+					const text = new TextDecoder().decode(buffer);
+					processController.stdout.write('read: ' + text);
+					return 0;
+				}
+			`;
+			kernel.writeFileSync('/bin/fd-stdin-test', testProgram);
+
+			const result = kernel.spawn({
+				argv: ['fd-stdin-test'],
+				env: {},
+				cwd: '/',
+				name: 'fd-stdin-test',
+				stdio: { stdin: 'pipe', stdout: 'pipe' },
+			}) as KernelSubprocess;
+
+			const outputChunks: string[] = [];
+			result.stdout!.on('data', (chunk) => {
+				outputChunks.push(
+					typeof chunk === 'string'
+						? chunk
+						: new TextDecoder().decode(chunk)
+				);
+			});
+
+			// Write to stdin
+			result.stdin!.write('test input');
+			result.stdin!.end();
+
+			await new Promise<void>((resolve) => {
+				result.onExit(() => resolve());
+			});
+
+			const output = outputChunks.join('');
+			expect(output).toContain('read: test input');
+		});
+
+		it('allows writing to stdout via fd 1', async () => {
+			const testProgram = `
+				export default async function main(processController) {
+					const fs = processController.fs;
+					// Write to fd 1 (stdout) - fs methods are async when called through IPC
+					const text = 'hello from fd 1';
+					const encoder = new TextEncoder();
+					const bytes = encoder.encode(text);
+					await fs.writeSync(1, bytes, 0, bytes.length, null);
+					return 0;
+				}
+			`;
+			kernel.writeFileSync('/bin/fd-stdout-test', testProgram);
+
+			const result = kernel.spawn({
+				argv: ['fd-stdout-test'],
+				env: {},
+				cwd: '/',
+				name: 'fd-stdout-test',
+				stdio: { stdout: 'pipe' },
+			}) as KernelSubprocess;
+
+			const outputChunks: string[] = [];
+			result.stdout!.on('data', (chunk) => {
+				outputChunks.push(
+					typeof chunk === 'string'
+						? chunk
+						: new TextDecoder().decode(chunk)
+				);
+			});
+
+			await new Promise<void>((resolve) => {
+				result.onExit(() => resolve());
+			});
+
+			const output = outputChunks.join('');
+			expect(output).toContain('hello from fd 1');
+		});
+
+		it('allows writing to stderr via fd 2', async () => {
+			const testProgram = `
+				export default async function main(processController) {
+					const fs = processController.fs;
+					// Write to fd 2 (stderr) - fs methods are async when called through IPC
+					const text = 'error from fd 2';
+					const encoder = new TextEncoder();
+					const bytes = encoder.encode(text);
+					await fs.writeSync(2, bytes, 0, bytes.length, null);
+					return 0;
+				}
+			`;
+			kernel.writeFileSync('/bin/fd-stderr-test', testProgram);
+
+			const result = kernel.spawn({
+				argv: ['fd-stderr-test'],
+				env: {},
+				cwd: '/',
+				name: 'fd-stderr-test',
+				stdio: { stderr: 'pipe' },
+			}) as KernelSubprocess;
+
+			const stderrChunks: string[] = [];
+			result.stderr!.on('data', (chunk) => {
+				stderrChunks.push(
+					typeof chunk === 'string'
+						? chunk
+						: new TextDecoder().decode(chunk)
+				);
+			});
+
+			await new Promise<void>((resolve) => {
+				result.onExit(() => resolve());
+			});
+
+			const stderr = stderrChunks.join('');
+			expect(stderr).toContain('error from fd 2');
+		});
+
+		it('handles mixed stdio operations via file descriptors', async () => {
+			const testProgram = `
+				export default async function main(processController) {
+					const fs = processController.fs;
+					const encoder = new TextEncoder();
+
+					// Write to stdout via fd 1 - fs methods are async when called through IPC
+					const stdoutBytes = encoder.encode('fd1-out');
+					await fs.writeSync(1, stdoutBytes, 0, stdoutBytes.length, null);
+
+					// Write to stderr via fd 2
+					const stderrBytes = encoder.encode('fd2-err');
+					await fs.writeSync(2, stderrBytes, 0, stderrBytes.length, null);
+
+					return 0;
+				}
+			`;
+			kernel.writeFileSync('/bin/fd-mixed-test', testProgram);
+
+			const result = kernel.spawn({
+				argv: ['fd-mixed-test'],
+				env: {},
+				cwd: '/',
+				name: 'fd-mixed-test',
+				stdio: { stdout: 'pipe', stderr: 'pipe' },
+			}) as KernelSubprocess;
+
+			const stdoutChunks: string[] = [];
+			const stderrChunks: string[] = [];
+
+			result.stdout!.on('data', (chunk) => {
+				stdoutChunks.push(
+					typeof chunk === 'string'
+						? chunk
+						: new TextDecoder().decode(chunk)
+				);
+			});
+
+			result.stderr!.on('data', (chunk) => {
+				stderrChunks.push(
+					typeof chunk === 'string'
+						? chunk
+						: new TextDecoder().decode(chunk)
+				);
+			});
+
+			await new Promise<void>((resolve) => {
+				result.onExit(() => resolve());
+			});
+
+			const stdout = stdoutChunks.join('');
+			const stderr = stderrChunks.join('');
+
+			expect(stdout).toContain('fd1-out');
+			expect(stderr).toContain('fd2-err');
 		});
 	});
 });

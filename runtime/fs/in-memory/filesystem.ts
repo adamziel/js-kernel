@@ -380,6 +380,9 @@ interface WalkResult {
 }
 export class InMemoryFileSystem {
 	private warnedStdinRead = false;
+	private stdinRemainders = new WeakMap<object, Uint8Array>();
+	private readonly textEncoder =
+		typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
 
 	constructor(initialFiles = {}) {
 		this.root = createDirectoryNode();
@@ -390,6 +393,83 @@ export class InMemoryFileSystem {
 				this.writeFileSync(filePath, value);
 			}
 		}
+	}
+
+	private toUint8Array(data: unknown): Uint8Array {
+		if (data instanceof Uint8Array) {
+			return data;
+		}
+		if (
+			typeof Buffer !== 'undefined' &&
+			typeof Buffer.isBuffer === 'function' &&
+			Buffer.isBuffer(data)
+		) {
+			return new Uint8Array(data as Uint8Array);
+		}
+		if (typeof data === 'string') {
+			return this.textEncoder ? this.textEncoder.encode(data) : new Uint8Array(0);
+		}
+		if (
+			typeof ArrayBuffer !== 'undefined' &&
+			data instanceof ArrayBuffer
+		) {
+			return new Uint8Array(data);
+		}
+		if (ArrayBuffer.isView(data)) {
+			const view = data as ArrayBufferView;
+			return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+		}
+		return new Uint8Array(0);
+	}
+
+	private concatBuffers(a: Uint8Array, b: Uint8Array): Uint8Array {
+		if (a.byteLength === 0) return b.slice();
+		if (b.byteLength === 0) return a.slice();
+		const combined = new Uint8Array(a.byteLength + b.byteLength);
+		combined.set(a, 0);
+		combined.set(b, a.byteLength);
+		return combined;
+	}
+
+	private readFromProcessStdin(requestedLength: number): Uint8Array {
+		const controller = (globalThis as any)?.processController;
+		const stdin = controller?.stdin;
+		if (!stdin || typeof stdin.read !== 'function') {
+			if (!this.warnedStdinRead) {
+				this.warnedStdinRead = true;
+				console.error(
+					'[kernel-fs] readSync(0, ...) called without stdin available; returning empty buffer'
+				);
+			}
+			return new Uint8Array(0);
+		}
+
+		if (requestedLength === 0) {
+			return new Uint8Array(0);
+		}
+
+		let buffered = this.stdinRemainders.get(stdin);
+		if (buffered && buffered.byteLength > 0) {
+			this.stdinRemainders.delete(stdin);
+		} else {
+			buffered = new Uint8Array(0);
+		}
+
+		while (buffered.byteLength < requestedLength) {
+			const chunk = stdin.read();
+			if (!chunk) {
+				break;
+			}
+			buffered = this.concatBuffers(buffered, this.toUint8Array(chunk));
+		}
+
+		if (buffered.byteLength > requestedLength) {
+			const head = buffered.slice(0, requestedLength);
+			this.stdinRemainders.set(stdin, buffered.slice(requestedLength));
+			return head;
+		}
+
+		return buffered;
 	}
 	/**
 	 * TODO: Harmonize all the FS method names with their sync/async purpose.
@@ -1144,15 +1224,9 @@ export class InMemoryFileSystem {
 	}
 	readSync(fd, length, position) {
 		if (fd === 0) {
-			if (!this.warnedStdinRead) {
-				this.warnedStdinRead = true;
-				console.error(
-					'[kernel-fs] readSync(0, ...) is not implemented yet; returning empty buffer'
-				);
-			}
-			return new Uint8Array(0);
-			// TODO: stdin support
-			// return processController.stdin.read(length, position);
+			return this.readFromProcessStdin(
+				typeof length === 'number' && length > 0 ? length : 0
+			);
 		}
 		const openFile = this.openFiles.get(fd);
 		if (!openFile) {

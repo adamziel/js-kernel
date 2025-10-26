@@ -196,6 +196,25 @@ const textEncoder =
 			});
 		}
 
+		// Handle read operations from stdin (0)
+		// readSync(fd, length, position)
+		if ((method === 'readSync' || method === 'read') && fd === 0) {
+			return Promise.resolve().then(() => {
+				const length = typeof args[1] === 'number' ? args[1] : 0;
+				const bytes = consumeStdin(streams, length);
+				if (!bytes) {
+					if (!warnedEmptyStdin) {
+						warnedEmptyStdin = true;
+						console.error(
+							'[kernel-fs] read(fd=0) returned no data; stdin piping is not implemented yet'
+						);
+					}
+					return new Uint8Array(0);
+				}
+				return bytes;
+			});
+		}
+
 		return null;
 	};
 
