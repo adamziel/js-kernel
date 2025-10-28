@@ -4,6 +4,7 @@ import * as builtins from './builtins.js';
 // @TODO: Do not rely on `window` here. We're running a Node.js process after all.
 globalThis.window = globalThis.global = globalThis;
 globalThis.globalFs = processController.fsSync;
+globalThis.globalFsAsync = processController.fs;
 
 const UTF8_DECODER = new TextDecoder('utf-8');
 const READ_FILE_UTF8_CHUNK_SIZE = 64 * 1024;
@@ -77,6 +78,45 @@ function readUtf8FromFileDescriptor(fd) {
 // This allows defineLazyProperties to access internal modules
 globalThis.__moduleRegistry = new Map();
 
+// Helper function to handle async operations with genuine async support
+// syncFn: Function to call for synchronous operations
+// asyncFn: Function that returns a Promise from genuine async operation (processController.fs)
+//          IMPORTANT: Must be a function to enable lazy evaluation - only called when async is needed
+// kUsePromisesOrReq: undefined (sync), FSReqCallback (callback), or kUsePromises symbol (promise)
+function handleAsyncOperation(syncFn, asyncFn, kUsePromisesOrReq) {
+	// Sync call - use synchronous implementation
+	// IMPORTANT: asyncFn is NOT called here, so no async operation starts
+	if (kUsePromisesOrReq === undefined) {
+		return syncFn();
+	}
+
+	// Async is needed - call asyncFn() to get the promise
+	// This ensures the async operation only starts when actually requested
+	const asyncPromise = asyncFn();
+
+	// Callback mode - FSReqCallback with oncomplete
+	if (
+		kUsePromisesOrReq &&
+		typeof kUsePromisesOrReq === 'object' &&
+		'oncomplete' in kUsePromisesOrReq
+	) {
+		asyncPromise.then(
+			(result) => {
+				kUsePromisesOrReq.oncomplete(null, result);
+			},
+			(err) => {
+				kUsePromisesOrReq.oncomplete(err);
+			}
+		);
+		return;
+	}
+
+	// Promise mode - return the genuine async promise
+	return asyncPromise;
+}
+
+// Legacy function - kept for backwards compatibility but wraps sync in promise
+// @deprecated Use handleAsyncOperation for genuine async support
 function maybePromiseFromSync(syncFn, kUsePromisesOrReq) {
 	// Sync call
 	if (kUsePromisesOrReq === undefined) {
@@ -96,7 +136,6 @@ function maybePromiseFromSync(syncFn, kUsePromisesOrReq) {
 		typeof kUsePromisesOrReq === 'object' &&
 		'oncomplete' in kUsePromisesOrReq
 	) {
-		// @TODO Don't return promise in this case
 		return promise.then(
 			(result) => {
 				kUsePromisesOrReq.oncomplete(null, result);
@@ -105,7 +144,6 @@ function maybePromiseFromSync(syncFn, kUsePromisesOrReq) {
 				kUsePromisesOrReq.oncomplete(err);
 			}
 		);
-		return;
 	}
 
 	// Promise mode
@@ -2436,8 +2474,9 @@ globalThis.internalModules = {
 			kFsStatsFieldsNumber: 18,
 			constants: {},
 			open(path, flags, mode, reqOrPromise) {
-				return maybePromiseFromSync(
+				return handleAsyncOperation(
 					() => globalFs.openSync(path, flags, mode),
+					() => globalFsAsync.open(path, flags, mode),
 					reqOrPromise
 				);
 			},
@@ -2503,84 +2542,83 @@ globalThis.internalModules = {
 					finalOptions = { recursive: recursive };
 				}
 
-				return maybePromiseFromSync(
+				return handleAsyncOperation(
 					() => globalFs.mkdirSync(path, finalOptions),
+					() => globalFsAsync.mkdir(path, finalOptions),
 					kUsePromises
 				);
 			},
 			close(fd, reqOrPromise) {
-				return maybePromiseFromSync(
+				return handleAsyncOperation(
 					() => globalFs.closeSync(fd),
+					() => globalFsAsync.close(fd),
 					reqOrPromise
 				);
 			},
 			read(fd, buffer, offset, length, position, reqOrPromise) {
-				return maybePromiseFromSync(() => {
-					try {
-						const sourceBuffer = globalFs.readSync(
-							fd,
-							length,
-							position
-						);
-						const bytesToCopy = Math.min(
-							sourceBuffer.length,
-							length
-						);
-						if (bytesToCopy > 0) {
-							let targetView;
-							if (
-								buffer instanceof Uint8Array ||
-								(typeof Buffer !== 'undefined' &&
-									Buffer.isBuffer?.(buffer))
-							) {
-								targetView = buffer;
-							} else if (
-								buffer &&
-								typeof buffer === 'object' &&
-								buffer.buffer instanceof ArrayBuffer
-							) {
-								const byteOffset =
-									buffer.byteOffset ?? buffer.offset ?? 0;
-								const viewLength =
-									buffer.byteLength ??
-									buffer.length ??
-									length;
-								targetView = new Uint8Array(
-									buffer.buffer,
-									byteOffset,
-									viewLength
-								);
-							} else {
-								throw new TypeError(
-									`Unsupported buffer type for read(): ${
-										buffer &&
-										buffer.constructor &&
-										buffer.constructor.name
-									}`
-								);
-							}
-							targetView.set(
-								sourceBuffer.subarray(0, bytesToCopy),
-								offset
+			const processReadBuffer = (sourceBuffer) => {
+				try {
+					const bytesToCopy = Math.min(
+						sourceBuffer.length,
+						length
+					);
+					if (bytesToCopy > 0) {
+						let targetView;
+						if (
+							buffer instanceof Uint8Array ||
+							(typeof Buffer !== 'undefined' &&
+								Buffer.isBuffer?.(buffer))
+						) {
+							targetView = buffer;
+						} else if (
+							buffer &&
+							typeof buffer === 'object' &&
+							buffer.buffer instanceof ArrayBuffer
+						) {
+							const byteOffset =
+								buffer.byteOffset ?? buffer.offset ?? 0;
+							const viewLength =
+								buffer.byteLength ??
+								buffer.length ??
+								length;
+							targetView = new Uint8Array(
+								buffer.buffer,
+								byteOffset,
+								viewLength
+							);
+						} else {
+							throw new TypeError(
+								`Unsupported buffer type for read(): ${
+									buffer &&
+									buffer.constructor &&
+									buffer.constructor.name
+								}`
 							);
 						}
-						return bytesToCopy;
-					} catch (error) {
-						console.error('[fs-binding] read error', error);
-						throw error;
+						targetView.set(
+							sourceBuffer.subarray(0, bytesToCopy),
+							offset
+						);
 					}
-				}, reqOrPromise);
-			},
+					return bytesToCopy;
+				} catch (error) {
+					console.error('[fs-binding] read error', error);
+					throw error;
+				}
+			};
+
+			return handleAsyncOperation(
+				() => processReadBuffer(globalFs.readSync(fd, length, position)),
+				() => globalFsAsync.read(fd, length, position).then(processReadBuffer),
+				reqOrPromise
+			);
+		},
 			readdir(path, encoding, withFileTypes, kUsePromises) {
-				return maybePromiseFromSync(
-					() =>
-						globalFs.readdirBinding(
-							path,
-							resolveFsEncodingValue(encoding),
-							withFileTypes
-						),
-					kUsePromises
-				);
+				return handleAsyncOperation(
+				() => globalFs.readdirBinding(path, resolveFsEncodingValue(encoding), withFileTypes),
+				() => globalFsAsync.readdirBinding(path, resolveFsEncodingValue(encoding), withFileTypes),
+				kUsePromises
+			);
 			},
 			readFileUtf8(path, flags) {
 				// readFileUtf8 is a synchronous optimized path for reading UTF-8 files
@@ -2613,49 +2651,51 @@ globalThis.internalModules = {
 				}
 			},
 			readFile(path, options, kUsePromises) {
-				const wantsBuffer = shouldReturnBuffer(options);
-				const resolvedOptions = resolveFsEncodingOptions(options);
-				return maybePromiseFromSync(() => {
-					const raw = globalFs.readFileSync(path, resolvedOptions);
-					const rawLength =
-						raw &&
-						(typeof raw === 'string'
-							? raw.length
-							: raw.byteLength ?? raw.length ?? 0);
-					console.log(
-						'[fs-binding] readFileSync raw',
-						path,
-						rawLength,
-						raw && raw.constructor && raw.constructor.name
-					);
-					const result = wantsBuffer ? ensureNodeBuffer(raw) : raw;
-					if (wantsBuffer) {
-						const bufLength =
-							result &&
-							(typeof result === 'string'
-								? result.length
-								: result.byteLength ?? result.length ?? 0);
-						console.log(
-							'[fs-binding] readFileSync buffer result',
-							bufLength,
-							result &&
-								result.constructor &&
-								result.constructor.name
-						);
-					}
-					return result;
-				}, kUsePromises);
-			},
-			writeFile(path, data, options, kUsePromises) {
-				return maybePromiseFromSync(
-					() =>
-						globalFs.writeFileSync(
-							path,
-							data,
-							resolveFsEncodingOptions(options)
-						),
-					kUsePromises
+			const wantsBuffer = shouldReturnBuffer(options);
+			const resolvedOptions = resolveFsEncodingOptions(options);
+
+			const processReadResult = (raw) => {
+				const rawLength =
+					raw &&
+					(typeof raw === 'string'
+						? raw.length
+						: raw.byteLength ?? raw.length ?? 0);
+				console.log(
+					'[fs-binding] readFileSync raw',
+					path,
+					rawLength,
+					raw && raw.constructor && raw.constructor.name
 				);
+				const result = wantsBuffer ? ensureNodeBuffer(raw) : raw;
+				if (wantsBuffer) {
+					const bufLength =
+						result &&
+						(typeof result === 'string'
+							? result.length
+							: result.byteLength ?? result.length ?? 0);
+					console.log(
+						'[fs-binding] readFileSync buffer result',
+						bufLength,
+						result &&
+							result.constructor &&
+							result.constructor.name
+					);
+				}
+				return result;
+			};
+
+			return handleAsyncOperation(
+				() => processReadResult(globalFs.readFileSync(path, resolvedOptions)),
+				() => globalFsAsync.readFile(path, resolvedOptions).then(processReadResult),
+				kUsePromises
+			);
+		},
+			writeFile(path, data, options, kUsePromises) {
+				return handleAsyncOperation(
+				() => globalFs.writeFileSync(path, data, resolveFsEncodingOptions(options)),
+				() => globalFsAsync.writeFile(path, data, resolveFsEncodingOptions(options)),
+				kUsePromises
+			);
 			},
 			rmSync(path, maxRetries, recursive, retryDelay) {
 				return globalFs.rmSync(path, maxRetries, recursive, retryDelay);
@@ -2699,299 +2739,379 @@ globalThis.internalModules = {
 				return globalFs.copyFileSync(src, dest, 0);
 			},
 			symlink(target, path, type, kUsePromises) {
-				return maybePromiseFromSync(
-					() => globalFs.symlinkSync(target, path, type),
-					kUsePromises
-				);
+				return handleAsyncOperation(
+				() => globalFs.symlinkSync(target, path, type),
+				() => globalFsAsync.symlink(target, path, type),
+				kUsePromises
+			);
 			},
 			readBuffers(fd, buffers, position, kUsePromises) {
-				return maybePromiseFromSync(
-					() => globalFs.readBuffers(fd, buffers, position),
-					kUsePromises
-				);
+				return handleAsyncOperation(
+				() => globalFs.readBuffers(fd, buffers, position),
+				() => globalFsAsync.readBuffers(fd, buffers, position),
+				kUsePromises
+			);
 			},
 			mkdtemp(prefix, encoding, kUsePromises) {
-				return maybePromiseFromSync(
-					() =>
-						globalFs.mkdtemp(
-							prefix,
-							resolveFsEncodingValue(encoding)
-						),
-					kUsePromises
-				);
+				return handleAsyncOperation(
+				() => globalFs.mkdtemp(prefix, resolveFsEncodingValue(encoding)),
+				() => globalFsAsync.mkdtemp(prefix, resolveFsEncodingValue(encoding)),
+				kUsePromises
+			);
 			},
 			ftruncate(fd, len, kUsePromises) {
-				return maybePromiseFromSync(
-					() => globalFs.ftruncateSync(fd, len),
-					kUsePromises
-				);
+				return handleAsyncOperation(
+				() => globalFs.ftruncateSync(fd, len),
+				() => globalFsAsync.ftruncate(fd, len),
+				kUsePromises
+			);
 			},
 			truncate(path, len, kUsePromises) {
-				return maybePromiseFromSync(
-					() => globalFs.truncateSync(path, len),
-					kUsePromises
-				);
+				return handleAsyncOperation(
+				() => globalFs.truncateSync(path, len),
+				() => globalFsAsync.truncate(path, len),
+				kUsePromises
+			);
 			},
 			rename(oldPath, newPath, kUsePromises) {
-				return maybePromiseFromSync(
-					() => globalFs.renameSync(oldPath, newPath),
-					kUsePromises
-				);
+				return handleAsyncOperation(
+				() => globalFs.renameSync(oldPath, newPath),
+				() => globalFsAsync.rename(oldPath, newPath),
+				kUsePromises
+			);
 			},
 			rm(path, kUsePromises) {
 				// console.log('rm', path, kUsePromises, arguments);
-				return maybePromiseFromSync(
-					() => globalFs.rmSync(path),
-					kUsePromises
-				);
+				return handleAsyncOperation(
+				() => globalFs.rmSync(path),
+				() => globalFsAsync.rm(path),
+				kUsePromises
+			);
 			},
 			rmdir(path, kUsePromises) {
 				// console.log('rmdir', path, kUsePromises, arguments);
-				return maybePromiseFromSync(
-					() => globalFs.rmdirSync(path),
-					kUsePromises
-				);
+				return handleAsyncOperation(
+				() => globalFs.rmdirSync(path),
+				() => globalFsAsync.rmdir(path),
+				kUsePromises
+			);
 			},
 			stat(path, useBigint, kUsePromises, throwIfNoEntry) {
-				// Native binding populates global statValues/bigintStatValues arrays
-				// throwIfNoEntry defaults to true for backwards compatibility
-				return maybePromiseFromSync(() => {
+			// Native binding populates global statValues/bigintStatValues arrays
+			// throwIfNoEntry defaults to true for backwards compatibility
+			const processStat = (stats) => {
+				const targetArray = useBigint
+					? globalThis.internalModules.fs.bigintStatValues
+					: globalThis.internalModules.fs.statValues;
+				fillStatsArray(targetArray, stats, useBigint, 0);
+				return targetArray;
+			};
+
+			return handleAsyncOperation(
+				() => {
 					try {
 						const stats = globalFs.statSync(path);
-						// Populate the global stat arrays
-						const targetArray = useBigint
-							? globalThis.internalModules.fs.bigintStatValues
-							: globalThis.internalModules.fs.statValues;
-						fillStatsArray(targetArray, stats, useBigint, 0);
-						return targetArray;
+						return processStat(stats);
 					} catch (err) {
-						// If throwIfNoEntry is false and error is ENOENT, return undefined
 						if (throwIfNoEntry === false && err.code === 'ENOENT') {
 							return undefined;
 						}
 						throw err;
 					}
-				}, kUsePromises);
+				},
+				() => globalFsAsync.stat(path).then(processStat).catch(err => {
+					if (throwIfNoEntry === false && err.code === 'ENOENT') {
+						return undefined;
+					}
+					throw err;
+				}),
+				kUsePromises
+			);
 			},
 			lstat(path, useBigint, kUsePromises, throwIfNoEntry) {
-				// Native binding populates global statValues/bigintStatValues arrays
-				return maybePromiseFromSync(() => {
+			// Native binding populates global statValues/bigintStatValues arrays
+			const processStat = (stats) => {
+				const targetArray = useBigint
+					? globalThis.internalModules.fs.bigintStatValues
+					: globalThis.internalModules.fs.statValues;
+				fillStatsArray(targetArray, stats, useBigint, 0);
+				return targetArray;
+			};
+
+			return handleAsyncOperation(
+				() => {
 					try {
 						const stats = globalFs.lstatSync(path);
-						// Populate the global stat arrays
-						const targetArray = useBigint
-							? globalThis.internalModules.fs.bigintStatValues
-							: globalThis.internalModules.fs.statValues;
-						fillStatsArray(targetArray, stats, useBigint, 0);
-						return targetArray;
+						return processStat(stats);
 					} catch (err) {
-						// If throwIfNoEntry is false and error is ENOENT, return undefined
 						if (throwIfNoEntry === false && err.code === 'ENOENT') {
 							return undefined;
 						}
 						throw err;
 					}
-				}, kUsePromises);
+				},
+				() => globalFsAsync.lstat(path).then(processStat).catch(err => {
+					if (throwIfNoEntry === false && err.code === 'ENOENT') {
+						return undefined;
+					}
+					throw err;
+				}),
+				kUsePromises
+			);
 			},
 			fstat(fd, useBigint, kUsePromises, throwIfNoEntry) {
 				// Native binding populates global statValues/bigintStatValues arrays
 				// throwIfNoEntry defaults to true for backwards compatibility
-				return maybePromiseFromSync(() => {
-					try {
-						const stats = globalFs.fstatSync(fd);
-						// Populate the global stat arrays
-						const targetArray = useBigint
-							? globalThis.internalModules.fs.bigintStatValues
-							: globalThis.internalModules.fs.statValues;
-						fillStatsArray(targetArray, stats, useBigint, 0);
-						return targetArray;
-					} catch (err) {
-						// If throwIfNoEntry is false and error is EBADF, return undefined
-						if (
-							throwIfNoEntry === false &&
-							(err.code === 'ENOENT' || err.code === 'EBADF')
-						) {
+				const processStat = (stats) => {
+					const targetArray = useBigint
+						? globalThis.internalModules.fs.bigintStatValues
+						: globalThis.internalModules.fs.statValues;
+					fillStatsArray(targetArray, stats, useBigint, 0);
+					return targetArray;
+				};
+
+				return handleAsyncOperation(
+					() => {
+						try {
+							const stats = globalFs.fstatSync(fd);
+							return processStat(stats);
+						} catch (err) {
+							if (throwIfNoEntry === false && (err.code === 'ENOENT' || err.code === 'EBADF')) {
+								return undefined;
+							}
+							throw err;
+						}
+					},
+					() => globalFsAsync.fstat(fd).then(processStat).catch(err => {
+						if (throwIfNoEntry === false && (err.code === 'ENOENT' || err.code === 'EBADF')) {
 							return undefined;
 						}
 						throw err;
-					}
-				}, kUsePromises);
+					}),
+					kUsePromises
+				);
 			},
 			fsSync(path) {
 				return globalFs.fsSync(path);
 			},
 			unlink(path, kUsePromises) {
-				return maybePromiseFromSync(
-					() => globalFs.unlinkSync(path),
-					kUsePromises
-				);
+				return handleAsyncOperation(
+				() => globalFs.unlinkSync(path),
+				() => globalFsAsync.unlink(path),
+				kUsePromises
+			);
 			},
 
 			symlink(existingPath, newPath, type, kUsePromises) {
-				return maybePromiseFromSync(
-					() => globalFs.symlinkSync(existingPath, newPath),
-					kUsePromises
-				);
+				return handleAsyncOperation(
+				() => globalFs.symlinkSync(existingPath, newPath),
+				() => globalFsAsync.symlink(existingPath, newPath),
+				kUsePromises
+			);
 			},
 			writeBuffer(fd, buffer, offset, length, position, reqOrPromise) {
-				return maybePromiseFromSync(() => {
-					return globalFs.writeBuffer(
-						fd,
-						buffer,
-						offset,
-						length,
-						position
-					);
-				}, reqOrPromise);
+				return handleAsyncOperation(
+				() => globalFs.writeBuffer(fd, buffer, offset, length, position),
+				() => globalFsAsync.writeBuffer(fd, buffer, offset, length, position),
+				reqOrPromise
+			);
 			},
 			writeString(fd, string, position, encoding, reqOrPromise) {
 				// Promise or sync pattern
-				return maybePromiseFromSync(() => {
-					return globalFs.writeSync(
-						fd,
-						string,
-						position,
-						resolveFsEncodingValue(encoding)
-					);
-				}, reqOrPromise);
+				return handleAsyncOperation(
+				() => globalFs.writeSync(fd, string, position, resolveFsEncodingValue(encoding)),
+				() => globalFsAsync.write(fd, string, position, resolveFsEncodingValue(encoding)),
+				reqOrPromise
+			);
 			},
 			writeBuffers(fd, buffers, position, kUsePromises) {
 				// Native binding for writing multiple buffers (writev)
-				return maybePromiseFromSync(() => {
-					return globalFs.writeBuffersSync(fd, buffers, position);
-				}, kUsePromises);
+				return handleAsyncOperation(
+				() => globalFs.writeBuffersSync(fd, buffers, position),
+				() => globalFsAsync.writeBuffers(fd, buffers, position),
+				kUsePromises
+			);
 			},
 			writeFileUtf8(path, data, flags, mode, kUsePromises) {
-				return maybePromiseFromSync(
-					() => globalFs.writeFileUtf8(path, data, flags, mode),
-					kUsePromises
-				);
+				return handleAsyncOperation(
+				() => globalFs.writeFileUtf8(path, data, flags, mode),
+				() => globalFsAsync.writeFileUtf8(path, data, flags, mode),
+				kUsePromises
+			);
 			},
 			access(path, mode, kUsePromises) {
-				// Check file access permissions
-				return maybePromiseFromSync(() => {
-					const exists = globalFs.existsSync(path);
+			// Check file access permissions
+			const checkAccess = () => {
+				const exists = globalFs.existsSync(path);
+				if (!exists) {
+					const error = new Error(`ENOENT: no such file or directory, access '${path}'`);
+					error.code = 'ENOENT';
+					throw error;
+				}
+				return undefined;
+			};
+
+			return handleAsyncOperation(
+				checkAccess,
+				() => globalFsAsync.exists(path).then(exists => {
 					if (!exists) {
-						const error = new Error(
-							`ENOENT: no such file or directory, access '${path}'`
-						);
+						const error = new Error(`ENOENT: no such file or directory, access '${path}'`);
 						error.code = 'ENOENT';
 						throw error;
 					}
-					// In browser environment, all existing files are readable/writable
-					// mode parameter is ignored for simplicity
 					return undefined;
-				}, kUsePromises);
+				}),
+				kUsePromises
+			);
 			},
 			copyFile(src, dest, mode, kUsePromises) {
-				return maybePromiseFromSync(
-					() => globalFs.copyFileSync(src, dest, mode),
-					kUsePromises
-				);
+				return handleAsyncOperation(
+				() => globalFs.copyFileSync(src, dest, mode),
+				() => globalFsAsync.copyFile(src, dest, mode),
+				kUsePromises
+			);
 			},
 			readlink(path, encoding, kUsePromises) {
-				return maybePromiseFromSync(
-					() =>
-						globalFs.readlinkSync(
-							path,
-							resolveFsEncodingValue(encoding)
-						),
-					kUsePromises
-				);
+				return handleAsyncOperation(
+				() => globalFs.readlinkSync(path, resolveFsEncodingValue(encoding)),
+				() => globalFsAsync.readlink(path, resolveFsEncodingValue(encoding)),
+				kUsePromises
+			);
 			},
 			realpath(path, encoding, kUsePromises) {
-				// Return the absolute path if file exists, otherwise throw ENOENT
-				// Since we don't have symlinks, realpath just verifies the file exists
-				// and returns its path
-				return maybePromiseFromSync(() => {
-					// Check if file exists
-					if (!globalFs.existsSync(path)) {
-						const error = new Error(
-							`ENOENT: no such file or directory, realpath '${path}'`
-						);
+			// Return the absolute path if file exists, otherwise throw ENOENT
+			// Since we don't have symlinks, realpath just verifies the file exists
+			// and returns its path
+			const checkAndReturn = () => {
+				if (!globalFs.existsSync(path)) {
+					const error = new Error(`ENOENT: no such file or directory, realpath '${path}'`);
+					error.code = 'ENOENT';
+					throw error;
+				}
+				return path;
+			};
+
+			return handleAsyncOperation(
+				checkAndReturn,
+				() => globalFsAsync.exists(path).then(exists => {
+					if (!exists) {
+						const error = new Error(`ENOENT: no such file or directory, realpath '${path}'`);
 						error.code = 'ENOENT';
 						throw error;
 					}
-					// Return the path as-is since we don't have symlinks to resolve
-					// In a real filesystem, this would resolve symlinks and return canonical path
 					return path;
-				}, kUsePromises);
+				}),
+				kUsePromises
+			);
 			},
 			utimes(path, atime, mtime, kUsePromises) {
-				return maybePromiseFromSync(
-					() => globalFs.utimesSync(path, atime, mtime),
-					kUsePromises
-				);
+				return handleAsyncOperation(
+				() => globalFs.utimesSync(path, atime, mtime),
+				() => globalFsAsync.utimes(path, atime, mtime),
+				kUsePromises
+			);
 			},
 			futimes(fd, atime, mtime, kUsePromises) {
-				return maybePromiseFromSync(
-					() => globalFs.futimesSync(fd, atime, mtime),
-					kUsePromises
-				);
+				return handleAsyncOperation(
+				() => globalFs.futimesSync(fd, atime, mtime),
+				() => globalFsAsync.futimes(fd, atime, mtime),
+				kUsePromises
+			);
 			},
 			lutimes(path, atime, mtime, kUsePromises) {
-				return maybePromiseFromSync(() => {
-					// Update timestamps on symlink itself if symlink; otherwise behave like utimes
-					const { node } = globalFs.walk(path);
-					if (!node) {
-						const error = new Error(
-							`ENOENT: no such file or directory, lutimes '${path}'`
-						);
-						error.code = 'ENOENT';
-						throw error;
-					}
-					if (node.type !== 'symlink') {
-						// If not a symlink, match Node: apply to target file
-						return globalFs.utimesSync(path, atime, mtime);
-					}
-					// For symlink, store times on the link node
-					// Node.js binding receives UNIX timestamps in seconds, we store in milliseconds
-					node.atime =
-						typeof atime === 'number'
-							? atime * 1000
-							: atime.getTime();
-					node.mtime =
-						typeof mtime === 'number'
-							? mtime * 1000
-							: mtime.getTime();
-					node.ctime = Date.now();
-				}, kUsePromises);
+			const updateTimes = () => {
+				// Update timestamps on symlink itself if symlink; otherwise behave like utimes
+				const { node } = globalFs.walk(path);
+				if (!node) {
+					const error = new Error(`ENOENT: no such file or directory, lutimes '${path}'`);
+					error.code = 'ENOENT';
+					throw error;
+				}
+				if (node.type !== 'symlink') {
+					// If not a symlink, match Node: apply to target file
+					return globalFs.utimesSync(path, atime, mtime);
+				}
+				// For symlink, store times on the link node
+				// Node.js binding receives UNIX timestamps in seconds, we store in milliseconds
+				node.atime = typeof atime === 'number' ? atime * 1000 : atime.getTime();
+				node.mtime = typeof mtime === 'number' ? mtime * 1000 : mtime.getTime();
+				node.ctime = Date.now();
+			};
+
+			// For async, we need to walk first then update
+			const asyncUpdate = () => globalFsAsync.stat(path).then(stats => {
+				// This is simplified - ideally we'd have an async walk
+				// For now, fall back to sync for the walk part
+				return updateTimes();
+			});
+
+			return handleAsyncOperation(
+				updateTimes,
+				asyncUpdate,
+				kUsePromises
+			);
 			},
 			ftruncate(fd, len, kUsePromises) {
-				return maybePromiseFromSync(
-					() => globalFs.ftruncateSync(fd, len),
-					kUsePromises
-				);
+				return handleAsyncOperation(
+				() => globalFs.ftruncateSync(fd, len),
+				() => globalFsAsync.ftruncate(fd, len),
+				kUsePromises
+			);
 			},
 			chmod(path, mode, kUsePromises) {
 				// File permissions are simplified in browser environment
-				return maybePromiseFromSync(() => undefined, kUsePromises);
+				return handleAsyncOperation(
+				() => undefined,
+				Promise.resolve(undefined),
+				kUsePromises
+			);
 			},
 			fchmod(fd, mode, kUsePromises) {
 				// File permissions are simplified in browser environment
-				return maybePromiseFromSync(() => undefined, kUsePromises);
+				return handleAsyncOperation(
+				() => undefined,
+				Promise.resolve(undefined),
+				kUsePromises
+			);
 			},
 			chown(path, uid, gid, kUsePromises) {
 				// File ownership is not supported in browser environment
-				return maybePromiseFromSync(() => undefined, kUsePromises);
+				return handleAsyncOperation(
+				() => undefined,
+				Promise.resolve(undefined),
+				kUsePromises
+			);
 			},
 			fchown(fd, uid, gid, kUsePromises) {
 				// File ownership is not supported in browser environment
-				return maybePromiseFromSync(() => undefined, kUsePromises);
+				return handleAsyncOperation(
+				() => undefined,
+				Promise.resolve(undefined),
+				kUsePromises
+			);
 			},
 			fsync(fd, kUsePromises) {
 				// Always synced in memory filesystem
-				return maybePromiseFromSync(() => undefined, kUsePromises);
+				return handleAsyncOperation(
+				() => undefined,
+				Promise.resolve(undefined),
+				kUsePromises
+			);
 			},
 			fdatasync(fd, kUsePromises) {
 				// Always synced in memory filesystem
-				return maybePromiseFromSync(() => undefined, kUsePromises);
+				return handleAsyncOperation(
+				() => undefined,
+				Promise.resolve(undefined),
+				kUsePromises
+			);
 			},
 			link(existingPath, newPath, kUsePromises) {
-				return maybePromiseFromSync(
-					() => globalFs.linkSync(existingPath, newPath),
-					kUsePromises
-				);
+				return handleAsyncOperation(
+				() => globalFs.linkSync(existingPath, newPath),
+				() => globalFsAsync.link(existingPath, newPath),
+				kUsePromises
+			);
 			},
 		},
 		'fs'
