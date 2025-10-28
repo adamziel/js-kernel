@@ -160,6 +160,47 @@ const textEncoder =
 	return buffered;
 	};
 
+	// Async version - waits for stdin data to become available
+	const consumeStdinAsync = async (
+		streams: StdioStreams,
+		length: number
+	): Promise<Uint8Array> => {
+		const stdinStream = streams.stdin;
+		if (!stdinStream) {
+			return new Uint8Array(0);
+		}
+
+		// Try to read immediately
+		const immediate = consumeStdin(streams, length);
+		if (immediate && immediate.byteLength > 0) {
+			return immediate;
+		}
+
+		// If stream is ended/closed, return empty
+		if (stdinStream.isEnded() || stdinStream.isClosed()) {
+			return new Uint8Array(0);
+		}
+
+		// Wait for data to become available
+		return new Promise<Uint8Array>((resolve) => {
+			const pollInterval = setInterval(() => {
+				// Check if stream ended/closed
+				if (stdinStream.isEnded() || stdinStream.isClosed()) {
+					clearInterval(pollInterval);
+					resolve(new Uint8Array(0));
+					return;
+				}
+
+				// Try to read data
+				const bytes = consumeStdin(streams, length);
+				if (bytes && bytes.byteLength > 0) {
+					clearInterval(pollInterval);
+					resolve(bytes);
+				}
+			}, 10); // Poll every 10ms
+		});
+	};
+
 	const tryHandleStdioAsync = (
 		method: string,
 		args: unknown[],
@@ -196,23 +237,11 @@ const textEncoder =
 			});
 		}
 
-		// Handle read operations from stdin (0)
-		// readSync(fd, length, position)
-		if ((method === 'readSync' || method === 'read') && fd === 0) {
-			return Promise.resolve().then(() => {
-				const length = typeof args[1] === 'number' ? args[1] : 0;
-				const bytes = consumeStdin(streams, length);
-				if (!bytes) {
-					if (!warnedEmptyStdin) {
-						warnedEmptyStdin = true;
-						console.error(
-							'[kernel-fs] read(fd=0) returned no data; stdin piping is not implemented yet'
-						);
-					}
-					return new Uint8Array(0);
-				}
-				return bytes;
-			});
+		// Handle async read operations from stdin (0)
+		// read(fd, length, position) - truly asynchronous, waits for data
+		if (method === 'read' && fd === 0) {
+			const length = typeof args[1] === 'number' ? args[1] : 0;
+			return consumeStdinAsync(streams, length);
 		}
 
 		return null;
@@ -252,16 +281,16 @@ const textEncoder =
 				: chunk.length;
 		}
 
-		// Handle read operations from stdin (0)
-		// readSync(fd, length, position)
-		if ((method === 'readSync' || method === 'read') && fd === 0) {
+		// Handle synchronous read operations from stdin (0)
+		// readSync(fd, length, position) - returns immediately with available data
+		if (method === 'readSync' && fd === 0) {
 			const length = typeof args[1] === 'number' ? args[1] : 0;
 			const bytes = consumeStdin(streams, length);
 			if (!bytes) {
 				if (!warnedEmptyStdin) {
 					warnedEmptyStdin = true;
 					console.error(
-						'[kernel-fs] read(fd=0) returned no data; stdin piping is not implemented yet'
+						'[kernel-fs] readSync(fd=0) returned no data; stdin has no buffered data'
 					);
 				}
 				return new Uint8Array(0);

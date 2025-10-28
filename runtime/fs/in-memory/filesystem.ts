@@ -407,17 +407,20 @@ export class InMemoryFileSystem {
 			return new Uint8Array(data as Uint8Array);
 		}
 		if (typeof data === 'string') {
-			return this.textEncoder ? this.textEncoder.encode(data) : new Uint8Array(0);
+			return this.textEncoder
+				? this.textEncoder.encode(data)
+				: new Uint8Array(0);
 		}
-		if (
-			typeof ArrayBuffer !== 'undefined' &&
-			data instanceof ArrayBuffer
-		) {
+		if (typeof ArrayBuffer !== 'undefined' && data instanceof ArrayBuffer) {
 			return new Uint8Array(data);
 		}
 		if (ArrayBuffer.isView(data)) {
 			const view = data as ArrayBufferView;
-			return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+			return new Uint8Array(
+				view.buffer,
+				view.byteOffset,
+				view.byteLength
+			);
 		}
 		return new Uint8Array(0);
 	}
@@ -438,7 +441,7 @@ export class InMemoryFileSystem {
 			if (!this.warnedStdinRead) {
 				this.warnedStdinRead = true;
 				console.error(
-					'[kernel-fs] readSync(0, ...) called without stdin available; returning empty buffer'
+					`[kernel-fs] readSync(0, ...) called without stdin available (${typeof stdin}) ; returning empty buffer`
 				);
 			}
 			return new Uint8Array(0);
