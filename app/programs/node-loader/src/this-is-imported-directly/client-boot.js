@@ -100,24 +100,16 @@ function handleAsyncOperation(syncFn, asyncFn, kUsePromisesOrReq) {
 		'oncomplete' in kUsePromisesOrReq
 	) {
 		console.error('Callback mode');
-		Promise.race([
-			asyncFn().then(
-				(result) => {
-					console.error('Callback mode then', result);
-					kUsePromisesOrReq.oncomplete(null, result);
-				},
-				(err) => {
-					console.error('Callback mode catch', err);
-					kUsePromisesOrReq.oncomplete(err);
-				}
-			),
-			new Promise((resolve, reject) => {
-				setTimeout(() => {
-					console.error('Timeout promise');
-					reject(new Error('Timeout'));
-				}, 1000);
-			}),
-		]);
+		asyncFn().then(
+			(result) => {
+				console.error('Callback mode then', result);
+				kUsePromisesOrReq.oncomplete(null, result);
+			},
+			(err) => {
+				console.error('Callback mode catch', err);
+				kUsePromisesOrReq.oncomplete(err);
+			}
+		);
 		return;
 	}
 

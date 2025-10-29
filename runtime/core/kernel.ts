@@ -19,6 +19,7 @@ import {
 	CONTROL_MESSAGE_FS_RESPONSE,
 	CONTROL_MESSAGE_SPAWN_SYNC_REQUEST,
 	CONTROL_MESSAGE_SPAWN_SYNC_RESPONSE,
+	CONTROL_MESSAGE_STDIN_DATA,
 } from '../process/constants.ts';
 import {
 	normalizeSpawnOptions,
@@ -480,17 +481,18 @@ export class Kernel extends InMemoryFileSystem {
 				} catch {
 					// Ignore stream cleanup errors.
 				}
-				for (const listener of Array.from(exitListeners)) {
-					try {
-						listener(code);
-					} catch {
-						// Ignore listener failures.
-					}
+			for (const listener of Array.from(exitListeners)) {
+				try {
+					listener(code);
+				} catch {
+					// Ignore listener failures.
 				}
-				exitListeners.clear();
-				this.stdinStates.delete(resources.pid);
-			},
-		};
+			}
+			exitListeners.clear();
+			this.closeProcessStdin(resources.pid);
+			this.stdinStates.delete(resources.pid);
+		},
+	};
 
 		this.processes.set(resources.pid, record);
 		record.controlCleanup = this.installProcessControl(record);
@@ -1047,13 +1049,24 @@ export class Kernel extends InMemoryFileSystem {
 				return;
 			}
 
-			if (payload.type === CONTROL_MESSAGE_SPAWN_REQUEST) {
-				this.handleSpawnRequestFromProcess(
-					record,
-					payload.requestId,
-					payload.options
-				);
-			} else if (payload.type === CONTROL_MESSAGE_KILL_REQUEST) {
+		if (payload.type === CONTROL_MESSAGE_SPAWN_REQUEST) {
+			this.handleSpawnRequestFromProcess(
+				record,
+				payload.requestId,
+				payload.options
+			);
+		} else if (payload.type === CONTROL_MESSAGE_STDIN_DATA) {
+			const pid = typeof payload.pid === 'number' ? payload.pid : null;
+			if (pid && this.processes.has(pid)) {
+				const chunk = payload.chunk as KernelStdioChunk | undefined;
+				if (chunk !== undefined && chunk !== null) {
+					this.enqueueProcessStdin(pid, chunk);
+				}
+				if (payload.end) {
+					this.closeProcessStdin(pid);
+				}
+			}
+		} else if (payload.type === CONTROL_MESSAGE_KILL_REQUEST) {
 				const targetPid = payload.pid;
 				const requestId = payload.requestId;
 				const success =

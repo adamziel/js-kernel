@@ -13,6 +13,7 @@ import {
 	CONTROL_MESSAGE_REPORT_CHILD_EXIT,
 	CONTROL_MESSAGE_SPAWN_REQUEST,
 	CONTROL_MESSAGE_SPAWN_RESULT,
+	CONTROL_MESSAGE_STDIN_DATA,
 } from '../constants.ts';
 import { createProcessWorker } from '../worker-factory.ts';
 import {
@@ -410,6 +411,56 @@ let nextSpawnRequestId = 1;
 const pendingSpawnRequests = new Map<number, PendingSpawnRequest>();
 const localChildProcesses = new Map<number, LocalChildProcessRecord>();
 
+const cloneChunkForKernel = (
+	chunk: KernelStdioChunk | null | undefined
+): KernelStdioChunk | null => {
+	if (chunk === null || typeof chunk === 'undefined') {
+		return null;
+	}
+	if (typeof chunk === 'string') {
+		return chunk;
+	}
+	if (chunk instanceof Uint8Array) {
+		return chunk.slice();
+	}
+	if (chunk instanceof ArrayBuffer) {
+		return new Uint8Array(chunk);
+	}
+	if (ArrayBuffer.isView(chunk)) {
+		const view = chunk as ArrayBufferView;
+		return new Uint8Array(view.buffer, view.byteOffset, view.byteLength).slice();
+	}
+	return new Uint8Array(0);
+};
+
+const sendStdinToKernel = (
+	pid: number,
+	chunk: KernelStdioChunk | null | undefined,
+	end = false
+) => {
+	if (!controlPort || typeof pid !== 'number' || pid <= 0) {
+		return;
+	}
+	try {
+		const cloned = cloneChunkForKernel(chunk);
+		const transfer: ArrayBuffer[] = [];
+		if (cloned instanceof Uint8Array) {
+			transfer.push(cloned.buffer);
+		}
+		controlPort.postMessage(
+			{
+				type: CONTROL_MESSAGE_STDIN_DATA,
+				pid,
+				chunk: cloned,
+				end: Boolean(end),
+			},
+			transfer
+		);
+	} catch {
+		// Ignore failures while notifying kernel.
+	}
+};
+
 const disposeFsClient = () => {
 	if (!fsClient) {
 		return;
@@ -640,6 +691,13 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 		},
 		fs: processFs,
 		fsSync: fsClient!.sync,
+		notifyKernelStdin(
+			pid: number,
+			chunk: KernelStdioChunk | null | undefined,
+			end = false
+		) {
+			sendStdinToKernel(pid, chunk, end);
+		},
 		exit(code: number) {
 			const pid = childProcessState?.pid ?? -1;
 			// console.error('[processController.exit] CALLED! PID:', pid, 'code:', code);
@@ -963,6 +1021,37 @@ function createChildProcessHandle(
 			descriptor.fd === 2
 		) {
 			parentStderr = new MessagePortReadableStream(descriptor.parentPort);
+		}
+	}
+
+	if (parentStdin) {
+		const originalWrite = parentStdin.write.bind(parentStdin);
+		parentStdin.write = (chunk: KernelStdioChunk) => {
+			sendStdinToKernel(plan.pid, chunk, false);
+			return originalWrite(chunk);
+		};
+		const originalEnd =
+			typeof parentStdin.end === 'function'
+				? parentStdin.end.bind(parentStdin)
+				: null;
+		if (originalEnd) {
+			parentStdin.end = (chunk?: KernelStdioChunk) => {
+				if (typeof chunk !== 'undefined') {
+					sendStdinToKernel(plan.pid, chunk, false);
+				}
+				sendStdinToKernel(plan.pid, null, true);
+				return originalEnd(chunk);
+			};
+		}
+		const originalDestroy =
+			typeof parentStdin.destroy === 'function'
+				? parentStdin.destroy.bind(parentStdin)
+				: null;
+		if (originalDestroy) {
+			parentStdin.destroy = () => {
+				sendStdinToKernel(plan.pid, null, true);
+				originalDestroy();
+			};
 		}
 	}
 

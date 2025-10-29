@@ -568,27 +568,27 @@ export const spawn = (command, args = [], options = {}) => {
 						}
 					}
 				};
-			try {
-				handle =
-					await globalThis.processController.spawnNodeProcess(
-						spawnOptions
-					);
-			} catch (error) {
-				throw normalizeSpawnError(error);
-			}
-			if (
-				handle &&
-				handle.stdin &&
-				typeof handle.stdin.write === 'function' &&
-				commandText === 'node' &&
-				Array.isArray(argumentList) &&
-				argumentList.some((arg) =>
-					typeof arg === 'string' && arg.includes('esbuild')
-				)
-			) {
-				const originalWrite = handle.stdin.write.bind(handle.stdin);
-				handle.stdin.write = (chunk) => originalWrite(chunk);
-			}
+		try {
+			handle =
+				await globalThis.processController.spawnNodeProcess(
+					spawnOptions
+				);
+		} catch (error) {
+			throw normalizeSpawnError(error);
+		}
+		if (
+			handle &&
+			handle.stdin &&
+			typeof handle.stdin.write === 'function' &&
+			commandText === 'node' &&
+			Array.isArray(argumentList) &&
+			argumentList.some((arg) =>
+				typeof arg === 'string' && arg.includes('esbuild')
+			)
+		) {
+			const originalWrite = handle.stdin.write.bind(handle.stdin);
+			handle.stdin.write = (chunk) => originalWrite(chunk);
+		}
 				if (typeof handle.threadId === 'number') {
 					child.pid = handle.threadId;
 				}
