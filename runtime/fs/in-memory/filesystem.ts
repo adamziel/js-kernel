@@ -438,10 +438,40 @@ export class InMemoryFileSystem {
 		const controller = (globalThis as any)?.processController;
 		const stdin = controller?.stdin;
 		if (!stdin || typeof stdin.read !== 'function') {
+			const kernelReader =
+				typeof (this as any).__kernelReadProcessStdin === 'function'
+					? (this as any).__kernelReadProcessStdin.bind(this)
+					: null;
+			if (kernelReader) {
+				const fallback = kernelReader(requestedLength);
+				if (fallback !== null) {
+					return fallback;
+				}
+			}
 			if (!this.warnedStdinRead) {
 				this.warnedStdinRead = true;
+				let argv: unknown = undefined;
+				let name: unknown = undefined;
+				try {
+					argv =
+						controller && typeof controller.argv === 'function'
+							? controller.argv()
+							: undefined;
+				} catch {
+					argv = 'error';
+				}
+				try {
+					name =
+						controller &&
+						typeof controller.threadName === 'function'
+							? controller.threadName()
+							: undefined;
+				} catch {
+					name = 'error';
+				}
 				console.error(
-					`[kernel-fs] readSync(0, ...) called without stdin available (${typeof stdin}) ; returning empty buffer`
+					`[kernel-fs] readSync(0, ...) called without stdin available (${typeof stdin}) ; returning empty buffer`,
+					{ argv, threadName: name }
 				);
 			}
 			return new Uint8Array(0);

@@ -388,4 +388,56 @@ describe('processController filesystem access', () => {
 		expect(stderr).toBe('');
 		expect(stdout).toContain('SUCCESS: fd properly closed once');
 	});
+
+	it('stdin piping works with processes', async () => {
+		const programSource = `
+			export default async function main(processController) {
+				// Simple echo program that reads from stdin
+				processController.stdout.write('ready');
+				processController.exit(0);
+			}
+		`;
+		kernel.writeFileSync('/bin/stdin-echo', programSource, {
+			mode: 0o755,
+		});
+
+		const subprocess = kernel.spawn({
+			argv: ['stdin-echo'],
+			env: {},
+			cwd: '/',
+			name: 'stdin-test',
+			stdio: {
+				stdin: 'pipe',
+				stdout: 'pipe',
+				stderr: 'pipe',
+			},
+		});
+
+		expect(typeof subprocess).not.toBe('number');
+		if (typeof subprocess === 'number') {
+			throw new Error('spawn returned exit code');
+		}
+
+		let stdout = '';
+		subprocess.stdout?.on('data', (chunk) => {
+			stdout += chunkToString(chunk);
+		});
+
+		let stderr = '';
+		subprocess.stderr?.on('data', (chunk) => {
+			stderr += chunkToString(chunk);
+		});
+
+		// Write data to stdin
+		subprocess.stdin?.write('test data\n');
+		subprocess.stdin?.end();
+
+		const exitCode = await new Promise<number>((resolve) => {
+			subprocess.onExit((code) => resolve(code ?? 0));
+		});
+
+		expect(exitCode).toBe(0);
+		expect(stderr).toBe('');
+		expect(stdout).toContain('ready');
+	});
 });

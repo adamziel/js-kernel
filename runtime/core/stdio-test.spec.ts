@@ -100,7 +100,51 @@ describe('stdio integration', () => {
 
 		await new Promise<void>((resolve) => proc.onExit(() => resolve()));
 
+	const payload = extractJson(output);
+	expect(payload).toEqual({ first: 'abc', second: 'defgh' });
+}, 10000);
+
+	it('supports fs.readSync copying into provided buffer', async () => {
+		const kernel = new Kernel();
+		kernel.mkdirSync('/bin', { recursive: true });
+		kernel.setEnv('PATH', '/bin');
+
+		const program = `
+			const decoder = new TextDecoder();
+			export default async function main(processController) {
+				const buffer = new Uint8Array(16);
+				const bytesRead = Number(processController.fsSync.readSync(0, buffer, 4, 5, null));
+				const chunk = buffer.slice(4, 4 + bytesRead);
+				processController.stdout.write(
+					JSON.stringify({
+						bytesRead,
+						text: decoder.decode(chunk),
+					})
+				);
+				return 0;
+			}
+		`;
+		kernel.writeFileSync('/bin/fs-read-buffer', program);
+
+		const proc = kernel.spawn({
+			argv: ['fs-read-buffer'],
+			env: {},
+			cwd: '/',
+			name: 'fs-read-buffer',
+			stdio: { stdin: 'pipe', stdout: 'pipe' },
+		}) as KernelSubprocess;
+
+		let output = '';
+		proc.stdout?.on('data', (chunk) => {
+			output += typeof chunk === 'string' ? chunk : decoder.decode(chunk);
+		});
+
+		proc.stdin?.write('stdin-data');
+		proc.stdin?.end();
+
+		await new Promise<void>((resolve) => proc.onExit(() => resolve()));
+
 		const payload = extractJson(output);
-		expect(payload).toEqual({ first: 'abc', second: 'defgh' });
+		expect(payload).toEqual({ bytesRead: 5, text: 'stdin' });
 	}, 10000);
 });

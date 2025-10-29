@@ -109,6 +109,13 @@ interface KernelProcessRecord {
 	logPrefix?: string;
 }
 
+interface KernelStdinState {
+	buffer: Uint8Array;
+	closed: boolean;
+	waitBuffer: SharedArrayBuffer | null;
+	waitView: Int32Array | null;
+}
+
 export interface KernelSubprocessExtras {
 	pid: number;
 	stdin?: MessagePortWritableStream;
@@ -130,11 +137,15 @@ export class Kernel extends InMemoryFileSystem {
 		PATH: '/bin',
 	};
 
+	private readonly textEncoder = new TextEncoder();
 	private pidCounter = 1;
 	private readonly processes = new Map<number, KernelProcessRecord>();
 	private readonly textDecoder = new TextDecoder();
 	// Global filesystem operation queue to ensure sequential execution across all processes
 	private fsQueue = Promise.resolve();
+	private activeFsProcessRecord: KernelProcessRecord | null = null;
+	private readonly stdinStates = new Map<number, KernelStdinState>();
+	private readonly stdinWaitTimeoutMs = 1000;
 
 	constructor() {
 		super();
@@ -339,6 +350,24 @@ export class Kernel extends InMemoryFileSystem {
 						descriptor.hostPort,
 						{ debugLabel: `stdin -> ${stdinLogPrefix}` }
 					);
+					const originalWrite = parentStdin.write.bind(parentStdin);
+					parentStdin.write = (chunk: KernelStdioChunk) => {
+						this.enqueueProcessStdin(resources.pid, chunk);
+						return originalWrite(chunk);
+					};
+					const originalEnd = parentStdin.end.bind(parentStdin);
+					parentStdin.end = (chunk?: KernelStdioChunk) => {
+						if (typeof chunk !== 'undefined') {
+							this.enqueueProcessStdin(resources.pid, chunk);
+						}
+						this.closeProcessStdin(resources.pid);
+						return originalEnd(chunk);
+					};
+					const originalDestroy = parentStdin.destroy.bind(parentStdin);
+					parentStdin.destroy = () => {
+						this.closeProcessStdin(resources.pid);
+						originalDestroy();
+					};
 				} else if (descriptor.fd === 1) {
 					parentStdout = new MessagePortReadableStream(
 						descriptor.hostPort
@@ -459,6 +488,7 @@ export class Kernel extends InMemoryFileSystem {
 					}
 				}
 				exitListeners.clear();
+				this.stdinStates.delete(resources.pid);
 			},
 		};
 
@@ -496,6 +526,119 @@ export class Kernel extends InMemoryFileSystem {
 		return subprocess;
 	}
 
+	private ensureStdinState(pid: number): KernelStdinState {
+		let state = this.stdinStates.get(pid);
+		if (!state) {
+			const waitSupported =
+				typeof Atomics === 'object' &&
+				typeof Atomics.wait === 'function' &&
+				typeof SharedArrayBuffer === 'function';
+			const waitBuffer = waitSupported ? new SharedArrayBuffer(4) : null;
+			state = {
+				buffer: new Uint8Array(0),
+				closed: false,
+				waitBuffer,
+				waitView: waitBuffer ? new Int32Array(waitBuffer) : null,
+			};
+			this.stdinStates.set(pid, state);
+		}
+		return state;
+	}
+
+	private enqueueProcessStdin(pid: number, chunk: KernelStdioChunk) {
+		if (chunk === null || typeof chunk === 'undefined') {
+			return;
+		}
+		const state = this.ensureStdinState(pid);
+		let bytes: Uint8Array;
+		if (typeof chunk === 'string') {
+			bytes = this.textEncoder.encode(chunk);
+		} else {
+			bytes = chunk.slice();
+		}
+		if (bytes.byteLength === 0) {
+			return;
+		}
+		if (state.buffer.byteLength === 0) {
+			state.buffer = bytes;
+		} else {
+			const merged = new Uint8Array(
+				state.buffer.byteLength + bytes.byteLength
+			);
+			merged.set(state.buffer, 0);
+			merged.set(bytes, state.buffer.byteLength);
+			state.buffer = merged;
+		}
+		this.notifyStdinWaiters(state);
+	}
+
+	private closeProcessStdin(pid: number) {
+		const state = this.ensureStdinState(pid);
+		state.closed = true;
+		this.notifyStdinWaiters(state);
+	}
+
+	private notifyStdinWaiters(state: KernelStdinState) {
+		if (!state.waitView) {
+			return;
+		}
+		try {
+			Atomics.store(state.waitView, 0, 1);
+			Atomics.notify(state.waitView, 0);
+		} catch {
+			state.waitView = null;
+			state.waitBuffer = null;
+		}
+	}
+
+	private readFromActiveProcessStdin(
+		requestedLength: number
+	): Uint8Array | null {
+		const record = this.activeFsProcessRecord;
+		if (!record) {
+			return null;
+		}
+		const state = this.ensureStdinState(record.pid);
+		if (state.buffer.byteLength === 0 && !state.closed && state.waitView) {
+			const deadline = Date.now() + this.stdinWaitTimeoutMs;
+			while (
+				state.buffer.byteLength === 0 &&
+				!state.closed &&
+				Date.now() < deadline
+			) {
+				try {
+					Atomics.store(state.waitView, 0, 0);
+					const remaining = deadline - Date.now();
+					if (remaining <= 0) {
+						break;
+					}
+					Atomics.wait(state.waitView, 0, 0, remaining);
+				} catch {
+					state.waitView = null;
+					state.waitBuffer = null;
+					break;
+				}
+			}
+		}
+		const available = state.buffer.byteLength;
+		if (available === 0) {
+			return new Uint8Array(0);
+		}
+		if (requestedLength <= 0 || requestedLength >= available) {
+			const result = state.buffer;
+			state.buffer = new Uint8Array(0);
+			return result;
+		}
+		const head = state.buffer.slice(0, requestedLength);
+		state.buffer = state.buffer.slice(requestedLength);
+		return head;
+	}
+
+	// Exposed for the InMemoryFileSystem fallback via duck typing.
+	public __kernelReadProcessStdin(length: number): Uint8Array | null {
+		return this.readFromActiveProcessStdin(length);
+	}
+
 	private installProcessFs(record: KernelProcessRecord) {
 		const handleFsMessage = async (event: MessageEvent) => {
 			const payload = event.data;
@@ -521,12 +664,16 @@ export class Kernel extends InMemoryFileSystem {
 			// This prevents race conditions when multiple processes access the same files
 			this.fsQueue = this.fsQueue
 				.then(async () => {
+					const previousActive = this.activeFsProcessRecord;
+					this.activeFsProcessRecord = record;
 					let response;
 					try {
 						const result = await this.invokeFsMethod(method, args);
 						response = serializeFsResponse(result);
 					} catch (error) {
 						response = serializeFsError(error);
+					} finally {
+						this.activeFsProcessRecord = previousActive;
 					}
 					try {
 						record.fsPort.postMessage({

@@ -101,6 +101,23 @@ const stdinRemainders = new WeakMap<StdioStreams['stdin'], Uint8Array>();
 const textEncoder =
 	typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
 
+	const toReadResult = (bytes: Uint8Array, lengthOverride?: number) => {
+		const view =
+			typeof lengthOverride === 'number'
+				? bytes.subarray(0, lengthOverride)
+				: bytes;
+		const primitive = () =>
+			typeof lengthOverride === 'number'
+				? lengthOverride
+				: view.byteLength ?? 0;
+		(view as any).valueOf = primitive;
+		(view as any).bytesRead = primitive();
+		if (typeof Symbol === 'function' && Symbol.toPrimitive) {
+			(view as any)[Symbol.toPrimitive] = primitive;
+		}
+		return view;
+	};
+
 	const toUint8Array = (chunk: unknown): Uint8Array => {
 		if (chunk instanceof Uint8Array) {
 			return chunk;
@@ -122,6 +139,31 @@ const textEncoder =
 			return new Uint8Array(chunk);
 		}
 		return new Uint8Array(0);
+	};
+
+	const toWritableBufferView = (buffer: unknown): Uint8Array | null => {
+		if (
+			typeof Buffer !== 'undefined' &&
+			typeof Buffer.isBuffer === 'function' &&
+			Buffer.isBuffer(buffer)
+		) {
+			return buffer as Uint8Array;
+		}
+		if (buffer instanceof Uint8Array) {
+			return buffer;
+		}
+		if (buffer instanceof ArrayBuffer) {
+			return new Uint8Array(buffer);
+		}
+		if (ArrayBuffer.isView(buffer)) {
+			const view = buffer as ArrayBufferView;
+			return new Uint8Array(
+				view.buffer,
+				view.byteOffset,
+				view.byteLength
+			);
+		}
+		return null;
 	};
 
 	const consumeStdin = (
@@ -241,7 +283,9 @@ const textEncoder =
 		// read(fd, length, position) - truly asynchronous, waits for data
 		if (method === 'read' && fd === 0) {
 			const length = typeof args[1] === 'number' ? args[1] : 0;
-			return consumeStdinAsync(streams, length);
+			return consumeStdinAsync(streams, length).then((bytes) =>
+				toReadResult(bytes, Math.min(length, bytes.byteLength))
+			);
 		}
 
 		return null;
@@ -284,6 +328,50 @@ const textEncoder =
 		// Handle synchronous read operations from stdin (0)
 		// readSync(fd, length, position) - returns immediately with available data
 		if (method === 'readSync' && fd === 0) {
+			const nodeBuffer = toWritableBufferView(args[1]);
+			if (nodeBuffer) {
+				const offset =
+					typeof args[2] === 'number' && Number.isFinite(args[2])
+						? Math.max(0, Math.floor(args[2]))
+						: 0;
+				const requestedLengthRaw =
+					typeof args[3] === 'number' && Number.isFinite(args[3])
+						? Math.floor(args[3])
+						: null;
+				const available = Math.max(
+					0,
+					nodeBuffer.byteLength - offset
+				);
+				const requestedLength =
+					requestedLengthRaw === null
+						? available
+						: Math.max(0, Math.min(available, requestedLengthRaw));
+				if (available <= 0 || requestedLength <= 0) {
+					return toReadResult(new Uint8Array(0), 0);
+				}
+				const bytes = consumeStdin(streams, requestedLength);
+				if (!bytes) {
+					if (!warnedEmptyStdin) {
+						warnedEmptyStdin = true;
+						console.error(
+							'[kernel-fs] readSync(fd=0) returned no data; stdin has no buffered data'
+						);
+					}
+					return toReadResult(new Uint8Array(0), 0);
+				}
+				const copyLength = Math.min(
+					requestedLength,
+					bytes.byteLength
+				);
+				if (copyLength > 0) {
+					nodeBuffer.set(
+						bytes.subarray(0, copyLength),
+						offset
+					);
+				}
+				return toReadResult(bytes, copyLength);
+			}
+
 			const length = typeof args[1] === 'number' ? args[1] : 0;
 			const bytes = consumeStdin(streams, length);
 			if (!bytes) {
@@ -293,9 +381,9 @@ const textEncoder =
 						'[kernel-fs] readSync(fd=0) returned no data; stdin has no buffered data'
 					);
 				}
-				return new Uint8Array(0);
+				return toReadResult(new Uint8Array(0), 0);
 			}
-			return bytes;
+			return toReadResult(bytes);
 		}
 
 		return null;
