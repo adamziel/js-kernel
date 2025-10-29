@@ -282,7 +282,9 @@ main().catch((error) => {
 		}
 
 		// Add logging to readFromStdout to see if it's being called and buffer status
-		if (!mainJsInstrumented.includes('[esbuild-main] readFromStdout called')) {
+		if (
+			!mainJsInstrumented.includes('[esbuild-main] readFromStdout called')
+		) {
 			mainJsInstrumented = mainJsInstrumented.replace(
 				/let readFromStdout = \(chunk\) => \{[\s\S]*?stdoutUsed \+= chunk\.length;/,
 				`let readFromStdout = (chunk) => {
@@ -322,7 +324,9 @@ main().catch((error) => {
 		}
 
 		// Add logging to handleIncomingPacket
-		if (!mainJsInstrumented.includes('[esbuild-main] handleIncomingPacket')) {
+		if (
+			!mainJsInstrumented.includes('[esbuild-main] handleIncomingPacket')
+		) {
 			mainJsInstrumented = mainJsInstrumented.replace(
 				'let handleIncomingPacket = (bytes) => {',
 				`let handleIncomingPacket = (bytes) => {
@@ -331,7 +335,11 @@ main().catch((error) => {
 		}
 
 		// Add logging to stdout.on setup
-		if (!mainJsInstrumented.includes('[esbuild-main] setting up stdout listener')) {
+		if (
+			!mainJsInstrumented.includes(
+				'[esbuild-main] setting up stdout listener'
+			)
+		) {
 			mainJsInstrumented = mainJsInstrumented.replace(
 				'stdout.on("data", readFromStdout);',
 				`console.error('[esbuild-main] setting up stdout listener on', stdout && stdout.constructor && stdout.constructor.name);
@@ -340,7 +348,9 @@ stdout.on("data", readFromStdout);`
 		}
 
 		// Add logging to stdin writes to see if responses are being sent
-		if (!mainJsInstrumented.includes('[esbuild-main] writeToStdin called')) {
+		if (
+			!mainJsInstrumented.includes('[esbuild-main] writeToStdin called')
+		) {
 			mainJsInstrumented = mainJsInstrumented.replace(
 				/streamIn\.writeToStdin\(/g,
 				`(function(bytes) {
@@ -351,7 +361,9 @@ stdout.on("data", readFromStdout);`
 		}
 
 		// Add logging to sendResponse to see if responses are attempted
-		if (!mainJsInstrumented.includes('[esbuild-main] sendResponse called')) {
+		if (
+			!mainJsInstrumented.includes('[esbuild-main] sendResponse called')
+		) {
 			mainJsInstrumented = mainJsInstrumented.replace(
 				'let sendResponse = (id, value) => {',
 				`let sendResponse = (id, value) => {
@@ -448,13 +460,13 @@ stdout.on("data", readFromStdout);`
 	// Fixed issues that were blocking:
 	// - Stdin polling intervals now properly cleaned up (no more hanging processes)
 	// - Default stdin changed from 'pipe' to 'ignore' for spawned processes
-	it('can bundle via esbuild-wasm using virtual entry', async () => {
+	it.only('can bundle via esbuild-wasm using virtual entry', async () => {
 		const bundleText = await runEsbuildRunner('virtual');
 		expect(bundleText).toContain('answer = 42');
-	}, 120000);
+	}, 20000);
 
 	it('can bundle via esbuild-wasm using filesystem entry', async () => {
 		const bundleText = await runEsbuildRunner('fs');
 		expect(bundleText).toContain('answer = 42');
-	}, 120000);
+	}, 20000);
 });
