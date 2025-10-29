@@ -296,13 +296,14 @@ export class MessagePortWritableStream extends BasicEventEmitter<WritableEvents>
 			const item = this.queue.shift()!
 			if (item.type === 'data') {
 				try {
-					this.logChunk(item.chunk)
-					if (typeof item.chunk !== 'string') {
-						console.log(
-							'[ipc:writable] sending',
-							describeChunk(item.chunk)
-						)
-					}
+					// Disabled to prevent stdout pollution in IPC streams
+					// this.logChunk(item.chunk)
+					// if (typeof item.chunk !== 'string') {
+					// 	console.log(
+					// 		'[ipc:writable] sending',
+					// 		describeChunk(item.chunk)
+					// 	)
+					// }
 					this.port.postMessage({ type: 'data', payload: item.chunk })
 				} catch {
 					this.destroy()

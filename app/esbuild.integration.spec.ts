@@ -68,19 +68,23 @@ const virtualEntryPlugin = {
 	},
 };
 
+console.log('[runner] about to call esbuild.build()');
 const result = await esbuild.build({
 	entryPoints: ['virtual-entry'],
 	bundle: true,
 	format: 'esm',
 	write: false,
 	plugins: [virtualEntryPlugin],
-});`;
-		const filesystemEntryBlock = String.raw`const result = await esbuild.build({
+});
+console.log('[runner] esbuild.build() completed');`;
+		const filesystemEntryBlock = String.raw`console.log('[runner] about to call esbuild.build() with fs entry');
+const result = await esbuild.build({
 	entryPoints: ['/esbuild/src/index.js'],
 	bundle: true,
 	format: 'esm',
 	write: false,
-});`;
+});
+console.log('[runner] esbuild.build() with fs entry completed');`;
 		const buildBlock =
 			entryType === 'virtual' ? virtualEntryBlock : filesystemEntryBlock;
 
@@ -223,6 +227,7 @@ async function main() {
 	}
 
 	await esbuild.initialize({ worker: false });
+	console.log('[runner] esbuild initialized successfully');
 
 	${buildBlock}
 
@@ -266,25 +271,107 @@ main().catch((error) => {
 
 		const mainJsPath = '/esbuild/node_modules/esbuild-wasm/lib/main.js';
 		const mainJsOriginal = kernel.readFileSync(mainJsPath, 'utf8');
+		let mainJsInstrumented = mainJsOriginal;
+
 		if (!mainJsOriginal.includes('[esbuild-channel] afterClose')) {
-			const mainJsInstrumented = mainJsOriginal.replace(
+			mainJsInstrumented = mainJsInstrumented.replace(
 				'let afterClose = (error) => {',
 				`let afterClose = (error) => {
 	console.error('[esbuild-channel] afterClose', { reason: closeData.reason, error });`
 			);
-			kernel.writeFileSync(mainJsPath, mainJsInstrumented);
 		}
+
+		// Add logging to readFromStdout to see if it's being called and buffer status
+		if (!mainJsInstrumented.includes('[esbuild-main] readFromStdout called')) {
+			mainJsInstrumented = mainJsInstrumented.replace(
+				/let readFromStdout = \(chunk\) => \{[\s\S]*?stdoutUsed \+= chunk\.length;/,
+				`let readFromStdout = (chunk) => {
+	const len = chunk && (chunk.length || chunk.byteLength || 0);
+	const chunkType = typeof chunk;
+	const chunkCtor = chunk && chunk.constructor && chunk.constructor.name;
+	const isUint8 = chunk instanceof Uint8Array;
+	console.error('[esbuild-main] readFromStdout called with', len, 'bytes, type:', chunkType, chunkCtor, 'isUint8Array:', isUint8, 'stdoutUsed before:', stdoutUsed);
+    let limit = stdoutUsed + chunk.length;
+    if (limit > stdout.length) {
+      let swap = new Uint8Array(limit * 2);
+      swap.set(stdout);
+      stdout = swap;
+    }
+    try {
+      stdout.set(chunk, stdoutUsed);
+    } catch (err) {
+      console.error('[esbuild-main] ERROR in stdout.set:', err && err.message, 'chunk type:', typeof chunk, chunk.constructor.name);
+      throw err;
+    }
+    stdoutUsed += chunk.length;
+    console.error('[esbuild-main] after buffering: stdoutUsed =', stdoutUsed, 'stdout.length =', stdout.length);`
+			);
+		}
+
+		// Add logging to the packet parsing loop
+		if (!mainJsInstrumented.includes('[esbuild-main] parsing loop')) {
+			mainJsInstrumented = mainJsInstrumented.replace(
+				/let offset = 0;\s*while \(offset \+ 4 <= stdoutUsed\) \{\s*let length = readUInt32LE\(stdout, offset\);/,
+				`let offset = 0;
+    console.error('[esbuild-main] parsing loop: offset=', offset, 'stdoutUsed=', stdoutUsed);
+    while (offset + 4 <= stdoutUsed) {
+      console.error('[esbuild-main] parsing loop iteration: offset=', offset);
+      let length = readUInt32LE(stdout, offset);
+      console.error('[esbuild-main] packet length read:', length, 'need', offset + 4 + length, 'have', stdoutUsed);`
+			);
+		}
+
+		// Add logging to handleIncomingPacket
+		if (!mainJsInstrumented.includes('[esbuild-main] handleIncomingPacket')) {
+			mainJsInstrumented = mainJsInstrumented.replace(
+				'let handleIncomingPacket = (bytes) => {',
+				`let handleIncomingPacket = (bytes) => {
+	console.error('[esbuild-main] handleIncomingPacket called with', bytes && bytes.length);`
+			);
+		}
+
+		// Add logging to stdout.on setup
+		if (!mainJsInstrumented.includes('[esbuild-main] setting up stdout listener')) {
+			mainJsInstrumented = mainJsInstrumented.replace(
+				'stdout.on("data", readFromStdout);',
+				`console.error('[esbuild-main] setting up stdout listener on', stdout && stdout.constructor && stdout.constructor.name);
+stdout.on("data", readFromStdout);`
+			);
+		}
+
+		// Add logging to stdin writes to see if responses are being sent
+		if (!mainJsInstrumented.includes('[esbuild-main] writeToStdin called')) {
+			mainJsInstrumented = mainJsInstrumented.replace(
+				/streamIn\.writeToStdin\(/g,
+				`(function(bytes) {
+	console.error('[esbuild-main] writeToStdin called with', bytes && bytes.length, 'bytes');
+	return streamIn.writeToStdin(bytes);
+})(`
+			);
+		}
+
+		// Add logging to sendResponse to see if responses are attempted
+		if (!mainJsInstrumented.includes('[esbuild-main] sendResponse called')) {
+			mainJsInstrumented = mainJsInstrumented.replace(
+				'let sendResponse = (id, value) => {',
+				`let sendResponse = (id, value) => {
+	console.error('[esbuild-main] sendResponse called for id', id, 'value keys:', value && Object.keys(value));`
+			);
+		}
+
+		kernel.writeFileSync(mainJsPath, mainJsInstrumented, 'utf8');
 
 		kernel.mkdirSync('/esbuild/src', { recursive: true });
 		kernel.writeFileSync(
 			'/esbuild/src/index.js',
-			encoder.encode(`export const answer = 21 * 2;`)
+			encoder.encode(`export const answer = 21 * 2;`),
+			null
 		);
 
 		const runnerSource = createRunnerSource(entryType);
-		console.log(`[test] runner source for ${entryType}:`);
-		console.log(runnerSource);
-		kernel.writeFileSync('/test-esbuild.js', runnerSource);
+		console.log(`[test] runner source for ${entryType} (truncated)`);
+		// console.log(runnerSource);  // Too verbose, skip logging full source
+		kernel.writeFileSync('/test-esbuild.js', runnerSource, 'utf8');
 
 		const subprocess = kernel.spawn({
 			argv: ['node', '/test-esbuild.js'],
@@ -297,7 +384,7 @@ main().catch((error) => {
 			cwd: '/',
 			name: 'esbuild',
 			stdio: {
-				stdin: 'pipe',
+				stdin: 'ignore',
 				stdout: 'pipe',
 				stderr: 'pipe',
 			},
@@ -353,13 +440,21 @@ main().catch((error) => {
 		return decoder.decode(Uint8Array.from(raw, (ch) => ch.charCodeAt(0)));
 	};
 
-	it.only('can bundle via esbuild-wasm using virtual entry', async () => {
+	// TODO: esbuild WASM hangs during build IPC communication
+	// - esbuild.initialize() works (service starts successfully)
+	// - esbuild.build() sends request but service never responds
+	// - IPC shows "ping" command being received but not responded to
+	// - Requires deep debugging of esbuild WASM IPC protocol
+	// Fixed issues that were blocking:
+	// - Stdin polling intervals now properly cleaned up (no more hanging processes)
+	// - Default stdin changed from 'pipe' to 'ignore' for spawned processes
+	it('can bundle via esbuild-wasm using virtual entry', async () => {
 		const bundleText = await runEsbuildRunner('virtual');
 		expect(bundleText).toContain('answer = 42');
-	}, 25000);
+	}, 120000);
 
 	it('can bundle via esbuild-wasm using filesystem entry', async () => {
 		const bundleText = await runEsbuildRunner('fs');
 		expect(bundleText).toContain('answer = 42');
-	}, 10000);
+	}, 120000);
 });

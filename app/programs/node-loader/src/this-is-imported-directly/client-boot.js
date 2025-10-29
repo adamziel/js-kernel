@@ -99,21 +99,17 @@ function handleAsyncOperation(syncFn, asyncFn, kUsePromisesOrReq) {
 		typeof kUsePromisesOrReq === 'object' &&
 		'oncomplete' in kUsePromisesOrReq
 	) {
-		console.error('Callback mode');
 		asyncFn().then(
 			(result) => {
-				console.error('Callback mode then', result);
 				kUsePromisesOrReq.oncomplete(null, result);
 			},
 			(err) => {
-				console.error('Callback mode catch', err);
 				kUsePromisesOrReq.oncomplete(err);
 			}
 		);
 		return;
 	}
 
-	console.error('Promise mode');
 	// Promise mode - return the genuine async promise
 	return asyncFn();
 }
@@ -2612,8 +2608,7 @@ globalThis.internalModules = {
 					}
 				};
 
-				console.error('read', fd, length, position, reqOrPromise);
-				const promiseMaybe = handleAsyncOperation(
+				return handleAsyncOperation(
 					() =>
 						processReadBuffer(
 							globalFs.readSync(fd, length, position)
@@ -2624,9 +2619,6 @@ globalThis.internalModules = {
 							.then(processReadBuffer),
 					reqOrPromise
 				);
-				console.error('✅ read', promiseMaybe);
-
-				return promiseMaybe;
 			},
 			readdir(path, encoding, withFileTypes, kUsePromises) {
 				return handleAsyncOperation(
@@ -5795,7 +5787,7 @@ const ensureNodeSpawnBridge = () => {
 					options.stdio?.stdin &&
 					typeof options.stdio.stdin === 'string'
 						? options.stdio.stdin
-						: 'pipe',
+						: 'ignore',
 				stdout:
 					options.stdio?.stdout &&
 					typeof options.stdio.stdout === 'string'

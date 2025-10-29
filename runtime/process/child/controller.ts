@@ -428,7 +428,11 @@ const cloneChunkForKernel = (
 	}
 	if (ArrayBuffer.isView(chunk)) {
 		const view = chunk as ArrayBufferView;
-		return new Uint8Array(view.buffer, view.byteOffset, view.byteLength).slice();
+		return new Uint8Array(
+			view.buffer,
+			view.byteOffset,
+			view.byteLength
+		).slice();
 	}
 	return new Uint8Array(0);
 };

@@ -52,6 +52,7 @@ export const createKernelFsClient = (
 	let nextRequestId = 1;
 	const pendingAsync = new Map<number, AsyncResolver>();
 	let warnedEmptyStdin = false;
+	const activeStdinPolls = new Set<NodeJS.Timeout>();
 
 	const handlePumpMessage = (event: MessageEvent) => {
 		const payload = event.data;
@@ -223,12 +224,26 @@ const textEncoder =
 			return new Uint8Array(0);
 		}
 
+		// Check if already disposed
+		if (disposed) {
+			return new Uint8Array(0);
+		}
+
 		// Wait for data to become available
 		return new Promise<Uint8Array>((resolve) => {
 			const pollInterval = setInterval(() => {
+				// Check if disposed
+				if (disposed) {
+					clearInterval(pollInterval);
+					activeStdinPolls.delete(pollInterval);
+					resolve(new Uint8Array(0));
+					return;
+				}
+
 				// Check if stream ended/closed
 				if (stdinStream.isEnded() || stdinStream.isClosed()) {
 					clearInterval(pollInterval);
+					activeStdinPolls.delete(pollInterval);
 					resolve(new Uint8Array(0));
 					return;
 				}
@@ -237,9 +252,13 @@ const textEncoder =
 				const bytes = consumeStdin(streams, length);
 				if (bytes && bytes.byteLength > 0) {
 					clearInterval(pollInterval);
+					activeStdinPolls.delete(pollInterval);
 					resolve(bytes);
 				}
 			}, 10); // Poll every 10ms
+
+			// Track the interval so it can be cleaned up on dispose
+			activeStdinPolls.add(pollInterval);
 		});
 	};
 
@@ -521,6 +540,13 @@ const requestAsync = (
 			return;
 		}
 		disposed = true;
+
+		// Clear all active stdin polling intervals
+		for (const interval of activeStdinPolls) {
+			clearInterval(interval);
+		}
+		activeStdinPolls.clear();
+
 		try {
 			pumpWorker.postMessage({ type: 'dispose' });
 		} catch {

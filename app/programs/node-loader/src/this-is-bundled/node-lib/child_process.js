@@ -313,11 +313,12 @@ const runHandler = async (child, command, args, options, handler) => {
 		stderr: child.stderr,
 		writeStdout: (data) => {
 			var _a;
+			console.log('[writeStdout] called with', data && (data.length || data.byteLength), 'bytes, child.stdout exists:', !!child.stdout);
 			try {
 				if (
-					commandText === 'node' &&
-					Array.isArray(argumentList) &&
-					argumentList.some((arg) =>
+					command === 'node' &&
+					Array.isArray(args) &&
+					args.some((arg) =>
 						typeof arg === 'string' && arg.includes('esbuild')
 					)
 				) {
@@ -350,20 +351,21 @@ const runHandler = async (child, command, args, options, handler) => {
 						preview,
 					});
 				}
-			} catch {
-				// ignore logging errors
+			} catch (err) {
+				console.error('[writeStdout] logging error:', err && err.message);
 			}
 			(_a = child.stdout) === null || _a === void 0
 				? void 0
 				: _a.write(data);
+			console.log('[writeStdout] child.stdout.write called');
 		},
 		writeStderr: (data) => {
 			var _a;
 			try {
 				if (
-					commandText === 'node' &&
-					Array.isArray(argumentList) &&
-					argumentList.some((arg) =>
+					command === 'node' &&
+					Array.isArray(args) &&
+					args.some((arg) =>
 						typeof arg === 'string' && arg.includes('esbuild')
 					)
 				) {
@@ -599,9 +601,26 @@ export const spawn = (command, args = [], options = {}) => {
 				}
 				const attachReadable = (stream, onData, onEnd) => {
 					if (!stream) {
+						console.log('[child_process] attachReadable: stream is null/undefined');
 						return;
 					}
-					const detachData = stream.on('data', onData);
+					console.log('[child_process] attachReadable: setting up listeners on', stream && stream.constructor && stream.constructor.name);
+					const wrappedOnData = (chunk) => {
+						console.log('[child_process] attachReadable data event:', chunk && (chunk.length || chunk.byteLength || 0), 'bytes');
+						// Skip string chunks to prevent console.log pollution of binary IPC streams
+						if (typeof chunk === 'string') {
+							console.log('[child_process] skipping string chunk:', chunk.slice(0, 100));
+							return;
+						}
+						try {
+							console.log('[child_process] about to call onData');
+							onData(chunk);
+							console.log('[child_process] onData returned successfully');
+						} catch (error) {
+							console.error('[child_process] ERROR in onData:', error && error.message, error && error.stack);
+						}
+					};
+					const detachData = stream.on('data', wrappedOnData);
 					const endOnce = (() => {
 						let ended = false;
 						return () => {
@@ -609,6 +628,7 @@ export const spawn = (command, args = [], options = {}) => {
 								return;
 							}
 							ended = true;
+							console.log('[child_process] attachReadable end/close event');
 							onEnd();
 						};
 					})();
