@@ -296,18 +296,15 @@ export class MessagePortWritableStream extends BasicEventEmitter<WritableEvents>
 			const item = this.queue.shift()!
 			if (item.type === 'data') {
 				try {
-					// Disabled to prevent stdout pollution in IPC streams
-					// this.logChunk(item.chunk)
-					// if (typeof item.chunk !== 'string') {
-					// 	console.log(
-					// 		'[ipc:writable] sending',
-					// 		describeChunk(item.chunk)
-					// 	)
-					// }
+					// Logging disabled to prevent infinite recursion:
+					// console.log in write()/flushQueue() causes stdout capture,
+					// which triggers write() again, creating infinite loop
 					this.port.postMessage({ type: 'data', payload: item.chunk })
-				} catch {
+				} catch (err) {
+					// Error reporting without stdio pollution - errors thrown will
+					// bubble up and appear in browser console without triggering recursion
 					this.destroy()
-					return
+					throw new Error(`MessagePort write failed: ${err && (err as any).message}`)
 				}
 				continue
 			}

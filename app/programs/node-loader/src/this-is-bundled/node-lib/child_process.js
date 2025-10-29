@@ -519,8 +519,8 @@ export const spawn = (command, args = [], options = {}) => {
 						if (handle && handle.stdin) {
 							try {
 								handle.stdin.write(chunk);
-							} catch {
-								// ignore
+							} catch (err) {
+								// Silently ignore write errors to avoid polluting stdio
 							}
 							return;
 						}
@@ -555,11 +555,12 @@ export const spawn = (command, args = [], options = {}) => {
 						pendingInput.splice(0);
 						return;
 					}
-					for (const chunk of pendingInput.splice(0)) {
+					const chunks = pendingInput.splice(0);
+					for (const chunk of chunks) {
 						try {
 							handle.stdin.write(chunk);
-						} catch {
-							// ignore
+						} catch (err) {
+							// Silently ignore write errors to avoid polluting stdio
 						}
 					}
 					if (stdinEnded) {
@@ -601,23 +602,17 @@ export const spawn = (command, args = [], options = {}) => {
 				}
 				const attachReadable = (stream, onData, onEnd) => {
 					if (!stream) {
-						console.log('[child_process] attachReadable: stream is null/undefined');
 						return;
 					}
-					console.log('[child_process] attachReadable: setting up listeners on', stream && stream.constructor && stream.constructor.name);
 					const wrappedOnData = (chunk) => {
-						console.log('[child_process] attachReadable data event:', chunk && (chunk.length || chunk.byteLength || 0), 'bytes');
 						// Skip string chunks to prevent console.log pollution of binary IPC streams
 						if (typeof chunk === 'string') {
-							console.log('[child_process] skipping string chunk:', chunk.slice(0, 100));
 							return;
 						}
 						try {
-							console.log('[child_process] about to call onData');
 							onData(chunk);
-							console.log('[child_process] onData returned successfully');
 						} catch (error) {
-							console.error('[child_process] ERROR in onData:', error && error.message, error && error.stack);
+							// Errors will bubble up to browser console without polluting stdio
 						}
 					};
 					const detachData = stream.on('data', wrappedOnData);
@@ -628,7 +623,6 @@ export const spawn = (command, args = [], options = {}) => {
 								return;
 							}
 							ended = true;
-							console.log('[child_process] attachReadable end/close event');
 							onEnd();
 						};
 					})();
