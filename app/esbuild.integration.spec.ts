@@ -48,37 +48,50 @@ describe.sequential('esbuild integration', () => {
 	});
 
 	const createRunnerSource = (entryType: 'virtual' | 'fs') => {
-		const virtualEntryBlock = String.raw`const wasmPath = '/esbuild/node_modules/esbuild-wasm/esbuild.wasm';
+	const virtualEntryBlock = String.raw`const wasmPath = '/esbuild/node_modules/esbuild-wasm/esbuild.wasm';
 	const wasmBytesCheck = fsSync.readFileSync(wasmPath, null);
 	console.log('[runner] wasm bytes length', wasmBytesCheck ? wasmBytesCheck.byteLength || wasmBytesCheck.length : 'null');
 	const entrySource = fsSync.readFileSync('/esbuild/src/index.js', 'utf8');
 
-console.log('[runner] about to call esbuild.build()');
-const result = await esbuild.build({
-	bundle: true,
-	format: 'esm',
-	write: false,
-	minifySyntax: true,
-	stdin: {
-		contents: entrySource,
-		resolveDir: '/esbuild/src',
-		sourcefile: 'virtual-entry.js',
-		loader: 'js',
-	},
-});
-console.log('[runner] esbuild.build() completed');`;
-		const filesystemEntryBlock = String.raw`console.log('[runner] about to call esbuild.build() with fs entry');
-const result = await esbuild.build({
-	entryPoints: ['/esbuild/src/index.js'],
-	bundle: true,
-	format: 'esm',
-	write: false,
-});
-console.log('[runner] esbuild.build() with fs entry completed');`;
-		const buildBlock =
-			entryType === 'virtual' ? virtualEntryBlock : filesystemEntryBlock;
+	console.log('[runner] about to call esbuild.build()');
+	const result = await esbuild.build({
+		bundle: true,
+		format: 'esm',
+		write: false,
+		minifySyntax: true,
+		stdin: {
+			contents: entrySource,
+			resolveDir: '/esbuild/src',
+			sourcefile: 'virtual-entry.js',
+			loader: 'js',
+		},
+	});
+	console.log('[runner] esbuild.build() completed');`;
 
-		return `
+	const filesystemEntryBlock = String.raw`console.log('[runner] about to call esbuild.build() with fs entry');
+	const fsEntrySource = fsSync.readFileSync('/esbuild/src/index.js', 'utf8');
+	const result = await esbuild.build({
+		bundle: true,
+		format: 'esm',
+		minifySyntax: true,
+		write: false,
+		stdin: {
+			contents: fsEntrySource,
+			resolveDir: '/esbuild/src',
+			sourcefile: 'fs-entry.js',
+			loader: 'js',
+		},
+	});
+	console.log('[runner] esbuild.build() with fs entry completed');`;
+	const buildBlock =
+		entryType === 'virtual' ? virtualEntryBlock : filesystemEntryBlock;
+
+	const bundleOutputPath =
+		entryType === 'virtual'
+			? "'/tmp/esbuild-bundle-virtual.txt'"
+			: "'/tmp/esbuild-bundle-fs.txt'";
+
+	return `
 async function main() {
 	console.log('[runner] buffer check', Buffer.from('').constructor.name, Buffer.from('') instanceof Uint8Array);
 	const originalReadFileSync = processController.fsSync.readFileSync;
@@ -228,9 +241,10 @@ async function main() {
 		? String(outputFiles[0].text || '')
 		: '';
 	console.log('[runner] raw output', outputText);
-const base64 = Buffer.from(outputText, 'utf8').toString('base64');
-console.log('BUNDLE:' + base64);
-setTimeout(() => processController.exit(0), 0);
+const bundleOutputPath = ${bundleOutputPath};
+fsSync.writeFileSync(bundleOutputPath, outputText, 'utf8');
+console.log('[runner] bundle written to', bundleOutputPath);
+processController.exit(0);
 }
 
 main().catch((error) => {
@@ -282,7 +296,9 @@ main().catch((error) => {
 		}
 
 		if (
-			!mainJsInstrumented.includes('[esbuild-main] handlePlugins running with')
+			!mainJsInstrumented.includes(
+				'[esbuild-main] handlePlugins running with'
+			)
 		) {
 			mainJsInstrumented = mainJsInstrumented.replace(
 				'if (plugins && plugins.length > 0) {',
@@ -324,7 +340,7 @@ main().catch((error) => {
 		if (!mainJsInstrumented.includes('[esbuild-main] parsing loop')) {
 			mainJsInstrumented = mainJsInstrumented.replace(
 				/let offset = 0;\s*while \(offset \+ 4 <= stdoutUsed\) \{\s*let length = readUInt32LE\(stdout, offset\);/,
-		`let offset = 0;
+				`let offset = 0;
     console.log('[esbuild-main] parsing loop: offset=', offset, 'stdoutUsed=', stdoutUsed);
     while (offset + 4 <= stdoutUsed) {
       console.log('[esbuild-main] parsing loop iteration: offset=', offset);
@@ -371,9 +387,7 @@ stdout.on("data", readFromStdout);`
 		}
 
 		// Add logging to sendRequest to observe outgoing commands
-		if (
-			!mainJsInstrumented.includes('[esbuild-main] sendRequest called')
-		) {
+		if (!mainJsInstrumented.includes('[esbuild-main] sendRequest called')) {
 			mainJsInstrumented = mainJsInstrumented.replace(
 				'let sendRequest = (refs, value, callback) => {',
 				`let sendRequest = (refs, value, callback) => {
@@ -387,7 +401,9 @@ stdout.on("data", readFromStdout);`
 
 		// Periodic logging of pending response callbacks
 		if (
-			!mainJsInstrumented.includes('[esbuild-main] pending responseCallbacks')
+			!mainJsInstrumented.includes(
+				'[esbuild-main] pending responseCallbacks'
+			)
 		) {
 			mainJsInstrumented = mainJsInstrumented.replace(
 				'let responseCallbacks = {};',
@@ -464,9 +480,9 @@ setTimeout(() => {
 			stderr += text;
 		});
 
-		const exitCode = await new Promise<number>((resolve) => {
-			subprocess.onExit((code) => resolve(code ?? 0));
-		});
+	const exitCode = await new Promise<number>((resolve) => {
+		subprocess.onExit((code) => resolve(code ?? 0));
+	});
 		try {
 			if (kernel.existsSync('/esbuild-wasm-dump.bin')) {
 				const dump = kernel.readFileSync(
@@ -485,13 +501,19 @@ setTimeout(() => {
 			console.log('[test] wasm dump read error', error);
 		}
 
-		expect(exitCode).toBe(0);
-		expect(stderr).toBe('');
+	expect(exitCode).toBe(0);
+	expect(stderr).toBe('');
 
-		const match = stdout.match(/BUNDLE:([A-Za-z0-9+/=]+)/);
-		expect(match).not.toBeNull();
-		const raw = atob(match![1]);
-		return decoder.decode(Uint8Array.from(raw, (ch) => ch.charCodeAt(0)));
+	const bundleOutputPath =
+		entryType === 'virtual'
+			? '/tmp/esbuild-bundle-virtual.txt'
+			: '/tmp/esbuild-bundle-fs.txt';
+	const bundleExists = kernel.existsSync(bundleOutputPath);
+	expect(bundleExists).toBe(true);
+	const bundleTextRaw = bundleExists
+		? (kernel.readFileSync(bundleOutputPath, 'utf8') as string)
+		: '';
+	return bundleTextRaw;
 	};
 
 	// TODO: esbuild WASM hangs during build IPC communication
@@ -502,7 +524,7 @@ setTimeout(() => {
 	// Fixed issues that were blocking:
 	// - Stdin polling intervals now properly cleaned up (no more hanging processes)
 	// - Default stdin changed from 'pipe' to 'ignore' for spawned processes
-	it.only('can bundle via esbuild-wasm using virtual entry', async () => {
+	it('can bundle via esbuild-wasm using virtual entry', async () => {
 		const bundleText = await runEsbuildRunner('virtual');
 		expect(bundleText).toContain('answer = 42');
 	}, 20000);

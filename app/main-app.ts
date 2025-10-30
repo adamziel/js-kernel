@@ -2,7 +2,8 @@ import { installBusybox } from '../runtime/busybox/index.ts';
 import { installCustomPrograms } from './programs/index.ts';
 import { Kernel } from '../runtime/index.ts';
 import type { KernelStdioChunk } from '../runtime/ipc/message-port.ts';
-import { BlobReader, ZipReader, Uint8ArrayWriter } from "@zip.js/zip.js";
+import { BlobReader, ZipReader, Uint8ArrayWriter } from '@zip.js/zip.js';
+import esBundlerZipUrl from './programs/node-loader/es-bundler.zip?url';
 
 const kernel = new Kernel();
 globalThis.kernel = kernel;
@@ -39,19 +40,186 @@ kernel.writeFileSync('/bin/node_modules/node-gyp/bin/node-gyp.js', '', {
 
 // ------------------------------------------------------------
 
-type RunProgramOptions = {
-	requestId?: number | string
-	debug?: boolean
+const sharedTextDecoder = new TextDecoder();
+const sharedTextEncoder = new TextEncoder();
+
+async function unzipKernelFile(
+	targetKernel: Kernel,
+	sourcePath: string,
+	targetDir: string
+) {
+	const data = targetKernel.readFileSync(sourcePath, null) as ArrayBuffer;
+	const zipReader = new ZipReader(new BlobReader(new Blob([data])));
+	const entries = await zipReader.getEntries();
+	for (const entry of entries) {
+		if (!entry.getData) continue;
+		const writer = new Uint8ArrayWriter();
+		const content = await entry.getData(writer);
+		const outputPath = `${targetDir}/${entry.filename}`.replace(/\\/g, '/');
+		const dirPath = outputPath.substring(0, outputPath.lastIndexOf('/'));
+		if (dirPath) {
+			targetKernel.mkdirSync(dirPath, { recursive: true });
+		}
+		if (entry.directory) {
+			targetKernel.mkdirSync(outputPath, { recursive: true });
+			continue;
+		}
+		targetKernel.writeFileSync(outputPath, content);
+	}
+	await zipReader.close();
 }
 
-globalThis.runProgram = function(
+const createFsRunnerSource = () => `
+async function main() {
+\tconst esbuild = require('/esbuild/node_modules/esbuild-wasm/lib/main.js');
+\tconst fsSync = processController.fsSync;
+\tawait esbuild.initialize({ worker: false });
+\tconst fsEntrySource = fsSync.readFileSync('/esbuild/src/index.js', 'utf8');
+\tconst result = await esbuild.build({
+\t\tbundle: true,
+\t\tformat: 'esm',
+\t\tminifySyntax: true,
+\t\twrite: false,
+\t\tstdin: {
+\t\t\tcontents: fsEntrySource,
+\t\t\tresolveDir: '/esbuild/src',
+\t\t\tsourcefile: 'fs-entry.js',
+\t\t\tloader: 'js',
+\t\t},
+\t});
+\tconst outputFiles = Array.isArray(result.outputFiles) ? result.outputFiles : [];
+\tconst outputText = outputFiles.length > 0 && outputFiles[0]
+\t\t? String(outputFiles[0].text || '')
+\t\t: '';
+\tfsSync.writeFileSync('/tmp/esbuild-bundle-fs.txt', outputText, 'utf8');
+\tprocessController.stdout.write(outputText);
+\tprocessController.exit(0);
+}
+
+main().catch((error) => {
+\tconst message =
+\t\terror && typeof error === 'object' && 'stack' in error
+\t\t\t? String(error.stack)
+\t\t\t: String(error ?? 'Unknown error');
+\tprocessController.stderr.write(message);
+\tprocessController.exit(1);
+});
+`;
+
+export async function testEsbuildLikeInTests() {
+	kernel.mkdirSync('/esbuild-experiments', { recursive: true });
+	await fetchAndWriteKernelFile(
+		`/programs/node-loader/es-bundler.zip`,
+		`/esbuild-experiments/esbuild.zip`
+	);
+	// Unzip rest.zip into the dist directory
+	await unzipToKernelDirectory(
+		`/esbuild-experiments/esbuild.zip`,
+		`/esbuild-experiments`
+	);
+
+	// Move node_modules to the top level so it can always be found by wp-scripts.
+	kernel.renameSync('/node_modules', '/node_modules_old');
+	kernel.renameSync('/esbuild-experiments/node_modules', '/node_modules');
+
+	console.log('Creating simple block...');
+	await TestCases.createSimpleBlock();
+	console.log('Renaming src...');
+	kernel.renameSync('/jsx/src', '/esbuild-experiments/src');
+	console.log('Running esbuild...');
+
+	const response = await fetch(esBundlerZipUrl);
+	if (!response.ok) {
+		throw new Error('Failed to fetch es-bundler.zip');
+	}
+	const bundleZip = new Uint8Array(await response.arrayBuffer());
+
+	kernel.mkdirSync('/esbuild', { recursive: true });
+	kernel.writeFileSync('/esbuild/es-bundler.zip', bundleZip, null);
+	await unzipKernelFile(kernel, '/esbuild/es-bundler.zip', '/esbuild');
+
+	kernel.mkdirSync('/esbuild/src', { recursive: true });
+	kernel.writeFileSync(
+		'/esbuild/src/index.js',
+		sharedTextEncoder.encode(`export const answer = 21 * 2;`),
+		null
+	);
+
+	const runnerSource = createFsRunnerSource();
+	kernel.writeFileSync('/test-esbuild.js', runnerSource, 'utf8');
+
+	const subprocess = kernel.spawn({
+		argv: [
+			'node',
+			'/esbuild-experiments/bundle.js',
+			'/esbuild-experiments/src',
+		],
+		// argv: ['node', '/test-esbuild.js'],
+		env: {
+			PATH: '/bin',
+			TMPDIR: '/tmp',
+			HOME: '/home',
+			ESBUILD_LOG_LEVEL: 'debug',
+		},
+		cwd: '/',
+		name: 'esbuild-test-runner',
+		stdio: {
+			stdin: 'pipe',
+			stdout: 'pipe',
+			stderr: 'pipe',
+		},
+	});
+
+	if (typeof subprocess === 'number') {
+		throw new Error('Failed to spawn esbuild test runner');
+	}
+
+	let stdout = '';
+	let stderr = '';
+
+	subprocess.stdout?.on('data', (chunk) => {
+		const text =
+			typeof chunk === 'string' ? chunk : sharedTextDecoder.decode(chunk);
+		stdout += text;
+	});
+
+	subprocess.stderr?.on('data', (chunk) => {
+		const text =
+			typeof chunk === 'string' ? chunk : sharedTextDecoder.decode(chunk);
+		stderr += text;
+	});
+
+	const exitCode: number = await new Promise((resolve) => {
+		subprocess.onExit((code) => resolve(code ?? 0));
+	});
+
+	const bundleText = kernel.existsSync('/tmp/esbuild-bundle-fs.txt')
+		? (kernel.readFileSync('/tmp/esbuild-bundle-fs.txt', 'utf8') as string)
+		: '';
+
+	return {
+		exitCode,
+		stdout,
+		stderr,
+		bundle: bundleText,
+	};
+}
+
+globalThis.testEsbuildLikeInTests = testEsbuildLikeInTests;
+
+type RunProgramOptions = {
+	requestId?: number | string;
+	debug?: boolean;
+};
+
+globalThis.runProgram = function (
 	argv: string[],
 	cwd: string = '/bin',
 	options: RunProgramOptions = {}
 ) {
-	const stdioDecoder = new TextDecoder()
+	const stdioDecoder = new TextDecoder();
 	const toText = (chunk: KernelStdioChunk) =>
-		typeof chunk === 'string' ? chunk : stdioDecoder.decode(chunk)
+		typeof chunk === 'string' ? chunk : stdioDecoder.decode(chunk);
 
 	const worker = kernel.spawn({
 		argv,
@@ -69,34 +237,34 @@ globalThis.runProgram = function(
 		throw new Error('Failed to spawn program');
 	}
 
-	const detachListeners: Array<() => void> = []
+	const detachListeners: Array<() => void> = [];
 	const forward = (type: 'stdout' | 'stderr', chunk: KernelStdioChunk) => {
 		self.postMessage({
 			type,
 			data: toText(chunk),
 			requestId: options.requestId ?? null,
-		})
-	}
+		});
+	};
 
 	if (worker.stdout) {
 		const unsubscribe = worker.stdout.on('data', (chunk) => {
-			forward('stdout', chunk)
-		})
-		detachListeners.push(unsubscribe)
+			forward('stdout', chunk);
+		});
+		detachListeners.push(unsubscribe);
 	}
 
 	if (worker.stderr) {
 		const unsubscribe = worker.stderr.on('data', (chunk) => {
-			forward('stderr', chunk)
-		})
-		detachListeners.push(unsubscribe)
+			forward('stderr', chunk);
+		});
+		detachListeners.push(unsubscribe);
 	}
 
 	return new Promise((resolve) => {
 		worker.onExit((code) => {
 			for (const detach of detachListeners) {
 				try {
-					detach()
+					detach();
 				} catch {
 					// Ignore listener cleanup errors.
 				}
@@ -105,11 +273,11 @@ globalThis.runProgram = function(
 				type: 'program-exit',
 				data: { code, argv },
 				requestId: options.requestId ?? null,
-			})
-			resolve(code)
-		})
-	})
-}
+			});
+			resolve(code);
+		});
+	});
+};
 
 // Shell fun
 
@@ -156,7 +324,9 @@ self.addEventListener('message', (event) => {
 			self.postMessage({
 				type: 'program-error',
 				error:
-					error instanceof Error ? error.message : String(error ?? 'Unknown error'),
+					error instanceof Error
+						? error.message
+						: String(error ?? 'Unknown error'),
 				requestId: event.data.requestId ?? null,
 			});
 		});
@@ -199,7 +369,9 @@ async function resolveImportRequest(
 		const normalizedPath = normalizeImportPath(requestPath, referrer);
 
 		if (isBareModuleSpecifier(normalizedPath)) {
-			const moduleSource = await getCjsModuleWrapperSource(normalizedPath);
+			const moduleSource = await getCjsModuleWrapperSource(
+				normalizedPath
+			);
 			replyPort.postMessage({
 				ok: true,
 				body: moduleSource,
@@ -226,7 +398,10 @@ async function resolveImportRequest(
 
 function normalizeImportPath(pathOrUrl: string, referrer: string | null) {
 	try {
-		if (pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')) {
+		if (
+			pathOrUrl.startsWith('http://') ||
+			pathOrUrl.startsWith('https://')
+		) {
 			const url = new URL(pathOrUrl);
 			return url.pathname;
 		}
@@ -246,7 +421,8 @@ function normalizeImportPath(pathOrUrl: string, referrer: string | null) {
 					return `${base}${pathOrUrl}`;
 				}
 				const lastSlash = base.lastIndexOf('/');
-				const baseDir = lastSlash >= 0 ? base.slice(0, lastSlash + 1) : '/';
+				const baseDir =
+					lastSlash >= 0 ? base.slice(0, lastSlash + 1) : '/';
 				return `${baseDir}${pathOrUrl}`;
 			}
 			return `/${pathOrUrl}`;
@@ -258,7 +434,9 @@ function normalizeImportPath(pathOrUrl: string, referrer: string | null) {
 }
 
 function readModuleSource(importPath: string): string {
-	const result = kernel.readFileSync(importPath, 'utf8') as string | Uint8Array;
+	const result = kernel.readFileSync(importPath, 'utf8') as
+		| string
+		| Uint8Array;
 	if (typeof result === 'string') {
 		return result;
 	}
@@ -276,7 +454,11 @@ function isBareModuleSpecifier(value: string) {
 	if (!value) {
 		return false;
 	}
-	if (value.startsWith('/') || value.startsWith('./') || value.startsWith('../')) {
+	if (
+		value.startsWith('/') ||
+		value.startsWith('./') ||
+		value.startsWith('../')
+	) {
 		return false;
 	}
 	if (value.includes('://')) {
@@ -301,15 +483,17 @@ async function getCjsModuleWrapperSource(specifier: string) {
 			[
 				requireTarget,
 				specifier,
-				specifier.startsWith('node:') ? requireTarget : `node:${requireTarget}`,
+				specifier.startsWith('node:')
+					? requireTarget
+					: `node:${requireTarget}`,
 			].filter((value) => typeof value === 'string' && value.length > 0)
 		)
 	);
 	const lines = [
 		'const moduleModule = globalThis.coreModules && globalThis.coreModules.module;',
-		'const require = moduleModule && moduleModule.Module && moduleModule.Module._load'
-			+ ' ? (request) => moduleModule.Module._load(request, null, false)'
-			+ ' : globalThis.require;',
+		'const require = moduleModule && moduleModule.Module && moduleModule.Module._load' +
+			' ? (request) => moduleModule.Module._load(request, null, false)' +
+			' : globalThis.require;',
 		`if (typeof require !== 'function') { throw new Error('require is not available to load ${specifier}'); }`,
 		'let mod;',
 		'try {',
@@ -346,7 +530,8 @@ function stripNodePrefix(specifier: string) {
 
 function snapshotCjsModuleExports(specifier: string) {
 	const sanitized = specifier.replace(/^node:/, '');
-	const coreModules = (globalThis as unknown as Record<string, any>).coreModules;
+	const coreModules = (globalThis as unknown as Record<string, any>)
+		.coreModules;
 	if (coreModules) {
 		const candidates = new Set<string>();
 		if (typeof specifier === 'string' && specifier.length > 0) {
@@ -424,7 +609,14 @@ function collectExportNames(moduleExports: Record<string, unknown> | Function) {
 	}
 
 	const filtered = Array.from(names).filter((name) => {
-		if (name === 'default' || name === '__esModule' || name === 'prototype' || name === 'constructor' || name === 'length' || name === 'name') {
+		if (
+			name === 'default' ||
+			name === '__esModule' ||
+			name === 'prototype' ||
+			name === 'constructor' ||
+			name === 'length' ||
+			name === 'name'
+		) {
 			return false;
 		}
 		if (!IDENTIFIER_REGEX.test(name)) {
@@ -453,19 +645,19 @@ async function unzip(zipData: Uint8Array): Promise<Record<string, Uint8Array>> {
 	// Convert Uint8Array to Blob - create a new ArrayBuffer copy to ensure proper type
 	const arrayBuffer = zipData.slice().buffer as ArrayBuffer;
 	const zipBlob = new Blob([arrayBuffer]);
-	
+
 	// Create a BlobReader to read the zip file
 	const zipFileReader = new BlobReader(zipBlob);
-	
+
 	// Create a ZipReader to read the zip content
 	const zipReader = new ZipReader(zipFileReader);
-	
+
 	// Get all entries from the zip file
 	const entries = await zipReader.getEntries();
-	
+
 	// Extract all entries into an object
 	const result: Record<string, Uint8Array> = {};
-	
+
 	for (const entry of entries) {
 		// Skip if it's a directory (directories end with /)
 		if (entry.directory) {
@@ -473,18 +665,18 @@ async function unzip(zipData: Uint8Array): Promise<Record<string, Uint8Array>> {
 		} else {
 			// Create a Uint8ArrayWriter to receive the data
 			const writer = new Uint8ArrayWriter();
-			
+
 			// Get the entry data and write it to the writer
 			const data = await entry.getData!(writer);
-			
+
 			// Store the data in the result object
 			result[entry.filename] = data;
 		}
 	}
-	
+
 	// Close the zip reader
 	await zipReader.close();
-	
+
 	return result;
 }
 
@@ -494,14 +686,14 @@ async function unzipToKernelDirectory(
 ) {
 	// Read the zip file from the kernel filesystem
 	const zipData = kernel.readFileSync(zipPath, undefined) as Uint8Array;
-	
+
 	// Unzip the data
 	const unzipped = await unzip(zipData);
-	
+
 	// Write all files to the target directory
 	for (const [filePath, fileData] of Object.entries(unzipped)) {
 		const fullPath = `${targetDirectory}/${filePath}`;
-		
+
 		// Check if this is a directory (ends with /)
 		if (filePath.endsWith('/')) {
 			kernel.mkdirSync(fullPath.slice(0, -1), { recursive: true });
@@ -512,8 +704,12 @@ async function unzipToKernelDirectory(
 			kernel.writeFileSync(fullPath, fileData, {});
 		}
 	}
-	
-	console.log(`Unzipped ${Object.keys(unzipped).length} entries from ${zipPath} to ${targetDirectory}`);
+
+	console.log(
+		`Unzipped ${
+			Object.keys(unzipped).length
+		} entries from ${zipPath} to ${targetDirectory}`
+	);
 }
 
 async function fetchAndWriteKernelFile(
@@ -604,7 +800,10 @@ class TestCases {
 		// @TODO: How do I know when the program is done with all the async stuff?
 		// We need to delay this execution until it is.
 		kernel.mkdirSync('/bin/node_modules/.ignored', { recursive: true });
-		kernel.renameSync('/bin/node_modules/pnpm', '/bin/node_modules/.ignored/pnpm');
+		kernel.renameSync(
+			'/bin/node_modules/pnpm',
+			'/bin/node_modules/.ignored/pnpm'
+		);
 		// try {
 		// 	await runProgram(
 		// 		[
@@ -649,8 +848,14 @@ class TestCases {
 	static async testPnpmLocal() {
 		await TestCases.installNpm();
 		kernel.mkdirSync('/tar-experiments', { recursive: true });
-		await runProgram(['node', '/bin/npm', 'pack', '@wordpress/scripts'], '/tar-experiments');
-		await runProgram(['extract-tar', '/tar-experiments/wordpress-scripts-30.25.0.tgz'], '/tar-experiments');
+		await runProgram(
+			['node', '/bin/npm', 'pack', '@wordpress/scripts'],
+			'/tar-experiments'
+		);
+		await runProgram(
+			['extract-tar', '/tar-experiments/wordpress-scripts-30.25.0.tgz'],
+			'/tar-experiments'
+		);
 		// console.log(kernel.readdirSync('/tar-experiments', undefined));
 		kernel.writeFileSync(
 			`/tar-experiments/package.json`,
@@ -745,11 +950,12 @@ class TestCases {
 
 		// "@wordpress/babel-preset-default": "^8.32.0",
 
-
 		const pnpmSourceRoot = '/programs/node-loader/pnpm/node_modules/pnpm';
 		const pnpmTargetRoot = '/bin/node_modules/.ignored/pnpm';
 
-		kernel.mkdirSync('/bin/node_modules/.ignored/pnpm/dist', { recursive: true });
+		kernel.mkdirSync('/bin/node_modules/.ignored/pnpm/dist', {
+			recursive: true,
+		});
 
 		const assetsToCopy = [
 			{ path: 'LICENSE' },
@@ -771,7 +977,7 @@ class TestCases {
 			`${pnpmSourceRoot}/dist/rest.zip`,
 			`${pnpmTargetRoot}/dist/rest.zip`
 		);
-		
+
 		// Unzip rest.zip into the dist directory
 		await unzipToKernelDirectory(
 			`${pnpmTargetRoot}/dist/rest.zip`,
@@ -803,11 +1009,7 @@ class TestCases {
 		);
 
 		await runProgram(
-			[
-				'node',
-				'/bin/node_modules/.ignored/pnpm/bin/pnpm.cjs',
-				'install',
-			],
+			['node', '/bin/node_modules/.ignored/pnpm/bin/pnpm.cjs', 'install'],
 			'/tar-experiments'
 		);
 		// await runProgram(
@@ -824,7 +1026,9 @@ class TestCases {
 	static async createSimpleBlock() {
 		// Create a simple block
 		kernel.mkdirSync('/jsx/src', { recursive: true });
-		kernel.writeFileSync('/jsx/src/block.json', `{
+		kernel.writeFileSync(
+			'/jsx/src/block.json',
+			`{
 			"$schema": "https://json.schemastore.org/block.json",
 			"apiVersion": 2,
 			"name": "gutenberg-examples/example-01-basic-esnext",
@@ -834,8 +1038,11 @@ class TestCases {
 			"category": "jsx-examples",
 			"example": {},
 			"editorScript": "file:./index.js"
-		}`);
-		kernel.writeFileSync('/jsx/src/index.js', `/**
+		}`
+		);
+		kernel.writeFileSync(
+			'/jsx/src/index.js',
+			`/**
 			* WordPress dependencies
 			*/
 			import { registerBlockType } from '@wordpress/blocks';
@@ -862,8 +1069,11 @@ class TestCases {
 			registerBlockType( name, {
 				edit: Edit,
 				save, // Object shorthand property - same as writing: save: save,
-			} );`);
-		kernel.writeFileSync('/jsx/src/edit.js', `/**
+			} );`
+		);
+		kernel.writeFileSync(
+			'/jsx/src/edit.js',
+			`/**
 			* WordPress dependencies
 			*/
 		import { __ } from '@wordpress/i18n';
@@ -885,9 +1095,12 @@ class TestCases {
 				</div>
 			);
 		};
-		export default Edit;`);
-		
-		kernel.writeFileSync('/jsx/src/save.js', `/**
+		export default Edit;`
+		);
+
+		kernel.writeFileSync(
+			'/jsx/src/save.js',
+			`/**
 			* WordPress dependencies
 			*/
 		import { __ } from '@wordpress/i18n';
@@ -909,8 +1122,11 @@ class TestCases {
 				</div>
 			);
 		};
-		export default Save;`);
-		kernel.writeFileSync('/jsx/src/index.php', `<?php
+		export default Save;`
+		);
+		kernel.writeFileSync(
+			'/jsx/src/index.php',
+			`<?php
 		/**
 		 * Plugin Name: Gutenberg Examples Basic EsNext
 		 * Plugin URI: https://github.com/WordPress/gutenberg-examples
@@ -952,9 +1168,12 @@ class TestCases {
 			}
 		
 		}
-		add_action( 'init', 'gutenberg_examples_01_esnext_register_block' );`);
-		
-		kernel.writeFileSync('/jsx/src/save.js', `/**
+		add_action( 'init', 'gutenberg_examples_01_esnext_register_block' );`
+		);
+
+		kernel.writeFileSync(
+			'/jsx/src/save.js',
+			`/**
 			* WordPress dependencies
 			*/
 		import { __ } from '@wordpress/i18n';
@@ -976,9 +1195,12 @@ class TestCases {
 				</div>
 			);
 		};
-		export default Save;`);
-				
-		kernel.writeFileSync('/jsx/package.json', `{
+		export default Save;`
+		);
+
+		kernel.writeFileSync(
+			'/jsx/package.json',
+			`{
 			"name": "gutenberg-examples",
 			"version": "1.1.0",
 			"private": true,
@@ -995,7 +1217,8 @@ class TestCases {
 			"bugs": {
 				"url": "https://github.com/WordPress/gutenberg-examples/issues"
 			}
-		}`);
+		}`
+		);
 	}
 
 	static async testEsbuild() {
@@ -1004,13 +1227,12 @@ class TestCases {
 			`/programs/node-loader/es-bundler.zip`,
 			`/esbuild-experiments/esbuild.zip`
 		);
-		
+
 		// Unzip rest.zip into the dist directory
 		await unzipToKernelDirectory(
 			`/esbuild-experiments/esbuild.zip`,
 			`/esbuild-experiments`
 		);
-		
 
 		// Move node_modules to the top level so it can always be found by wp-scripts.
 		kernel.renameSync('/node_modules', '/node_modules_old');
@@ -1026,12 +1248,12 @@ class TestCases {
 			[
 				'node',
 				'/esbuild-experiments/bundle.js',
-				'/esbuild-experiments/src'
+				'/esbuild-experiments/src',
 			],
 			'/esbuild-experiments'
 		);
 		console.log('Listing build blocks...');
-		runProgram(['ls', '/build/blocks'])
+		runProgram(['ls', '/build/blocks']);
 		console.log('Done!');
 	}
 
@@ -1041,19 +1263,21 @@ class TestCases {
 			`/programs/node-loader/wp-scripts/wp-scripts.zip`,
 			`/wp-scripts-experiments/wp-scripts.zip`
 		);
-		
+
 		// Unzip rest.zip into the dist directory
 		await unzipToKernelDirectory(
 			`/wp-scripts-experiments/wp-scripts.zip`,
 			`/wp-scripts-experiments`
 		);
 
-
 		TestCases.createSimpleBlock();
 
 		// Move node_modules to the top level so it can always be found by wp-scripts.
 		kernel.renameSync('/node_modules', '/node_modules_old');
-		kernel.renameSync('/wp-scripts-experiments/package/node_modules', '/node_modules');
+		kernel.renameSync(
+			'/wp-scripts-experiments/package/node_modules',
+			'/node_modules'
+		);
 
 		kernel.mkdirSync('/build/blocks', { recursive: true });
 		// await runProgram(
@@ -1072,11 +1296,11 @@ class TestCases {
 				'node',
 				'/node_modules/webpack/bin/webpack.js',
 				'--config',
-				"/wp-scripts-experiments/package/config/webpack.config.js"
+				'/wp-scripts-experiments/package/config/webpack.config.js',
 			],
 			'/jsx'
 		);
-		runProgram(['ls', '/build/blocks'])
+		runProgram(['ls', '/build/blocks']);
 	}
 
 	static async runBash() {
@@ -1113,14 +1337,20 @@ class TestCases {
 // await TestCases.testWorker();
 try {
 	// await TestCases.testWpScriptsLocal();
-	await TestCases.testEsbuild();
+	// await TestCases.testEsbuild();
+	await testEsbuildLikeInTests();
 } catch (error) {
 	console.error('Error', error);
 }
 
 // Log uncaught rejections and errors
 globalThis.addEventListener('unhandledrejection', (event) => {
-	console.error('Unhandled Rejection at:', event.reason, 'reason:', event.promise);
+	console.error(
+		'Unhandled Rejection at:',
+		event.reason,
+		'reason:',
+		event.promise
+	);
 });
 
 globalThis.addEventListener('error', (event) => {

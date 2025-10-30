@@ -7,6 +7,7 @@ export {
 	type KernelSubprocess,
 	type KernelSubprocessExtras,
 	type SpawnOptions,
+	type SpawnSyncOutcome,
 } from './core/kernel.ts'
 export type {
 	KernelStdioChunk,

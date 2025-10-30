@@ -273,12 +273,17 @@ const createSpawnOptions = (command, args, options, stdioConfig) => {
 		Number.isFinite(options.timeout)
 			? Math.max(0, options.timeout)
 			: undefined;
+	const input =
+		options && Object.prototype.hasOwnProperty.call(options, 'input')
+			? options.input
+			: undefined;
 	return {
 		argv: [command, ...args],
 		env,
 		cwd,
 		stdio: stdioConfig,
 		timeout,
+		input,
 	};
 };
 const detachFromReadable = (detach) => {

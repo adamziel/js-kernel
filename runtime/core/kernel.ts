@@ -27,9 +27,15 @@ import {
 	type SpawnStdioOptions,
 	type StdioMode,
 } from '../process/spawn-options.ts';
+import {
+	createSpawnSyncClient,
+	type SpawnSyncClient,
+	type SpawnSyncOutcome,
+} from '../process/spawn-sync/client.ts';
 import { serializeFsResponse, serializeFsError } from '../fs/serialization.ts';
 
 export type { StdioMode, SpawnStdioOptions } from '../process/spawn-options.ts';
+export type { SpawnSyncOutcome } from '../process/spawn-sync/client.ts';
 export type { KernelStdioChunk } from '../ipc/message-port.ts';
 
 export interface SpawnOptions {
@@ -42,6 +48,8 @@ export interface SpawnOptions {
 	ipcPort?: MessagePort | null;
 	workerThreadId?: number;
 	workerThreadName?: string;
+	timeout?: number;
+	input?: unknown;
 }
 
 export const enum ExitCode {
@@ -148,9 +156,53 @@ export class Kernel extends InMemoryFileSystem {
 	private activeFsProcessRecord: KernelProcessRecord | null = null;
 	private readonly stdinStates = new Map<number, KernelStdinState>();
 	private readonly stdinWaitTimeoutMs = 1000;
+	private readonly hostRecord: KernelProcessRecord;
+	private readonly hostSpawnSyncClient: SpawnSyncClient | null;
+	private readonly hostSpawnSyncCleanup: (() => void) | null;
+	private readonly atomicsWaitAllowed: boolean;
 
 	constructor() {
 		super();
+
+		const hostControlChannel = new MessageChannel();
+		const hostFsChannel = new MessageChannel();
+		const hostSpawnSyncChannel = new MessageChannel();
+
+		this.hostRecord = {
+			pid: 0,
+			parentPid: null,
+			name: '__kernel_host__',
+			controlPort: hostControlChannel.port1,
+			fsPort: hostFsChannel.port1,
+			spawnSyncPort: hostSpawnSyncChannel.port1,
+			messagePort: null,
+			children: new Set<number>(),
+			hostType: 'kernel',
+			hostPid: null,
+			exitCode: null,
+			controlCleanup: () => undefined,
+			fsCleanup: () => undefined,
+			spawnSyncCleanup: () => undefined,
+			stdinRelayPort: null,
+		};
+		this.processes.set(this.hostRecord.pid, this.hostRecord);
+		hostControlChannel.port1.start?.();
+		hostFsChannel.port1.start?.();
+		hostSpawnSyncChannel.port1.start?.();
+
+		this.atomicsWaitAllowed = this.detectAtomicsWaitAllowed();
+		if (this.atomicsWaitAllowed) {
+			this.hostSpawnSyncCleanup = this.installProcessSpawnSync(
+				this.hostRecord
+			);
+			this.hostSpawnSyncClient = createSpawnSyncClient(
+				hostSpawnSyncChannel.port2
+			);
+		} else {
+			hostSpawnSyncChannel.port2.close();
+			this.hostSpawnSyncCleanup = null;
+			this.hostSpawnSyncClient = null;
+		}
 	}
 
 	setEnv(key: string, value: string) {
@@ -168,6 +220,95 @@ export class Kernel extends InMemoryFileSystem {
 		}
 		const programSource = this.readFileSync(executablePath, 'utf8');
 		return { executablePath, programSource };
+	}
+
+	private normalizeSpawnSyncInput(
+		input: unknown
+	): KernelStdioChunk | undefined {
+		if (input === null || typeof input === 'undefined') {
+			return undefined;
+		}
+		if (typeof input === 'string') {
+			return input;
+		}
+		if (input instanceof Uint8Array) {
+			return input.slice();
+		}
+		if (typeof ArrayBuffer !== 'undefined') {
+			if (input instanceof ArrayBuffer) {
+				return new Uint8Array(input);
+			}
+			if (ArrayBuffer.isView(input)) {
+				const view = input as ArrayBufferView;
+				return new Uint8Array(
+					view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength)
+				);
+			}
+		}
+		if (
+			typeof input === 'object' &&
+			input !== null &&
+			'length' in (input as { length?: unknown }) &&
+			typeof (input as { length?: unknown }).length === 'number'
+		) {
+			try {
+				return new Uint8Array(input as ArrayLike<number>);
+			} catch {
+				// fall through to string conversion
+			}
+		}
+		return String(input);
+	}
+
+	private detectAtomicsWaitAllowed(): boolean {
+		try {
+			if (
+				typeof Atomics !== 'object' ||
+				typeof Atomics.wait !== 'function' ||
+				typeof SharedArrayBuffer !== 'function'
+			) {
+				return false;
+			}
+			const buffer = new SharedArrayBuffer(4);
+			const view = new Int32Array(buffer);
+			Atomics.wait(view, 0, 0, 0);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	private transformProgramSourceForInlineExecution(source: string): string {
+		let transformed = source.replace(/^#!.*(?:\n|$)/, '');
+		transformed = transformed.replace(
+			/export\s+default\s+async\s+function\s*(\w*)\s*\(/g,
+			'exports.default = function $1('
+		);
+		transformed = transformed.replace(
+			/export\s+default\s+function\s*(\w*)\s*\(/g,
+			'exports.default = function $1('
+		);
+		transformed = transformed.replace(
+			/export\s+default\s+/g,
+			'exports.default = '
+		);
+		return transformed;
+	}
+
+	private getDirname(path: string): string {
+		if (!path || path === '/') {
+			return '/';
+		}
+		const segments = path.split('/');
+		segments.pop();
+		const dir = segments.join('/');
+		return dir.length > 0 ? dir : '/';
+	}
+
+	private convertChunkToString(chunk: KernelStdioChunk): string {
+		return typeof chunk === 'string'
+			? chunk
+			: this.textDecoder.decode(chunk);
 	}
 
 	resolveExecutable(path: string, cwd: string) {
@@ -203,6 +344,197 @@ export class Kernel extends InMemoryFileSystem {
 		);
 
 		return this.createKernelHostedProcess(options, program, resources);
+	}
+
+	spawnSync(
+		rawOptions: SpawnOptions & { input?: unknown }
+	): SpawnSyncOutcome {
+		const normalized = normalizeSpawnOptions(rawOptions, {
+			env: this.env,
+			cwd:
+				typeof rawOptions.cwd === 'string' && rawOptions.cwd.length > 0
+					? rawOptions.cwd
+					: '/',
+			debug: rawOptions.debug,
+		});
+		if (!normalized) {
+			throw new Error('Invalid spawn options');
+		}
+
+		const timeoutMs =
+			typeof normalized.timeout === 'number' && normalized.timeout >= 0
+				? normalized.timeout
+				: 5000;
+
+		const stdio: SpawnStdioOptions = {
+			stdin: rawOptions.stdio?.stdin ?? 'pipe',
+			stdout: rawOptions.stdio?.stdout ?? 'pipe',
+			stderr: rawOptions.stdio?.stderr ?? 'pipe',
+		};
+
+		const spawnRequest: Record<string, unknown> = {
+			...normalized,
+			stdio,
+		};
+		const initialInput = this.normalizeSpawnSyncInput(rawOptions.input);
+		if (typeof initialInput !== 'undefined') {
+			spawnRequest.input = initialInput;
+		}
+
+		if (this.hostSpawnSyncClient) {
+			return this.hostSpawnSyncClient.run(spawnRequest, timeoutMs);
+		}
+
+		return this.executeSpawnSyncInline(normalized, stdio, initialInput);
+	}
+
+	private executeSpawnSyncInline(
+		options: NormalizedSpawnOptions,
+		stdio: SpawnStdioOptions,
+		stdinInput?: KernelStdioChunk
+	): SpawnSyncOutcome {
+		const program = this.loadProgram(options.argv[0], options.cwd);
+		if (!program) {
+			return {
+				status: null,
+				error: `Command not found: ${options.argv[0]}`,
+			};
+		}
+
+		const stdoutChunks: string[] = [];
+		const stderrChunks: string[] = [];
+		let exitStatus: number | null = 0;
+		let exited = false;
+
+		let stdinConsumed = false;
+		const clonedInput = typeof stdinInput === 'string'
+			? stdinInput
+			: stdinInput instanceof Uint8Array
+			? stdinInput.slice()
+			: undefined;
+
+		const stdin = {
+			read: (): KernelStdioChunk | null => {
+				if (stdinConsumed) {
+					return null;
+				}
+				stdinConsumed = true;
+				if (typeof clonedInput === 'string') {
+					return clonedInput;
+				}
+				if (clonedInput instanceof Uint8Array) {
+					return clonedInput;
+				}
+				return null;
+			},
+		};
+
+		const writeChunk = (
+			chunks: string[],
+			mode: StdioMode | undefined,
+			chunk: KernelStdioChunk
+		) => {
+			if (mode !== 'pipe') {
+				return;
+			}
+			const text = this.convertChunkToString(chunk);
+			chunks.push(text);
+		};
+
+		const stdout = {
+			write: (chunk: KernelStdioChunk) => writeChunk(stdoutChunks, stdio.stdout, chunk),
+		};
+
+		const stderr = {
+			write: (chunk: KernelStdioChunk) => writeChunk(stderrChunks, stdio.stderr, chunk),
+		};
+
+		const processController = {
+			stdin,
+			stdout,
+			stderr,
+			spawnSync: (childOptions: SpawnOptions & { input?: unknown }) =>
+				this.spawnSync(childOptions),
+			exit: (code?: number) => {
+				exitStatus =
+					typeof code === 'number' && Number.isFinite(code)
+						? Math.trunc(code)
+						: 0;
+				exited = true;
+			},
+		};
+
+		try {
+			const transformedSource =
+				this.transformProgramSourceForInlineExecution(
+					program.programSource
+				);
+			const exports: Record<string, unknown> = {};
+			const module = { exports } as { exports: Record<string, unknown> };
+			const factory = new Function(
+				'exports',
+				'module',
+				'__filename',
+				'__dirname',
+				`${transformedSource}
+				return module.exports;`
+			);
+			factory(
+				exports,
+				module,
+				program.executablePath,
+				this.getDirname(program.executablePath)
+			);
+			const entry =
+				(module.exports?.default ?? exports.default) as
+					| ((controller: typeof processController) => unknown)
+					| undefined;
+			if (typeof entry !== 'function') {
+				throw new Error('Program missing default export for spawnSync');
+			}
+			const result = entry(processController as any);
+			if (result && typeof (result as Promise<unknown>).then === 'function') {
+				throw new Error(
+					'SpawnSync programs must complete synchronously in this environment'
+				);
+			}
+			if (!exited) {
+				exitStatus = 0;
+			}
+		} catch (error) {
+			return {
+				status: null,
+				error:
+					error instanceof Error
+						? error.message
+						: String(error ?? 'spawnSync failed'),
+			};
+		}
+
+		return {
+			status: exitStatus,
+			stdout:
+				stdio.stdout === 'pipe' && stdoutChunks.length > 0
+					? stdoutChunks.join('')
+					: undefined,
+			stderr:
+				stdio.stderr === 'pipe' && stderrChunks.length > 0
+					? stderrChunks.join('')
+					: undefined,
+		};
+	}
+
+	dispose() {
+		try {
+			this.hostSpawnSyncCleanup?.();
+		} catch {
+			// ignore cleanup errors
+		}
+		try {
+			this.hostSpawnSyncClient?.dispose();
+		} catch {
+			// ignore disposal errors
+		}
 	}
 
 	getProcess(pid: number) {
@@ -790,12 +1122,11 @@ export class Kernel extends InMemoryFileSystem {
 			}
 		};
 
-		const options = rawOptions as NormalizedSpawnOptions | undefined;
-		if (
-			!options ||
-			!Array.isArray(options.argv) ||
-			options.argv.length === 0
-		) {
+		const stdinInput = this.normalizeSpawnSyncInput(
+			(rawOptions as { input?: unknown })?.input
+		);
+		const options = normalizeSpawnOptions(rawOptions);
+		if (!options) {
 			sendResponse({
 				ok: false,
 				error: { message: 'Invalid spawn options' },
@@ -810,7 +1141,7 @@ export class Kernel extends InMemoryFileSystem {
 				? options.timeout
 				: 5000;
 
-		this.runSpawnSyncProcess(parentRecord, options, timeoutMs)
+		this.runSpawnSyncProcess(parentRecord, options, timeoutMs, stdinInput)
 			.then((result) => {
 				sendResponse({ ok: true, result });
 			})
@@ -826,7 +1157,8 @@ export class Kernel extends InMemoryFileSystem {
 	private async runSpawnSyncProcess(
 		parentRecord: KernelProcessRecord,
 		options: NormalizedSpawnOptions,
-		timeoutMs: number
+		timeoutMs: number,
+		stdinInput?: KernelStdioChunk
 	): Promise<{
 		status: number | null;
 		stdout?: string;
@@ -889,6 +1221,7 @@ export class Kernel extends InMemoryFileSystem {
 		const textDecoder = new TextDecoder();
 		const stdoutChunks: string[] = [];
 		const stderrChunks: string[] = [];
+		let stdinStream: MessagePortWritableStream | null = null;
 
 		let stdoutStream: MessagePortReadableStream | null = null;
 		let stderrStream: MessagePortReadableStream | null = null;
@@ -898,7 +1231,12 @@ export class Kernel extends InMemoryFileSystem {
 				transferList.push(descriptor.workerPort);
 			}
 			if (descriptor.mode === 'pipe' && descriptor.hostPort) {
-				if (descriptor.fd === 1) {
+				if (descriptor.fd === 0) {
+					stdinStream = new MessagePortWritableStream(
+						descriptor.hostPort,
+						{ debugLabel: 'kernel:child-stdin' }
+					);
+				} else if (descriptor.fd === 1) {
 					const stream = new MessagePortReadableStream(
 						descriptor.hostPort,
 						{ debugLabel: 'kernel:child-stdout' }
@@ -966,6 +1304,7 @@ export class Kernel extends InMemoryFileSystem {
 				clearTimeout(timeoutHandle);
 				timeoutHandle = null;
 			}
+			stdinStream?.destroy();
 			stdoutStream?.destroy();
 			stderrStream?.destroy();
 			resultResolve({
@@ -1034,6 +1373,20 @@ export class Kernel extends InMemoryFileSystem {
 			);
 			this.handleProcessExit(resources.pid, ExitCode.ERROR);
 			return resultPromise;
+		}
+
+		if (stdinStream) {
+			try {
+				if (typeof stdinInput !== 'undefined') {
+					const chunk =
+						typeof stdinInput === 'string'
+							? stdinInput
+							: stdinInput.slice();
+					stdinStream.write(chunk);
+				}
+			} finally {
+				stdinStream.end();
+			}
 		}
 
 		timeoutHandle = setTimeout(() => {
