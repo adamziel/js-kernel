@@ -826,8 +826,8 @@ const handleKernelInit = (event: MessageEvent) => {
 	redirectConsoleToStdio(payload.debug);
 
 	// Log stdio configuration AFTER console is redirected so we can see it
-	console.error('[BINARY after init] stdio descriptors received:', stdioInfo);
-	console.error('[BINARY after init] stdin stream type:', (globalThis as any).processController?.stdin?.constructor?.name || 'unknown');
+	console.log('[BINARY after init] stdio descriptors received:', stdioInfo);
+	console.log('[BINARY after init] stdin stream type:', (globalThis as any).processController?.stdin?.constructor?.name || 'unknown');
 
 	queueMicrotask(() => startProgram(payload));
 };

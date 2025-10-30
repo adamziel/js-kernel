@@ -1246,21 +1246,32 @@ export class Kernel extends InMemoryFileSystem {
 					relayPort.addEventListener('message', (event) => {
 						const data = event.data;
 						if (data && data.type === 'data') {
+							let preview: string | null = null;
+							const payload = data.payload;
+							if (typeof payload === 'string') {
+								preview = payload.slice(0, 32);
+							} else if (payload instanceof Uint8Array) {
+								const len = Math.min(payload.byteLength, 16);
+								preview = Array.from(payload.slice(0, len))
+									.map((value) => value.toString(16).padStart(2, '0'))
+									.join('');
+							}
 							try {
 								stdinHostPort!.postMessage({ type: 'data', payload: data.payload });
-								console.error('[kernel] Relayed stdin data to binary, size:',
-									typeof data.payload === 'string' ? data.payload.length : data.payload?.byteLength || 0);
+								console.log('[kernel] Relayed stdin data to binary, size:',
+									typeof data.payload === 'string' ? data.payload.length : data.payload?.byteLength || 0,
+									preview ? 'preview:' + preview : '');
 							} catch (error) {
-								console.error('[kernel] Failed to relay stdin data:', error);
+								console.log('[kernel] Failed to relay stdin data:', error);
 							}
 						} else if (data && data.type === 'end') {
 							try {
 								stdinHostPort!.postMessage({ type: 'end' });
 								stdinHostPort!.close();
 								relayPort.close();
-								console.error('[kernel] Relayed stdin end to binary');
+								console.log('[kernel] Relayed stdin end to binary');
 							} catch (error) {
-								console.error('[kernel] Failed to relay stdin end:', error);
+								console.log('[kernel] Failed to relay stdin end:', error);
 							}
 						}
 					});

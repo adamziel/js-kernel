@@ -602,16 +602,16 @@ export const spawn = (command, args = [], options = {}) => {
 				}
 				const attachReadable = (stream, onData, onEnd) => {
 					if (!stream) {
-						return;
-					}
-					const wrappedOnData = (chunk) => {
-						// Skip string chunks to prevent console.log pollution of binary IPC streams
-						if (typeof chunk === 'string') {
-							return;
-						}
-						try {
-							onData(chunk);
-						} catch (error) {
+				return;
+			}
+			const wrappedOnData = (chunk) => {
+			// Skip string chunks to prevent console.log pollution of binary IPC streams
+			if (typeof chunk === 'string') {
+				return;
+			}
+				try {
+					onData(chunk);
+				} catch (error) {
 							// Errors will bubble up to browser console without polluting stdio
 						}
 					};

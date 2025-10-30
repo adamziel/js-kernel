@@ -53,29 +53,18 @@ describe.sequential('esbuild integration', () => {
 	console.log('[runner] wasm bytes length', wasmBytesCheck ? wasmBytesCheck.byteLength || wasmBytesCheck.length : 'null');
 	const entrySource = fsSync.readFileSync('/esbuild/src/index.js', 'utf8');
 
-const virtualEntryPlugin = {
-	name: 'virtual-entry',
-	setup(build) {
-		build.onResolve({ filter: /^virtual-entry$/ }, () => ({
-			path: 'virtual-entry',
-			namespace: 'virtual',
-		}));
-
-		build.onLoad({ filter: /^virtual-entry$/, namespace: 'virtual' }, () => ({
-			contents: entrySource,
-			loader: 'js',
-			resolveDir: '/esbuild/src',
-		}));
-	},
-};
-
 console.log('[runner] about to call esbuild.build()');
 const result = await esbuild.build({
-	entryPoints: ['virtual-entry'],
 	bundle: true,
 	format: 'esm',
 	write: false,
-	plugins: [virtualEntryPlugin],
+	minifySyntax: true,
+	stdin: {
+		contents: entrySource,
+		resolveDir: '/esbuild/src',
+		sourcefile: 'virtual-entry.js',
+		loader: 'js',
+	},
 });
 console.log('[runner] esbuild.build() completed');`;
 		const filesystemEntryBlock = String.raw`console.log('[runner] about to call esbuild.build() with fs entry');
@@ -239,9 +228,9 @@ async function main() {
 		? String(outputFiles[0].text || '')
 		: '';
 	console.log('[runner] raw output', outputText);
-	const base64 = Buffer.from(outputText, 'utf8').toString('base64');
-	console.log('BUNDLE:' + base64);
-	processController.exit(0);
+const base64 = Buffer.from(outputText, 'utf8').toString('base64');
+console.log('BUNDLE:' + base64);
+setTimeout(() => processController.exit(0), 0);
 }
 
 main().catch((error) => {
@@ -278,7 +267,27 @@ main().catch((error) => {
 			mainJsInstrumented = mainJsInstrumented.replace(
 				'let afterClose = (error) => {',
 				`let afterClose = (error) => {
-	console.error('[esbuild-channel] afterClose', { reason: closeData.reason, error });`
+	console.log('[esbuild-channel] afterClose', { reason: closeData.reason, error });`
+			);
+		}
+
+		if (
+			!mainJsInstrumented.includes('[esbuild-main] handleRequest command')
+		) {
+			mainJsInstrumented = mainJsInstrumented.replace(
+				'let handleRequest = async (id, request) => {',
+				`let handleRequest = async (id, request) => {
+\tconsole.log('[esbuild-main] handleRequest command', request && request.command, 'id', id, 'requestKeys:', request && Object.keys(request || {}));`
+			);
+		}
+
+		if (
+			!mainJsInstrumented.includes('[esbuild-main] handlePlugins running with')
+		) {
+			mainJsInstrumented = mainJsInstrumented.replace(
+				'if (plugins && plugins.length > 0) {',
+				`if (plugins && plugins.length > 0) {
+\tconsole.log('[esbuild-main] handlePlugins running with', plugins.length, 'plugins');`
 			);
 		}
 
@@ -293,7 +302,7 @@ main().catch((error) => {
 	const chunkType = typeof chunk;
 	const chunkCtor = chunk && chunk.constructor && chunk.constructor.name;
 	const isUint8 = chunk instanceof Uint8Array;
-	console.error('[esbuild-main] readFromStdout called with', len, 'bytes, type:', chunkType, chunkCtor, 'isUint8Array:', isUint8, 'stdoutUsed before:', stdoutUsed);
+	console.log('[esbuild-main] readFromStdout called with', len, 'bytes, type:', chunkType, chunkCtor, 'isUint8Array:', isUint8, 'stdoutUsed before:', stdoutUsed);
     let limit = stdoutUsed + chunk.length;
     if (limit > stdout.length) {
       let swap = new Uint8Array(limit * 2);
@@ -303,11 +312,11 @@ main().catch((error) => {
     try {
       stdout.set(chunk, stdoutUsed);
     } catch (err) {
-      console.error('[esbuild-main] ERROR in stdout.set:', err && err.message, 'chunk type:', typeof chunk, chunk.constructor.name);
+      console.log('[esbuild-main] ERROR in stdout.set:', err && err.message, 'chunk type:', typeof chunk, chunk.constructor.name);
       throw err;
     }
     stdoutUsed += chunk.length;
-    console.error('[esbuild-main] after buffering: stdoutUsed =', stdoutUsed, 'stdout.length =', stdout.length);`
+    console.log('[esbuild-main] after buffering: stdoutUsed =', stdoutUsed, 'stdout.length =', stdout.length);`
 			);
 		}
 
@@ -315,12 +324,12 @@ main().catch((error) => {
 		if (!mainJsInstrumented.includes('[esbuild-main] parsing loop')) {
 			mainJsInstrumented = mainJsInstrumented.replace(
 				/let offset = 0;\s*while \(offset \+ 4 <= stdoutUsed\) \{\s*let length = readUInt32LE\(stdout, offset\);/,
-				`let offset = 0;
-    console.error('[esbuild-main] parsing loop: offset=', offset, 'stdoutUsed=', stdoutUsed);
+		`let offset = 0;
+    console.log('[esbuild-main] parsing loop: offset=', offset, 'stdoutUsed=', stdoutUsed);
     while (offset + 4 <= stdoutUsed) {
-      console.error('[esbuild-main] parsing loop iteration: offset=', offset);
+      console.log('[esbuild-main] parsing loop iteration: offset=', offset);
       let length = readUInt32LE(stdout, offset);
-      console.error('[esbuild-main] packet length read:', length, 'need', offset + 4 + length, 'have', stdoutUsed);`
+      console.log('[esbuild-main] packet length read:', length, 'need', offset + 4 + length, 'have', stdoutUsed);`
 			);
 		}
 
@@ -331,7 +340,7 @@ main().catch((error) => {
 			mainJsInstrumented = mainJsInstrumented.replace(
 				'let handleIncomingPacket = (bytes) => {',
 				`let handleIncomingPacket = (bytes) => {
-	console.error('[esbuild-main] handleIncomingPacket called with', bytes && bytes.length);`
+	console.log('[esbuild-main] handleIncomingPacket called with', bytes && bytes.length);`
 			);
 		}
 
@@ -343,7 +352,7 @@ main().catch((error) => {
 		) {
 			mainJsInstrumented = mainJsInstrumented.replace(
 				'stdout.on("data", readFromStdout);',
-				`console.error('[esbuild-main] setting up stdout listener on', stdout && stdout.constructor && stdout.constructor.name);
+				`console.log('[esbuild-main] setting up stdout listener on', stdout && stdout.constructor && stdout.constructor.name);
 stdout.on("data", readFromStdout);`
 			);
 		}
@@ -355,9 +364,41 @@ stdout.on("data", readFromStdout);`
 			mainJsInstrumented = mainJsInstrumented.replace(
 				/streamIn\.writeToStdin\(/g,
 				`(function(bytes) {
-	console.error('[esbuild-main] writeToStdin called with', bytes && bytes.length, 'bytes');
+	console.log('[esbuild-main] writeToStdin called with', bytes && bytes.length, 'bytes');
 	return streamIn.writeToStdin(bytes);
 })(`
+			);
+		}
+
+		// Add logging to sendRequest to observe outgoing commands
+		if (
+			!mainJsInstrumented.includes('[esbuild-main] sendRequest called')
+		) {
+			mainJsInstrumented = mainJsInstrumented.replace(
+				'let sendRequest = (refs, value, callback) => {',
+				`let sendRequest = (refs, value, callback) => {
+\tlet serializedValue = '<unserializable>';
+\ttry {
+\t\tserializedValue = JSON.stringify(value, (key, val) => typeof val === 'function' ? '[Function]' : val);
+\t} catch {}
+\tconsole.log('[esbuild-main] sendRequest called for command', value && value.command, 'id will be', nextRequestID, 'keys:', value && Object.keys(value), 'plugins:', value && value.plugins ? value.plugins.length : 0, 'payload:', serializedValue);`
+			);
+		}
+
+		// Periodic logging of pending response callbacks
+		if (
+			!mainJsInstrumented.includes('[esbuild-main] pending responseCallbacks')
+		) {
+			mainJsInstrumented = mainJsInstrumented.replace(
+				'let responseCallbacks = {};',
+				`let responseCallbacks = {};
+setTimeout(() => {
+\ttry {
+\t\tconsole.log('[esbuild-main] pending responseCallbacks', Object.keys(responseCallbacks || {}));
+\t} catch (err) {
+\t\tconsole.log('[esbuild-main] pending responseCallbacks error', err && err.message);
+\t}
+}, 2000);`
 			);
 		}
 
@@ -368,7 +409,7 @@ stdout.on("data", readFromStdout);`
 			mainJsInstrumented = mainJsInstrumented.replace(
 				'let sendResponse = (id, value) => {',
 				`let sendResponse = (id, value) => {
-	console.error('[esbuild-main] sendResponse called for id', id, 'value keys:', value && Object.keys(value));`
+	console.log('[esbuild-main] sendResponse called for id', id, 'value keys:', value && Object.keys(value));`
 			);
 		}
 
