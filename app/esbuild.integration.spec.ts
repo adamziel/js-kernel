@@ -3,6 +3,7 @@ import { Kernel } from '../runtime/index.ts';
 import { installCustomPrograms } from './programs/index.ts';
 import { ZipReader, BlobReader, Uint8ArrayWriter } from '@zip.js/zip.js';
 import esBundlerZipUrl from './programs/node-loader/es-bundler.zip?url';
+import './read-opfs-logs.ts';
 
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
@@ -396,7 +397,7 @@ stdout.on("data", readFromStdout);`
 			cwd: '/',
 			name: 'esbuild',
 			stdio: {
-				stdin: 'ignore',
+				stdin: 'pipe',
 				stdout: 'pipe',
 				stderr: 'pipe',
 			},

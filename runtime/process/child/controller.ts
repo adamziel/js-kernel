@@ -326,7 +326,8 @@ const createChildStdio = (
 	const descriptorFor = (fd: 0 | 1 | 2): ChildStdioDescriptor =>
 		descriptors.find((descriptor) => descriptor.fd === fd) ?? {
 			fd,
-			mode: 'ignore' as StdioMode,
+			// Default stdin to 'pipe' for IPC communication, others to 'ignore'
+			mode: (fd === 0 ? 'pipe' : 'ignore') as StdioMode,
 			port: undefined,
 		};
 
@@ -344,10 +345,14 @@ const createChildStdio = (
 const createReadableStream = (
 	descriptor: ChildStdioDescriptor
 ): ChildReadableStream => {
+	console.log('[createReadableStream] fd:', descriptor.fd, 'mode:', descriptor.mode, 'hasPort:', !!descriptor.port);
 	if (descriptor.mode === 'ignore' || !descriptor.port) {
+		console.log('[createReadableStream] Returning NullReadableStream for fd:', descriptor.fd);
 		return new NullReadableStream();
 	}
-	return new MessagePortReadableStream(descriptor.port);
+	const label = descriptor.fd === 0 ? 'binary:stdin' : descriptor.fd === 1 ? 'binary:stdout' : 'binary:stderr';
+	console.log('[createReadableStream] Creating MessagePortReadableStream with label:', label);
+	return new MessagePortReadableStream(descriptor.port, { debugLabel: label });
 };
 
 const createWritableStream = (
@@ -709,6 +714,15 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 			// Give all the streams and async actions chance to flush.
 			setTimeout(() => {
 				// console.error('[processController.exit] In setTimeout, sending exit message');
+
+				// Send debug log to parent before exiting
+				try {
+					const debugLog = (globalThis as any).__mpDebug;
+					if (Array.isArray(debugLog) && debugLog.length > 0) {
+						self.postMessage({ type: '__debug_log__', data: debugLog });
+					}
+				} catch {}
+
 				if (controlPort) {
 					try {
 						controlPort.postMessage({
@@ -760,6 +774,9 @@ export function redirectConsoleToStdio(isDebug: boolean) {
 	const writeStdout = (...args: unknown[]) => {
 		// if (!isDebug) return
 		const value = joinArgs(args);
+		if (value.includes('[vite]')) {
+			return;
+		}
 		const chunk = appendTrailingNewlineIfText(toKernelChunk(value));
 		stdioStreams!.stdout.write(chunk);
 	};
@@ -767,6 +784,9 @@ export function redirectConsoleToStdio(isDebug: boolean) {
 	const writeStderr = (...args: unknown[]) => {
 		// if (!isDebug) return
 		const value = joinArgs(args);
+		if (value.includes('[vite]')) {
+			return;
+		}
 		const chunk = appendTrailingNewlineIfText(toKernelChunk(value));
 		stdioStreams!.stderr.write(chunk);
 	};
@@ -795,8 +815,20 @@ const handleKernelInit = (event: MessageEvent) => {
 	self.removeEventListener('message', handleKernelInit);
 
 	const payload = event.data.payload as ChildProcessInitOptions;
+	// Log stdio descriptors received by worker (use both console.log and originalConsole)
+	const stdioInfo = JSON.stringify(payload.stdio?.map((d: any) => ({ fd: d.fd, mode: d.mode, hasPort: !!d.port })) || []);
+	console.log('[BINARY handleKernelInit] stdio received:', stdioInfo);
+	const oc = (globalThis as any).originalConsole;
+	if (oc) {
+		oc.error('[BINARY handleKernelInit] stdio received:', stdioInfo);
+	}
 	initChildProcess(payload);
 	redirectConsoleToStdio(payload.debug);
+
+	// Log stdio configuration AFTER console is redirected so we can see it
+	console.error('[BINARY after init] stdio descriptors received:', stdioInfo);
+	console.error('[BINARY after init] stdin stream type:', (globalThis as any).processController?.stdin?.constructor?.name || 'unknown');
+
 	queueMicrotask(() => startProgram(payload));
 };
 
@@ -1004,35 +1036,43 @@ function createChildProcessHandle(
 	let parentStderr: MessagePortReadableStream | undefined;
 
 	for (const descriptor of plan.stdio) {
+		console.log('[spawn plan stdio] fd:', descriptor.fd, 'mode:', descriptor.mode, 'hasParentPort:', !!descriptor.parentPort, 'hasWorkerPort:', !!descriptor.workerPort);
 		if (descriptor.workerPort) {
 			transferList.push(descriptor.workerPort);
 		}
-		if (
-			descriptor.mode === 'pipe' &&
-			descriptor.parentPort &&
-			descriptor.fd === 0
-		) {
-			parentStdin = new MessagePortWritableStream(descriptor.parentPort);
+		if (descriptor.mode === 'pipe' && descriptor.fd === 0) {
+			// Always create stdin - either with MessagePort if available, or null stream for control-port-only
+			console.log('[spawn plan] Creating parentStdin stream, hasParentPort:', !!descriptor.parentPort);
+			// For nested spawns, parentPort will be null, but we still need stdin property on handle
+			// Wrapping below will forward via control port
+			parentStdin = descriptor.parentPort
+				? new MessagePortWritableStream(descriptor.parentPort)
+				: new NullWritableStream() as any;
 		} else if (
 			descriptor.mode === 'pipe' &&
 			descriptor.parentPort &&
 			descriptor.fd === 1
 		) {
-			parentStdout = new MessagePortReadableStream(descriptor.parentPort);
+			console.log('[spawn plan] Creating parentStdout stream');
+			parentStdout = new MessagePortReadableStream(descriptor.parentPort, { debugLabel: 'parent:stdout' });
 		} else if (
 			descriptor.mode === 'pipe' &&
 			descriptor.parentPort &&
 			descriptor.fd === 2
 		) {
-			parentStderr = new MessagePortReadableStream(descriptor.parentPort);
+			console.log('[spawn plan] Creating parentStderr stream');
+			parentStderr = new MessagePortReadableStream(descriptor.parentPort, { debugLabel: 'parent:stderr' });
 		}
 	}
 
 	if (parentStdin) {
 		const originalWrite = parentStdin.write.bind(parentStdin);
 		parentStdin.write = (chunk: KernelStdioChunk) => {
+			// Call originalWrite FIRST to clone the chunk, then send to kernel
+			// sendStdinToKernel transfers the buffer which detaches it
+			const result = originalWrite(chunk);
 			sendStdinToKernel(plan.pid, chunk, false);
-			return originalWrite(chunk);
+			return result;
 		};
 		const originalEnd =
 			typeof parentStdin.end === 'function'
@@ -1040,11 +1080,14 @@ function createChildProcessHandle(
 				: null;
 		if (originalEnd) {
 			parentStdin.end = (chunk?: KernelStdioChunk) => {
+				// Call originalEnd FIRST to clone the chunk, then send to kernel
+				// sendStdinToKernel transfers the buffer which detaches it
+				const result = originalEnd(chunk);
 				if (typeof chunk !== 'undefined') {
 					sendStdinToKernel(plan.pid, chunk, false);
 				}
 				sendStdinToKernel(plan.pid, null, true);
-				return originalEnd(chunk);
+				return result;
 			};
 		}
 		const originalDestroy =
@@ -1158,6 +1201,12 @@ function createChildProcessHandle(
 			const code =
 				typeof payload.data === 'number' ? payload.data : exitCode ?? 0;
 			setExitCode(code);
+		} else if (payload && typeof payload === 'object' && payload.type === '__debug_log__') {
+			// Store worker debug logs in parent's globalThis for inspection
+			if (!(globalThis as any).__workerDebugLogs) {
+				(globalThis as any).__workerDebugLogs = {};
+			}
+			(globalThis as any).__workerDebugLogs[plan.pid] = payload.data;
 		}
 	});
 
@@ -1165,6 +1214,13 @@ function createChildProcessHandle(
 		setExitCode(1);
 		reportChildExitToKernel(plan.pid, 1);
 	});
+
+	// Create stdio descriptors for init message
+	const stdioForInit = plan.stdio.map((descriptor) => ({
+		fd: descriptor.fd,
+		mode: descriptor.mode,
+		port: descriptor.workerPort ?? undefined,
+	}));
 
 	const initMessage = {
 		type: '__kernel_internal__/initChildProcess',
@@ -1174,11 +1230,7 @@ function createChildProcessHandle(
 			env: { ...options.env },
 			cwd: options.cwd,
 			debug: Boolean(options.debug),
-			stdio: plan.stdio.map((descriptor) => ({
-				fd: descriptor.fd,
-				mode: descriptor.mode,
-				port: descriptor.workerPort ?? undefined,
-			})),
+			stdio: stdioForInit,
 			programPath: plan.programPath,
 			programSource: plan.programSource,
 			controlPort: plan.controlPort,
@@ -1190,6 +1242,7 @@ function createChildProcessHandle(
 		},
 	};
 
+	console.log('[createChildProcessHandle] transferList has', transferList.length, 'ports');
 	worker.postMessage(initMessage, transferList);
 
 	return handle;

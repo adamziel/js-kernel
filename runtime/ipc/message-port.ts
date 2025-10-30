@@ -90,9 +90,13 @@ export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents>
 	private closed = false;
 	private ended = false;
 	private static readonly WAIT_TIMEOUT_MS = 5000;
+	private readonly debugLabel: string | null;
 
-	constructor(private readonly port: MessagePort) {
+	constructor(private readonly port: MessagePort, options?: { debugLabel?: string }) {
 		super();
+		this.debugLabel = options?.debugLabel ?? null;
+		// Log EVERY MessagePortReadableStream creation to track stdin
+		console.log('[MPR constructor] created with label:', this.debugLabel);
 		if (typeof Atomics === 'object' && typeof Atomics.wait === 'function') {
 			this.waitBuffer = new SharedArrayBuffer(4);
 			this.waitView = new Int32Array(this.waitBuffer);
@@ -185,12 +189,24 @@ export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents>
 		this.close();
 	}
 
+	private receiveCount = 0;
 	private handleMessage = (event: MessageEvent) => {
+		// ALWAYS log to see if this is ever called
+		console.log('[MPR] handleMessage called', this.debugLabel);
+
 		const payload = event.data;
 		if (!payload || typeof payload !== 'object') {
+			console.log('[MPR] invalid payload', this.debugLabel);
 			return;
 		}
 		if (payload.type === 'data') {
+			this.receiveCount++;
+			const size = typeof payload.payload === 'string'
+				? payload.payload.length
+				: payload.payload.byteLength;
+
+			const label = this.debugLabel || 'ipc:readable';
+
 			if (typeof payload.payload !== 'string') {
 				const chunk = payload.payload;
 				let preview = '';
@@ -202,23 +218,27 @@ export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents>
 					preview = Buffer.from(chunk.slice(0, len)).toString('hex');
 				}
 				console.log(
-					'[ipc:readable] received',
+					`[${label}] received`,
 					describeChunk(chunk),
 					preview ? preview : ''
 				);
 			}
+
 			this.buffer.push(payload.payload);
 			this.emit('data', payload.payload);
+
 			if (this.waitView) {
 				Atomics.store(this.waitView, 0, 1);
 				Atomics.notify(this.waitView, 0);
 			}
 		} else if (payload.type === 'end') {
+			console.log('[MPR] received end', this.debugLabel);
 			this.ended = true;
 			this.remoteClosed = true;
 			this.emit('end', undefined as unknown as void);
 			this.close(true);
 		} else if (payload.type === 'close') {
+			console.log('[MPR] received close', this.debugLabel);
 			this.remoteClosed = true;
 			this.close(true);
 		}
@@ -229,8 +249,6 @@ export class MessagePortWritableStream extends BasicEventEmitter<WritableEvents>
 	private closed = false;
 	private remoteClosed = false;
 	private readonly logLabel: string | null;
-	private static logDecoder =
-		typeof TextDecoder === 'function' ? new TextDecoder() : null;
 	private readonly queue: Array<
 		| { type: 'data'; chunk: KernelStdioChunk }
 		| { type: 'signal'; signal: 'end' | 'close'; label?: string }
@@ -248,8 +266,15 @@ export class MessagePortWritableStream extends BasicEventEmitter<WritableEvents>
 	}
 
 	write(chunk: KernelStdioChunk) {
-		if (this.closed) return false;
-		this.queue.push({ type: 'data', chunk: chunk.slice() });
+		if (this.closed) {
+			return false;
+		}
+		// Clone the chunk immediately to prevent any detachment issues
+		// Explicitly create a new ArrayBuffer to ensure complete independence
+		const cloned = typeof chunk === 'string'
+			? chunk
+			: new Uint8Array(chunk);  // Creates new ArrayBuffer with copy of data
+		this.queue.push({ type: 'data', chunk: cloned });
 		this.scheduleFlush();
 		return true;
 	}
@@ -257,7 +282,10 @@ export class MessagePortWritableStream extends BasicEventEmitter<WritableEvents>
 	end(chunk?: KernelStdioChunk) {
 		if (this.closed) return false;
 		if (typeof chunk !== 'undefined') {
-			this.queue.push({ type: 'data', chunk: chunk.slice() });
+			const cloned = typeof chunk === 'string'
+				? chunk
+				: new Uint8Array(chunk);
+			this.queue.push({ type: 'data', chunk: cloned });
 		}
 		this.queue.push({ type: 'signal', signal: 'end', label: '<EOF>' });
 		this.scheduleFlush();
@@ -295,17 +323,14 @@ export class MessagePortWritableStream extends BasicEventEmitter<WritableEvents>
 			this.queue.length = 0;
 			return;
 		}
+		let itemCount = 0;
 		while (this.queue.length > 0 && !this.closed) {
 			const item = this.queue.shift()!;
+			itemCount++;
 			if (item.type === 'data') {
 				try {
-					// Clone TypedArrays to prevent "detached ArrayBuffer" errors
-					// When ArrayBuffers are transferred between workers, they become detached
-					// .slice() creates a new copy with a fresh ArrayBuffer
-					const payload =
-						typeof item.chunk === 'string'
-							? item.chunk
-							: item.chunk.slice();
+					// Chunk was already cloned in write(), just use it directly
+					const payload = item.chunk;
 					this.port.postMessage({ type: 'data', payload });
 				} catch (err) {
 					// Error reporting without stdio pollution - errors thrown will
@@ -345,34 +370,11 @@ export class MessagePortWritableStream extends BasicEventEmitter<WritableEvents>
 		}
 	};
 
-	private logChunk(chunk: KernelStdioChunk) {
-		if (!this.logLabel) {
-			return;
-		}
-		if (typeof chunk === 'string') {
-			return;
-		}
-		const text = describeChunk(chunk);
-		console.log(`[${this.logLabel}] ${text}`);
-	}
-
 	private logClose(reason: string) {
 		if (!this.logLabel) {
 			return;
 		}
 		console.log(`[${this.logLabel}] ${reason}`);
-	}
-
-	private static decodeForLog(bytes: Uint8Array): string {
-		try {
-			const decoder = MessagePortWritableStream.logDecoder;
-			if (decoder) {
-				return decoder.decode(bytes);
-			}
-		} catch {
-			// fall through to generic representation
-		}
-		return `<${bytes.length} bytes>`;
 	}
 }
 export { BasicEventEmitter };

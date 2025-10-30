@@ -103,6 +103,7 @@ interface KernelProcessRecord {
 		stdout?: MessagePortReadableStream;
 		stderr?: MessagePortReadableStream;
 	};
+	stdinRelayPort?: MessagePort | null;  // For nested spawns: kernel relays stdin from parent to child
 	controlCleanup: () => void;
 	fsCleanup: () => void;
 	spawnSyncCleanup: () => void;
@@ -253,7 +254,7 @@ export class Kernel extends InMemoryFileSystem {
 	): PreparedSpawnResources {
 		const pid = this.pidCounter++;
 		const stdioModes: [StdioMode, StdioMode, StdioMode] = [
-			options.stdio?.stdin ?? 'inherit',
+			options.stdio?.stdin ?? 'pipe', // Default stdin to 'pipe' for IPC
 			options.stdio?.stdout ?? 'inherit',
 			options.stdio?.stderr ?? 'inherit',
 		];
@@ -371,11 +372,13 @@ export class Kernel extends InMemoryFileSystem {
 					};
 				} else if (descriptor.fd === 1) {
 					parentStdout = new MessagePortReadableStream(
-						descriptor.hostPort
+						descriptor.hostPort,
+						{ debugLabel: 'kernel:parent-stdout' }
 					);
 				} else {
 					parentStderr = new MessagePortReadableStream(
-						descriptor.hostPort
+						descriptor.hostPort,
+						{ debugLabel: 'kernel:parent-stderr' }
 					);
 				}
 			} else if (descriptor.mode === 'inherit' && descriptor.hostPort) {
@@ -765,6 +768,7 @@ export class Kernel extends InMemoryFileSystem {
 		requestId: number,
 		rawOptions: unknown
 	) {
+		console.error('[kernel:handleSpawnSyncRequest] RECEIVED! requestId:', requestId);
 		const sendResponse = (response: {
 			ok: boolean;
 			result?: {
@@ -829,6 +833,7 @@ export class Kernel extends InMemoryFileSystem {
 		stderr?: string;
 		error?: string;
 	}> {
+		console.error('[kernel:runSpawnSyncProcess] CALLED! argv:', options.argv[0], 'stdio:', JSON.stringify(options.stdio || {}));
 		console.log('spawn sync', options);
 		const program = this.loadProgram(options.argv[0], options.cwd);
 		if (!program) {
@@ -836,7 +841,7 @@ export class Kernel extends InMemoryFileSystem {
 		}
 
 		const stdio: SpawnStdioOptions = {
-			stdin: options.stdio?.stdin ?? 'ignore',
+			stdin: options.stdio?.stdin ?? 'pipe', // Default to 'pipe' for IPC like async spawn
 			stdout: options.stdio?.stdout ?? 'pipe',
 			stderr: options.stdio?.stderr ?? 'pipe',
 		};
@@ -895,7 +900,8 @@ export class Kernel extends InMemoryFileSystem {
 			if (descriptor.mode === 'pipe' && descriptor.hostPort) {
 				if (descriptor.fd === 1) {
 					const stream = new MessagePortReadableStream(
-						descriptor.hostPort
+						descriptor.hostPort,
+						{ debugLabel: 'kernel:child-stdout' }
 					);
 					stream.on('data', (chunk) => {
 						const text =
@@ -907,7 +913,8 @@ export class Kernel extends InMemoryFileSystem {
 					stdoutStream = stream;
 				} else if (descriptor.fd === 2) {
 					const stream = new MessagePortReadableStream(
-						descriptor.hostPort
+						descriptor.hostPort,
+						{ debugLabel: 'kernel:child-stderr' }
 					);
 					stream.on('data', (chunk) => {
 						const text =
@@ -1058,12 +1065,36 @@ export class Kernel extends InMemoryFileSystem {
 		} else if (payload.type === CONTROL_MESSAGE_STDIN_DATA) {
 			const pid = typeof payload.pid === 'number' ? payload.pid : null;
 			if (pid && this.processes.has(pid)) {
+				const targetRecord = this.processes.get(pid)!;
 				const chunk = payload.chunk as KernelStdioChunk | undefined;
-				if (chunk !== undefined && chunk !== null) {
-					this.enqueueProcessStdin(pid, chunk);
-				}
-				if (payload.end) {
-					this.closeProcessStdin(pid);
+
+				// For nested spawns with relay port, forward data directly to child's stdin
+				if (targetRecord.stdinRelayPort) {
+					console.error('[kernel] Relaying stdin data to pid:', pid, 'chunk size:', chunk ? (typeof chunk === 'string' ? chunk.length : chunk.byteLength) : 0);
+					if (chunk !== undefined && chunk !== null) {
+						try {
+							targetRecord.stdinRelayPort.postMessage({ type: 'data', payload: chunk });
+						} catch (error) {
+							console.error('[kernel] Failed to relay stdin:', error);
+						}
+					}
+					if (payload.end) {
+						try {
+							targetRecord.stdinRelayPort.postMessage({ type: 'end' });
+							targetRecord.stdinRelayPort.close();
+							targetRecord.stdinRelayPort = null;
+						} catch (error) {
+							console.error('[kernel] Failed to close relay port:', error);
+						}
+					}
+				} else {
+					// For direct spawns, use the existing enqueue mechanism
+					if (chunk !== undefined && chunk !== null) {
+						this.enqueueProcessStdin(pid, chunk);
+					}
+					if (payload.end) {
+						this.closeProcessStdin(pid);
+					}
 				}
 			}
 		} else if (payload.type === CONTROL_MESSAGE_KILL_REQUEST) {
@@ -1121,6 +1152,7 @@ export class Kernel extends InMemoryFileSystem {
 		};
 	}
 
+	private spawnRequestCounter = 0;
 	private handleSpawnRequestFromProcess(
 		parentRecord: KernelProcessRecord,
 		requestId: unknown,
@@ -1135,6 +1167,10 @@ export class Kernel extends InMemoryFileSystem {
 			this.sendSpawnFailure(parentRecord.controlPort, requestId);
 			return;
 		}
+
+		// Log stdio options for spawn requests
+		this.spawnRequestCounter++;
+		console.error('[kernel:handleSpawnRequest #' + this.spawnRequestCounter + '] argv:', options.argv[0], 'stdio:', JSON.stringify(options.stdio || 'undefined'));
 
 		const program = this.loadProgram(options.argv[0], options.cwd);
 		if (!program) {
@@ -1152,6 +1188,10 @@ export class Kernel extends InMemoryFileSystem {
 			parentRecord.pid
 		);
 
+		// Track stdin ports for relaying data from parent to child
+		let stdinHostPort: MessagePort | null = null;
+		let stdinRelayChannel: MessageChannel | null = null;
+
 		const record: KernelProcessRecord = {
 			pid: resources.pid,
 			parentPid: parentRecord.pid,
@@ -1166,6 +1206,7 @@ export class Kernel extends InMemoryFileSystem {
 			hostType: 'process',
 			hostPid: parentRecord.pid,
 			exitCode: null,
+			stdinRelayPort: stdinHostPort,  // Store for relaying stdin data
 			controlCleanup: () => undefined,
 			fsCleanup: () => undefined,
 			spawnSyncCleanup: () => undefined,
@@ -1176,6 +1217,77 @@ export class Kernel extends InMemoryFileSystem {
 		record.controlCleanup = this.installProcessControl(record);
 		record.fsCleanup = this.installProcessFs(record);
 		record.spawnSyncCleanup = this.installProcessSpawnSync(record);
+
+		// Process stdio descriptors FIRST to create relay channel before building response
+		const transferList: MessagePort[] = [
+			resources.control.processPort,
+			resources.fs.processPort,
+			resources.spawnSync.processPort,
+		];
+
+		for (const descriptor of resources.stdio) {
+			if (descriptor.workerPort) {
+				transferList.push(descriptor.workerPort);
+			}
+			// For pipe mode, handle stdin specially with relay channel
+			// Transferring both ports in same postMessage breaks their connection
+			if (descriptor.mode === 'pipe' && descriptor.hostPort) {
+				if (descriptor.fd === 0) {
+					// For stdin: create relay channel
+					// - port1 goes to parent (runner writes to it)
+					// - port2 stays in kernel (listens and relays to binary's stdin)
+					stdinRelayChannel = new MessageChannel();
+					stdinHostPort = descriptor.hostPort;
+					stdinHostPort.start();
+
+					// Set up relay from parent -> binary
+					const relayPort = stdinRelayChannel.port2;
+					relayPort.start();
+					relayPort.addEventListener('message', (event) => {
+						const data = event.data;
+						if (data && data.type === 'data') {
+							try {
+								stdinHostPort!.postMessage({ type: 'data', payload: data.payload });
+								console.error('[kernel] Relayed stdin data to binary, size:',
+									typeof data.payload === 'string' ? data.payload.length : data.payload?.byteLength || 0);
+							} catch (error) {
+								console.error('[kernel] Failed to relay stdin data:', error);
+							}
+						} else if (data && data.type === 'end') {
+							try {
+								stdinHostPort!.postMessage({ type: 'end' });
+								stdinHostPort!.close();
+								relayPort.close();
+								console.error('[kernel] Relayed stdin end to binary');
+							} catch (error) {
+								console.error('[kernel] Failed to relay stdin end:', error);
+							}
+						}
+					});
+
+					// Transfer port1 to parent
+					transferList.push(stdinRelayChannel.port1);
+					console.error('[kernel] Created stdin relay channel for pid:', resources.pid);
+				} else {
+					// For stdout/stderr in pipe mode, transfer to parent so they can read
+					transferList.push(descriptor.hostPort);
+				}
+			} else if (descriptor.mode === 'inherit' && descriptor.hostPort) {
+				// Child output should still reach the kernel console.
+				this.attachInheritedStream(
+					descriptor.fd,
+					descriptor.hostPort,
+					options.name,
+					resources.pid
+				);
+			}
+		}
+		if (resources.message?.workerPort) {
+			transferList.push(resources.message.workerPort);
+		}
+		if (resources.message?.parentPort) {
+			transferList.push(resources.message.parentPort);
+		}
 
 		const response = {
 			type: CONTROL_MESSAGE_SPAWN_RESULT,
@@ -1194,8 +1306,10 @@ export class Kernel extends InMemoryFileSystem {
 					mode: descriptor.mode,
 					workerPort: descriptor.workerPort ?? null,
 					parentPort:
-						descriptor.mode === 'pipe'
-							? descriptor.hostPort ?? null
+						descriptor.mode === 'pipe' && descriptor.fd === 0
+							? stdinRelayChannel?.port1 ?? null  // For stdin, parent writes to relay channel
+							: descriptor.mode === 'pipe' && descriptor.fd !== 0
+							? descriptor.hostPort ?? null  // For stdout/stderr, parent reads from hostPort
 							: null,
 				})),
 				controlPort: resources.control.processPort,
@@ -1209,34 +1323,6 @@ export class Kernel extends InMemoryFileSystem {
 					: undefined,
 			},
 		};
-
-		const transferList: MessagePort[] = [
-			resources.control.processPort,
-			resources.fs.processPort,
-			resources.spawnSync.processPort,
-		];
-		for (const descriptor of resources.stdio) {
-			if (descriptor.workerPort) {
-				transferList.push(descriptor.workerPort);
-			}
-			if (descriptor.mode === 'pipe' && descriptor.hostPort) {
-				transferList.push(descriptor.hostPort);
-			} else if (descriptor.mode === 'inherit' && descriptor.hostPort) {
-				// Child output should still reach the kernel console.
-				this.attachInheritedStream(
-					descriptor.fd,
-					descriptor.hostPort,
-					options.name,
-					resources.pid
-				);
-			}
-		}
-		if (resources.message?.workerPort) {
-			transferList.push(resources.message.workerPort);
-		}
-		if (resources.message?.parentPort) {
-			transferList.push(resources.message.parentPort);
-		}
 
 		try {
 			parentRecord.controlPort.postMessage(response, transferList);
