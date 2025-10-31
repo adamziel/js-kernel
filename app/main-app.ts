@@ -4,6 +4,7 @@ import { Kernel } from '../runtime/index.ts';
 import type { KernelStdioChunk } from '../runtime/ipc/message-port.ts';
 import { BlobReader, ZipReader, Uint8ArrayWriter } from '@zip.js/zip.js';
 import esBundlerZipUrl from './programs/node-loader/es-bundler.zip?url';
+import bundleFixtureSource from './tests/fixtures/esbuild-wasm/bundle.js?raw';
 
 const kernel = new Kernel();
 globalThis.kernel = kernel;
@@ -69,65 +70,7 @@ async function unzipKernelFile(
 	await zipReader.close();
 }
 
-const createFsRunnerSource = () => `
-async function main() {
-\tconst esbuild = require('/esbuild/node_modules/esbuild-wasm/lib/main.js');
-\tconst fsSync = processController.fsSync;
-\tawait esbuild.initialize({ worker: false });
-\tconst fsEntrySource = fsSync.readFileSync('/esbuild/src/index.js', 'utf8');
-\tconst result = await esbuild.build({
-\t\tbundle: true,
-\t\tformat: 'esm',
-\t\tminifySyntax: true,
-\t\twrite: false,
-\t\tstdin: {
-\t\t\tcontents: fsEntrySource,
-\t\t\tresolveDir: '/esbuild/src',
-\t\t\tsourcefile: 'fs-entry.js',
-\t\t\tloader: 'js',
-\t\t},
-\t});
-\tconst outputFiles = Array.isArray(result.outputFiles) ? result.outputFiles : [];
-\tconst outputText = outputFiles.length > 0 && outputFiles[0]
-\t\t? String(outputFiles[0].text || '')
-\t\t: '';
-\tfsSync.writeFileSync('/tmp/esbuild-bundle-fs.txt', outputText, 'utf8');
-\tprocessController.stdout.write(outputText);
-\tprocessController.exit(0);
-}
-
-main().catch((error) => {
-\tconst message =
-\t\terror && typeof error === 'object' && 'stack' in error
-\t\t\t? String(error.stack)
-\t\t\t: String(error ?? 'Unknown error');
-\tprocessController.stderr.write(message);
-\tprocessController.exit(1);
-});
-`;
-
 export async function testEsbuildLikeInTests() {
-	kernel.mkdirSync('/esbuild-experiments', { recursive: true });
-	await fetchAndWriteKernelFile(
-		`/programs/node-loader/es-bundler.zip`,
-		`/esbuild-experiments/esbuild.zip`
-	);
-	// Unzip rest.zip into the dist directory
-	await unzipToKernelDirectory(
-		`/esbuild-experiments/esbuild.zip`,
-		`/esbuild-experiments`
-	);
-
-	// Move node_modules to the top level so it can always be found by wp-scripts.
-	kernel.renameSync('/node_modules', '/node_modules_old');
-	kernel.renameSync('/esbuild-experiments/node_modules', '/node_modules');
-
-	console.log('Creating simple block...');
-	await TestCases.createSimpleBlock();
-	console.log('Renaming src...');
-	kernel.renameSync('/jsx/src', '/esbuild-experiments/src');
-	console.log('Running esbuild...');
-
 	const response = await fetch(esBundlerZipUrl);
 	if (!response.ok) {
 		throw new Error('Failed to fetch es-bundler.zip');
@@ -145,24 +88,25 @@ export async function testEsbuildLikeInTests() {
 		null
 	);
 
-	const runnerSource = createFsRunnerSource();
-	kernel.writeFileSync('/test-esbuild.js', runnerSource, 'utf8');
+	kernel.writeFileSync(
+		'/esbuild/bundle.js',
+		sharedTextEncoder.encode(bundleFixtureSource),
+		null
+	);
+	if (kernel.existsSync('/tmp/esbuild-bundle-fs.txt')) {
+		kernel.unlinkSync('/tmp/esbuild-bundle-fs.txt');
+	}
 
 	const subprocess = kernel.spawn({
-		argv: [
-			'node',
-			'/esbuild-experiments/bundle.js',
-			'/esbuild-experiments/src',
-		],
-		// argv: ['node', '/test-esbuild.js'],
+		argv: ['node', '/esbuild/bundle.js', '/esbuild/src', '/tmp/esbuild-bundle-fs.txt'],
 		env: {
 			PATH: '/bin',
 			TMPDIR: '/tmp',
 			HOME: '/home',
 			ESBUILD_LOG_LEVEL: 'debug',
 		},
-		cwd: '/',
-		name: 'esbuild-test-runner',
+		cwd: '/esbuild',
+		name: 'esbuild-bundle-runner',
 		stdio: {
 			stdin: 'pipe',
 			stdout: 'pipe',

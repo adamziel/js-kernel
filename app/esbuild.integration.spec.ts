@@ -3,10 +3,237 @@ import { Kernel } from '../runtime/index.ts';
 import { installCustomPrograms } from './programs/index.ts';
 import { ZipReader, BlobReader, Uint8ArrayWriter } from '@zip.js/zip.js';
 import esBundlerZipUrl from './programs/node-loader/es-bundler.zip?url';
+import bundleFixtureSource from './tests/fixtures/esbuild-wasm/bundle.js?raw';
+const npmSingle = '/programs/node-loader/npm/npm-single.js?raw';
+const defaultInput = '/programs/node-loader/npm/default-input.js?raw';
 import './read-opfs-logs.ts';
 
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
+const BUNDLE_OUTPUT_PATH = '/tmp/esbuild-bundle-fs.txt';
+
+async function createSimpleBlock(kernel: Kernel) {
+	// Create a simple block
+	kernel.mkdirSync('/esbuild/src', { recursive: true });
+	kernel.writeFileSync(
+		'/esbuild/src/block.json',
+		`{
+		"$schema": "https://json.schemastore.org/block.json",
+		"apiVersion": 2,
+		"name": "gutenberg-examples/example-01-basic-esnext",
+		"title": "Example: Basic (ESNext)",
+		"textdomain": "gutenberg-examples",
+		"icon": "universal-access-alt",
+		"category": "jsx-examples",
+		"example": {},
+		"editorScript": "file:./index.js"
+	}`
+	);
+	kernel.writeFileSync(
+		'/esbuild/src/index.js',
+		`/**
+		* WordPress dependencies
+		*/
+		import { registerBlockType } from '@wordpress/blocks';
+		
+		/**
+		* Internal dependencies
+		*/
+		import json from './block.json';
+		import Edit from './edit';
+		import save from './save';
+		
+		// Export this so we can use it in the edit and save files
+		export const blockStyle = {
+			backgroundColor: '#900',
+			color: '#fff',
+			padding: '20px',
+		};
+		
+		// Destructure the json file to get the name of the block
+		// For more information on how this works, see: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/Destructuring_assignment
+		const { name } = json;
+		
+		// Register the block
+		registerBlockType( name, {
+			edit: Edit,
+			save, // Object shorthand property - same as writing: save: save,
+		} );`
+	);
+	kernel.writeFileSync(
+		'/esbuild/src/edit.js',
+		`/**
+		* WordPress dependencies
+		*/
+	import { __ } from '@wordpress/i18n';
+	import { useBlockProps } from '@wordpress/block-editor';
+	
+	/**
+	 * Internal dependencies
+	 */
+	import { blockStyle } from './index';
+	
+	const Edit = () => {
+		const blockProps = useBlockProps( { style: blockStyle } );
+		return (
+			<div { ...blockProps }>
+				{ __(
+					'Hello World, step 1 (from the editor).',
+					'gutenberg-examples'
+				) }
+			</div>
+		);
+	};
+	export default Edit;`
+	);
+
+	kernel.writeFileSync(
+		'/esbuild/src/save.js',
+		`/**
+		* WordPress dependencies
+		*/
+	import { __ } from '@wordpress/i18n';
+	import { useBlockProps } from '@wordpress/block-editor';
+	
+	/**
+	 * Internal dependencies
+	 */
+	import { blockStyle } from './index';
+	
+	const Save = () => {
+		const blockProps = useBlockProps.save( { style: blockStyle } );
+		return (
+			<div { ...blockProps }>
+				{ __(
+					'Hello World, step 1 (from the frontend).',
+					'gutenberg-examples'
+				) }
+			</div>
+		);
+	};
+	export default Save;`
+	);
+	kernel.writeFileSync(
+		'/esbuild/src/index.php',
+		`<?php
+	/**
+	 * Plugin Name: Gutenberg Examples Basic EsNext
+	 * Plugin URI: https://github.com/WordPress/gutenberg-examples
+	 * Description: This is a plugin demonstrating how to register new blocks for the Gutenberg editor.
+	 * Version: 1.1.0
+	 * Author: the Gutenberg Team
+	 *
+	 * @package gutenberg-examples
+	 */
+	
+	defined( 'ABSPATH' ) || exit;
+	
+	/**
+	 * Load all translations for our plugin from the MO file.
+	 */
+	function gutenberg_examples_01_esnext_load_textdomain() {
+		load_plugin_textdomain( 'gutenberg-examples', false, basename( __DIR__ ) . '/languages' );
+	}
+	add_action( 'init', 'gutenberg_examples_01_esnext_load_textdomain' );
+	
+	/**
+	 * Registers all block assets so that they can be enqueued through Gutenberg in
+	 * the corresponding context.
+	 *
+	 * Passes translations to JavaScript.
+	 */
+	function gutenberg_examples_01_esnext_register_block() {
+	
+		// Register the block by passing the location of block.json to register_block_type.
+		register_block_type( __DIR__ );
+	
+		if ( function_exists( 'wp_set_script_translations' ) ) {
+			/**
+			 * May be extended to wp_set_script_translations( 'my-handle', 'my-domain',
+			 * plugin_dir_path( MY_PLUGIN ) . 'languages' ) ). For details see
+			 * https://make.wordpress.org/core/2018/11/09/new-javascript-i18n-support-in-wordpress/
+			 */
+			wp_set_script_translations( 'gutenberg-examples-01-esnext', 'gutenberg-examples' );
+		}
+	
+	}
+	add_action( 'init', 'gutenberg_examples_01_esnext_register_block' );`
+	);
+
+	kernel.writeFileSync(
+		'/esbuild/src/save.js',
+		`/**
+		* WordPress dependencies
+		*/
+	import { __ } from '@wordpress/i18n';
+	import { useBlockProps } from '@wordpress/block-editor';
+	
+	/**
+	 * Internal dependencies
+	 */
+	import { blockStyle } from './index';
+	
+	const Save = () => {
+		const blockProps = useBlockProps.save( { style: blockStyle } );
+		return (
+			<div { ...blockProps }>
+				{ __(
+					'Hello World, step 1 (from the frontend).',
+					'gutenberg-examples'
+				) }
+			</div>
+		);
+	};
+	export default Save;`
+	);
+
+	kernel.writeFileSync(
+		'/esbuild/package.json',
+		`{
+		"name": "gutenberg-examples",
+		"version": "1.1.0",
+		"private": true,
+		"description": "Gutenberg Examples",
+		"author": "The WordPress Contributors",
+		"license": "GPL-2.0-or-later",
+		"keywords": [
+			"WordPress",
+			"editor",
+			"Examples"
+		],
+		"homepage": "https://github.com/WordPress/gutenberg-examples/",
+		"repository": "git+https://github.com/WordPress/gutenberg-examples.git",
+		"bugs": {
+			"url": "https://github.com/WordPress/gutenberg-examples/issues"
+		}
+	}`
+	);
+}
+
+const prepareEsbuildEnvironment = async (kernel: Kernel) => {
+	const response = await fetch(esBundlerZipUrl);
+	if (!response.ok) {
+		throw new Error('Failed to fetch es-bundler.zip');
+	}
+	const bundleZip = await response.arrayBuffer();
+	kernel.mkdirSync('/esbuild', { recursive: true });
+	kernel.mkdirSync('/tmp', { recursive: true });
+	kernel.writeFileSync(
+		'/esbuild/es-bundler.zip',
+		new Uint8Array(bundleZip),
+		null
+	);
+	await unzipKernelFile(kernel, '/esbuild/es-bundler.zip', '/esbuild');
+	kernel.mkdirSync('/esbuild/src', { recursive: true });
+	// kernel.writeFileSync(
+	// 	'/esbuild/src/index.js',
+	// 	encoder.encode(`export const answer = 21 * 2;`),
+	// 	null
+	// );
+	if (kernel.existsSync(BUNDLE_OUTPUT_PATH)) {
+		kernel.unlinkSync(BUNDLE_OUTPUT_PATH);
+	}
+};
 
 const chunkToString = (chunk: string | Uint8Array) =>
 	typeof chunk === 'string' ? chunk : decoder.decode(chunk);
@@ -37,6 +264,13 @@ async function unzipKernelFile(
 	await zipReader.close();
 }
 
+async function installNpm(kernel: Kernel) {
+	kernel.writeFileSync('/bin/npm', npmSingle, { mode: 0o755 });
+	kernel.writeFileSync('/bin/default-input.js', defaultInput, {
+		mode: 0o755,
+	});
+}
+
 describe.sequential('esbuild integration', () => {
 	let kernel: Kernel;
 
@@ -48,7 +282,7 @@ describe.sequential('esbuild integration', () => {
 	});
 
 	const createRunnerSource = (entryType: 'virtual' | 'fs') => {
-	const virtualEntryBlock = String.raw`const wasmPath = '/esbuild/node_modules/esbuild-wasm/esbuild.wasm';
+		const virtualEntryBlock = String.raw`const wasmPath = '/esbuild/node_modules/esbuild-wasm/esbuild.wasm';
 	const wasmBytesCheck = fsSync.readFileSync(wasmPath, null);
 	console.log('[runner] wasm bytes length', wasmBytesCheck ? wasmBytesCheck.byteLength || wasmBytesCheck.length : 'null');
 	const entrySource = fsSync.readFileSync('/esbuild/src/index.js', 'utf8');
@@ -68,7 +302,7 @@ describe.sequential('esbuild integration', () => {
 	});
 	console.log('[runner] esbuild.build() completed');`;
 
-	const filesystemEntryBlock = String.raw`console.log('[runner] about to call esbuild.build() with fs entry');
+		const filesystemEntryBlock = String.raw`console.log('[runner] about to call esbuild.build() with fs entry');
 	const fsEntrySource = fsSync.readFileSync('/esbuild/src/index.js', 'utf8');
 	const result = await esbuild.build({
 		bundle: true,
@@ -83,15 +317,15 @@ describe.sequential('esbuild integration', () => {
 		},
 	});
 	console.log('[runner] esbuild.build() with fs entry completed');`;
-	const buildBlock =
-		entryType === 'virtual' ? virtualEntryBlock : filesystemEntryBlock;
+		const buildBlock =
+			entryType === 'virtual' ? virtualEntryBlock : filesystemEntryBlock;
 
-	const bundleOutputPath =
-		entryType === 'virtual'
-			? "'/tmp/esbuild-bundle-virtual.txt'"
-			: "'/tmp/esbuild-bundle-fs.txt'";
+		const bundleOutputPath =
+			entryType === 'virtual'
+				? "'/tmp/esbuild-bundle-virtual.txt'"
+				: "'/tmp/esbuild-bundle-fs.txt'";
 
-	return `
+		return `
 async function main() {
 	console.log('[runner] buffer check', Buffer.from('').constructor.name, Buffer.from('') instanceof Uint8Array);
 	const originalReadFileSync = processController.fsSync.readFileSync;
@@ -259,19 +493,9 @@ main().catch((error) => {
 	};
 
 	const runEsbuildRunner = async (entryType: 'virtual' | 'fs') => {
-		const response = await fetch(esBundlerZipUrl);
-		if (!response.ok) {
-			throw new Error('Failed to fetch es-bundler.zip');
-		}
-		const bundleZip = await response.arrayBuffer();
-		kernel.mkdirSync('/esbuild', { recursive: true });
-		kernel.mkdirSync('/tmp', { recursive: true });
-		kernel.writeFileSync(
-			'/esbuild/es-bundler.zip',
-			new Uint8Array(bundleZip),
-			null
-		);
-		await unzipKernelFile(kernel, '/esbuild/es-bundler.zip', '/esbuild');
+		await installNpm(kernel);
+		await createSimpleBlock(kernel);
+		await prepareEsbuildEnvironment(kernel);
 
 		const mainJsPath = '/esbuild/node_modules/esbuild-wasm/lib/main.js';
 		const mainJsOriginal = kernel.readFileSync(mainJsPath, 'utf8');
@@ -480,9 +704,9 @@ setTimeout(() => {
 			stderr += text;
 		});
 
-	const exitCode = await new Promise<number>((resolve) => {
-		subprocess.onExit((code) => resolve(code ?? 0));
-	});
+		const exitCode = await new Promise<number>((resolve) => {
+			subprocess.onExit((code) => resolve(code ?? 0));
+		});
 		try {
 			if (kernel.existsSync('/esbuild-wasm-dump.bin')) {
 				const dump = kernel.readFileSync(
@@ -501,19 +725,91 @@ setTimeout(() => {
 			console.log('[test] wasm dump read error', error);
 		}
 
-	expect(exitCode).toBe(0);
-	expect(stderr).toBe('');
+		expect(exitCode).toBe(0);
+		expect(stderr).toBe('');
 
-	const bundleOutputPath =
-		entryType === 'virtual'
-			? '/tmp/esbuild-bundle-virtual.txt'
-			: '/tmp/esbuild-bundle-fs.txt';
-	const bundleExists = kernel.existsSync(bundleOutputPath);
-	expect(bundleExists).toBe(true);
-	const bundleTextRaw = bundleExists
-		? (kernel.readFileSync(bundleOutputPath, 'utf8') as string)
-		: '';
-	return bundleTextRaw;
+		const bundleOutputPath =
+			entryType === 'virtual'
+				? '/tmp/esbuild-bundle-virtual.txt'
+				: '/tmp/esbuild-bundle-fs.txt';
+		const bundleExists = kernel.existsSync(bundleOutputPath);
+		expect(bundleExists).toBe(true);
+		const bundleTextRaw = bundleExists
+			? (kernel.readFileSync(bundleOutputPath, 'utf8') as string)
+			: '';
+		return bundleTextRaw;
+	};
+
+	const runBundleFixture = async () => {
+		await prepareEsbuildEnvironment(kernel);
+		await createSimpleBlock(kernel);
+		await installNpm(kernel);
+		const scriptPath = '/esbuild/bundle.js';
+		kernel.writeFileSync(
+			scriptPath,
+			encoder.encode(bundleFixtureSource),
+			null
+		);
+		// const npmInstallSubprocess = kernel.spawn({
+		// 	argv: ['node', '/bin/npm', 'install'],
+		// 	cwd: '/esbuild',
+		// 	name: 'npm-install',
+		// 	env: {},
+		// 	stdio: {
+		// 		stdin: 'ignore',
+		// 		stdout: 'inherit',
+		// 		stderr: 'inherit',
+		// 	},
+		// });
+		// if (typeof npmInstallSubprocess === 'number') {
+		// 	throw new Error('failed to spawn npm: ' + npmInstallSubprocess);
+		// }
+		// await new Promise((resolve) => {
+		// 	npmInstallSubprocess.onExit((code) => resolve(code ?? 0));
+		// });
+
+		console.log(kernel.readdirSync('/esbuild'));
+
+		const subprocess = kernel.spawn({
+			argv: ['node', scriptPath, '/esbuild/src', BUNDLE_OUTPUT_PATH],
+			env: {
+				PATH: '/bin',
+				TMPDIR: '/tmp',
+				HOME: '/home',
+				ESBUILD_LOG_LEVEL: 'debug',
+			},
+			cwd: '/esbuild',
+			name: 'esbuild-bundle-fixture',
+			stdio: {
+				stdin: 'pipe',
+				stdout: 'pipe',
+				stderr: 'pipe',
+			},
+		});
+
+		if (typeof subprocess === 'number') {
+			throw new Error('failed to spawn bundle fixture');
+		}
+
+		let stdout = '';
+		let stderr = '';
+
+		subprocess.stdout?.on('data', (chunk) => {
+			stdout += chunkToString(chunk);
+		});
+
+		subprocess.stderr?.on('data', (chunk) => {
+			stderr += chunkToString(chunk);
+		});
+
+		const exitCode: number = await new Promise((resolve) => {
+			subprocess.onExit((code) => resolve(code ?? 0));
+		});
+
+		const bundleText = kernel.existsSync(BUNDLE_OUTPUT_PATH)
+			? (kernel.readFileSync(BUNDLE_OUTPUT_PATH, 'utf8') as string)
+			: '';
+		return { exitCode, stdout, stderr, bundleText };
 	};
 
 	// TODO: esbuild WASM hangs during build IPC communication
@@ -533,4 +829,11 @@ setTimeout(() => {
 		const bundleText = await runEsbuildRunner('fs');
 		expect(bundleText).toContain('answer = 42');
 	}, 20000);
+
+	it.only('can bundle via esbuild-wasm using bundle fixture script', async () => {
+		const { exitCode, stderr, bundleText } = await runBundleFixture();
+		expect(stderr).toBe('');
+		expect(exitCode).toBe(0);
+		expect(bundleText).toContain('answer = 42');
+	}, 2000000);
 });
