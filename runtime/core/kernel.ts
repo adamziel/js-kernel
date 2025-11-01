@@ -1523,7 +1523,7 @@ export class Kernel extends InMemoryFileSystem {
 
 		// Log stdio options for spawn requests
 		this.spawnRequestCounter++;
-		console.error('[kernel:handleSpawnRequest #' + this.spawnRequestCounter + '] argv:', options.argv[0], 'stdio:', JSON.stringify(options.stdio || 'undefined'));
+		console.error('[kernel:handleSpawnRequest #' + this.spawnRequestCounter + '] FULL argv:', JSON.stringify(options.argv), 'stdio:', JSON.stringify(options.stdio || 'undefined'));
 
 		const program = this.loadProgram(options.argv[0], options.cwd);
 		if (!program) {

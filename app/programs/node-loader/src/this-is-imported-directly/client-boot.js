@@ -6,6 +6,221 @@ globalThis.window = globalThis.global = globalThis;
 globalThis.globalFs = processController.fsSync;
 globalThis.globalFsAsync = processController.fs;
 
+const fsPathTextDecoder =
+	typeof TextDecoder !== 'undefined' ? new TextDecoder() : null;
+
+const isPathBufferLike = (value) =>
+	typeof Buffer !== 'undefined' &&
+	typeof Buffer.isBuffer === 'function' &&
+	Buffer.isBuffer(value);
+
+const toFsPathString = (value) => {
+	if (typeof value === 'string') {
+		return value;
+	}
+	if (isPathBufferLike(value)) {
+		return value.toString('utf8');
+	}
+	if (value instanceof Uint8Array) {
+		return fsPathTextDecoder ? fsPathTextDecoder.decode(value) : value;
+	}
+	if (value && typeof value === 'object') {
+		if (typeof value.href === 'string') {
+			return value.href;
+		}
+		if (typeof value.toString === 'function') {
+			const stringValue = value.toString();
+			if (typeof stringValue === 'string') {
+				return stringValue;
+			}
+		}
+	}
+	return value;
+};
+
+const collapseAbsolutePath = (input) => {
+	const segments = input.split('/').filter(Boolean);
+	const resolved = [];
+	for (const segment of segments) {
+		if (segment === '.' || segment === '') {
+			continue;
+		}
+		if (segment === '..') {
+			if (resolved.length > 0) {
+				resolved.pop();
+			}
+			continue;
+		}
+		resolved.push(segment);
+	}
+	return resolved.length === 0 ? '/' : `/${resolved.join('/')}`;
+};
+
+const resolveFsPath = (value) => {
+	const pathValue = toFsPathString(value);
+	if (typeof pathValue !== 'string') {
+		return value;
+	}
+
+	let candidate = pathValue;
+	if (candidate.startsWith('file://')) {
+		try {
+			const url = new URL(candidate);
+			if (url.protocol === 'file:') {
+				candidate = decodeURIComponent(url.pathname || '/');
+			}
+		} catch {
+			// ignore and fall through to fallback handling
+		}
+	}
+
+	const cwd =
+		typeof process !== 'undefined' && typeof process.cwd === 'function'
+			? process.cwd() || '/'
+			: '/';
+
+	if (candidate === '' || candidate === '.') {
+		return collapseAbsolutePath(cwd);
+	}
+
+	if (candidate.startsWith('/')) {
+		return collapseAbsolutePath(candidate);
+	}
+
+	const base = cwd.endsWith('/') ? cwd : `${cwd}/`;
+	return collapseAbsolutePath(`${base}${candidate}`);
+};
+
+const shouldNormalizePathValue = (value) =>
+	typeof value === 'string' ||
+	isPathBufferLike(value) ||
+	value instanceof Uint8Array ||
+	(value && typeof value === 'object' && typeof value.href === 'string');
+
+const applyFsPathNormalization = (target, pathArgMap) => {
+	if (!target || typeof target !== 'object') {
+		return;
+	}
+	for (const [method, indexes] of Object.entries(pathArgMap)) {
+		const original = target[method];
+		if (typeof original !== 'function') {
+			continue;
+		}
+		if (original.__kernelPathWrapped) {
+			continue;
+		}
+		const wrapped = function (...args) {
+			const normalizedArgs =
+				indexes && indexes.length > 0
+					? args.map((arg, index) =>
+							indexes.includes(index) &&
+							shouldNormalizePathValue(arg)
+								? resolveFsPath(arg)
+								: arg
+					  )
+					: args;
+			if (
+				typeof console !== 'undefined' &&
+				console &&
+            (method === 'readdirSync' ||
+                    method === 'statSync' ||
+                    method === 'readFileSync' ||
+                    method === 'readdir' ||
+                    method === 'stat' ||
+                    method === 'readFile')
+			) {
+				try {
+					const displayArg =
+						normalizedArgs.length > 0
+							? normalizedArgs[0]
+							: undefined;
+					console.log(
+						`[kernel-fs ${method}]`,
+						displayArg,
+						args[0] === displayArg ? '' : `(from ${args[0]})`
+					);
+				} catch {
+					// ignore logging errors
+				}
+			}
+			return original.apply(this, normalizedArgs);
+		};
+		wrapped.__kernelPathWrapped = true;
+		target[method] = wrapped;
+	}
+};
+
+const fsSyncPathArgMap = {
+	accessSync: [0],
+	appendFileSync: [0],
+	chmodSync: [0],
+	chownSync: [0],
+	copyFileSync: [0, 1],
+	cpSync: [0, 1],
+	cpSyncCheckPaths: [0, 1],
+	cpSyncCopyDir: [0, 1],
+	cpSyncOverrideFile: [0, 1],
+	existsSync: [0],
+	linkSync: [0, 1],
+	lchmodSync: [0],
+	lchownSync: [0],
+	lstatSync: [0],
+	mkdirSync: [0],
+	mkdtempSync: [0],
+	openSync: [0],
+	opendirSync: [0],
+	readFileSync: [0],
+	readFileUtf8Sync: [0],
+	readdirSync: [0],
+	readdirBinding: [0],
+	readlinkSync: [0],
+	realpathSync: [0],
+	renameSync: [0, 1],
+	rmSync: [0],
+	rmdirSync: [0],
+	statSync: [0],
+	symlinkSync: [0, 1],
+	truncateSync: [0],
+	unlinkSync: [0],
+	utimesSync: [0],
+	writeFileSync: [0],
+	writeFileUtf8Sync: [0],
+};
+
+const fsAsyncPathArgMap = {
+	access: [0],
+	appendFile: [0],
+	chmod: [0],
+	chown: [0],
+	copyFile: [0, 1],
+	cp: [0, 1],
+	link: [0, 1],
+	lchmod: [0],
+	lchown: [0],
+	lstat: [0],
+	mkdir: [0],
+	mkdtemp: [0],
+	open: [0],
+	opendir: [0],
+	readFile: [0],
+	readdir: [0],
+	readdirBinding: [0],
+	readlink: [0],
+	realpath: [0],
+	rename: [0, 1],
+	rm: [0],
+	rmdir: [0],
+	stat: [0],
+	symlink: [0, 1],
+	truncate: [0],
+	unlink: [0],
+	utimes: [0],
+	writeFile: [0],
+};
+
+applyFsPathNormalization(globalThis.globalFs, fsSyncPathArgMap);
+applyFsPathNormalization(globalThis.globalFsAsync, fsAsyncPathArgMap);
+
 const UTF8_DECODER = new TextDecoder('utf-8');
 const READ_FILE_UTF8_CHUNK_SIZE = 64 * 1024;
 
@@ -2512,9 +2727,15 @@ globalThis.internalModules = {
 			// Permission Model checks.
 			// @see node_file.cc
 			internalModuleStat(receiver /* unknown */, path /* string */) {
+				const targetPath =
+					typeof path !== 'undefined' ? path : receiver;
+const normalizedPath = shouldNormalizePathValue(targetPath)
+    ? resolveFsPath(targetPath)
+    : targetPath;
+console.log('[internalModuleStat] request', targetPath, 'normalized to', normalizedPath);
 				let stats;
 				try {
-					stats = globalFs.statSync(path ?? receiver);
+					stats = globalFs.statSync(normalizedPath);
 				} catch (e) {
 					return -1;
 				}
@@ -5191,6 +5412,53 @@ if (
 	globalThis.coreModules.fs &&
 	!globalThis.coreModules.fs.__patchedProcessControllerReadFile
 ) {
+	const pathModule = globalThis.coreModules?.path;
+	const urlModule = globalThis.coreModules?.url;
+
+	const normalizePathForFs = (value) => {
+		if (typeof value === 'string') {
+			if (value.startsWith('file://') && urlModule?.fileURLToPath) {
+				try {
+					return urlModule.fileURLToPath(value);
+				} catch {
+					// Ignore and fall back to original value
+				}
+			}
+			if (
+				pathModule &&
+				typeof pathModule.isAbsolute === 'function' &&
+				typeof pathModule.resolve === 'function'
+			) {
+				if (!pathModule.isAbsolute(value)) {
+					const cwd =
+						typeof process !== 'undefined' &&
+						typeof process.cwd === 'function'
+							? process.cwd()
+							: '/';
+					try {
+						return pathModule.resolve(cwd || '/', value);
+					} catch {
+						// Ignore and fall back to original value
+					}
+				}
+			}
+			return value;
+		}
+		if (
+			value &&
+			typeof value === 'object' &&
+			typeof value.href === 'string' &&
+			urlModule?.fileURLToPath
+		) {
+			try {
+				return urlModule.fileURLToPath(value);
+			} catch {
+				// Ignore and fall back to original value
+			}
+		}
+		return value;
+	};
+
 	const originalReadFileSync = globalThis.coreModules.fs.readFileSync.bind(
 		globalThis.coreModules.fs
 	);
@@ -5198,51 +5466,98 @@ if (
 		path,
 		options
 	) {
-		const result = originalReadFileSync(path, options);
-		if (
-			!supportsBinaryResult(options) ||
-			typeof Buffer === 'undefined' ||
-			typeof Buffer.from !== 'function'
-		) {
-			return result;
-		}
-		const availableLength =
-			typeof result === 'string'
-				? result.length
-				: result &&
-				  typeof result === 'object' &&
-				  typeof (result.byteLength ?? result.length) === 'number'
-				? result.byteLength ?? result.length
-				: 0;
-		if (availableLength > 0 || typeof path !== 'string') {
-			return result;
-		}
-		let fallback;
+		let result;
+		let usedFallback = false;
+		const normalizedPath =
+			typeof path === 'string' || (path && typeof path.href === 'string')
+				? normalizePathForFs(path)
+				: path;
+
 		try {
-			fallback = globalThis.processController.fsSync.readFileSync(
-				path,
-				null
-			);
-		} catch {
+			result = originalReadFileSync(path, options);
+		} catch (originalError) {
+			if (
+				typeof normalizedPath !== 'string' &&
+				!(
+					normalizedPath &&
+					typeof normalizedPath === 'object' &&
+					typeof normalizedPath.href === 'string'
+				)
+			) {
+				throw originalError;
+			}
+			try {
+				result = globalThis.processController.fsSync.readFileSync(
+					normalizedPath,
+					options ?? null
+				);
+				usedFallback = true;
+			} catch {
+				throw originalError;
+			}
+		}
+
+		const shouldReturnBuffer =
+			supportsBinaryResult(options) &&
+			typeof Buffer !== 'undefined' &&
+			typeof Buffer.from === 'function';
+
+		if (!usedFallback) {
+			if (!shouldReturnBuffer) {
+				return result;
+			}
+			const availableLength =
+				typeof result === 'string'
+					? result.length
+					: result &&
+					  typeof result === 'object' &&
+					  typeof (result.byteLength ?? result.length) === 'number'
+					? result.byteLength ?? result.length
+					: 0;
+			if (availableLength > 0 || typeof normalizedPath !== 'string') {
+				return result;
+			}
+			try {
+				result = globalThis.processController.fsSync.readFileSync(
+					normalizedPath,
+					null
+				);
+				usedFallback = true;
+			} catch {
+				return result;
+			}
+		}
+
+		if (!shouldReturnBuffer) {
 			return result;
 		}
-		if (!(fallback instanceof Uint8Array)) {
+
+		let fallback =
+			result instanceof Uint8Array
+				? result
+				: typeof result === 'string'
+				? Buffer.from(result)
+				: null;
+
+		if (!fallback || !(fallback instanceof Uint8Array)) {
 			if (
-				!fallback ||
-				typeof fallback !== 'object' ||
-				!(fallback.buffer instanceof ArrayBuffer)
+				!result ||
+				typeof result !== 'object' ||
+				!(result.buffer instanceof ArrayBuffer)
 			) {
 				return result;
 			}
 			fallback = new Uint8Array(
-				fallback.buffer,
-				fallback.byteOffset ?? fallback.offset ?? 0,
-				fallback.byteLength ?? fallback.length ?? 0
+				result.buffer,
+				result.byteOffset ?? result.offset ?? 0,
+				result.byteLength ?? result.length ?? 0
 			);
 		}
+
 		if (fallback.byteLength === 0) {
 			return result;
 		}
+
 		return Buffer.from(fallback);
 	};
 	Object.defineProperty(

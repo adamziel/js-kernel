@@ -1194,13 +1194,28 @@ export class InMemoryFileSystem {
 				`ENOTDIR: not a directory, open '${path}'`
 			);
 		}
-		if (existingNode && existingNode.type === 'dir') {
-			throw createFsError(
-				'EISDIR',
-				`EISDIR: illegal operation on a directory, open '${path}'`
-			);
-		}
 		const f = parseOpenFlags(flags);
+
+		// Allow opening directories with read-only flags (O_RDONLY = 0)
+		// This is standard POSIX behavior - directories can be opened for fstat, etc.
+		if (existingNode && existingNode.type === 'dir') {
+			// Only allow read-only access to directories
+			if (f.write || f.create || f.truncate || f.append) {
+				throw createFsError(
+					'EISDIR',
+					`EISDIR: illegal operation on a directory, open '${path}'`
+				);
+			}
+			// Open the directory - store the directory node for fstat support
+			const fd = this.nextFd++;
+			this.openFiles.set(fd, {
+				node: existingNode,
+				position: 0,
+				flags: typeof flags === 'string' ? flags : String(flags),
+			});
+			return fd;
+		}
+
 		let fileNode;
 		if (existingNode) {
 			if (existingNode.type !== 'file') {
