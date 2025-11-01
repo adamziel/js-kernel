@@ -1,13 +1,14 @@
-import esbuild from 'esbuild'
-import fs from 'fs'
-import path from 'path'
+import esbuild from 'esbuild';
+import fs from 'fs';
+import path from 'path';
 
 // Check if watch mode is enabled
-const isWatchMode = process.argv.includes('--watch') || process.argv.includes('-w')
+const isWatchMode =
+	process.argv.includes('--watch') || process.argv.includes('-w');
 
 if (!isWatchMode) {
-	fs.rmSync('dist', { recursive: true, force: true })
-	fs.mkdirSync('dist')
+	fs.rmSync('dist', { recursive: true, force: true });
+	fs.mkdirSync('dist');
 }
 
 // const buildOptionsApp = {
@@ -52,6 +53,8 @@ const entryPoints = {
 	'internal/modules/cjs/loader':
 		'./src/this-is-bundled/node-lib/internal/modules/cjs/loader.js',
 	process: './src/this-is-bundled/node-lib/process.js',
+	'internal/process/pre_execution':
+		'./node/lib/internal/process/pre_execution.js',
 	'internal/resolve': './src/this-is-bundled/node-lib/resolve.js',
 	'fetch-polyfill': './src/this-is-bundled/node-lib/fetch-polyfill.js',
 	// crypto: './node/lib/crypto.js',
@@ -107,35 +110,35 @@ const entryPoints = {
 	// 'assert/strict': '.build-tmp/assert-strict.js',
 	// 'dns/promises': '.build-tmp/dns-promises.js',
 	// 'util/types': '.build-tmp/util-types.js',
-}
+};
 
 const nodePolyfillPlugin = {
 	name: 'node-polyfill',
 	setup(build) {
-		const nodeBuiltins = Object.keys(entryPoints)
-		const filter = new RegExp(`^(node:)?(${nodeBuiltins.join('|')})$`)
+		const nodeBuiltins = Object.keys(entryPoints);
+		const filter = new RegExp(`^(node:)?(${nodeBuiltins.join('|')})$`);
 		build.onResolve({ filter }, (args) => {
 			const modulePath = args.path.startsWith('node:')
 				? args.path.slice(5)
-				: args.path
+				: args.path;
 			if (entryPoints[modulePath]) {
-				return { path: path.resolve(entryPoints[modulePath]) }
+				return { path: path.resolve(entryPoints[modulePath]) };
 			}
-		})
+		});
 
 		// Plugin to append module.exports to realm.js
 		build.onLoad({ filter: /realm\.js$/ }, (args) => {
-			const content = fs.readFileSync(args.path, 'utf8')
+			const content = fs.readFileSync(args.path, 'utf8');
 			// Append module.exports = loaderExports to the end of the realm.js file
 			const modifiedContent =
-				content + '\nmodule.exports = loaderExports;'
+				content + '\nmodule.exports = loaderExports;';
 			return {
 				contents: modifiedContent,
 				loader: 'default',
-			}
-		})
+			};
+		});
 	},
-}
+};
 
 const buildOptionsNode = {
 	entryPoints,
@@ -148,39 +151,39 @@ const buildOptionsNode = {
 	define: {
 		process: 'globalThis.process',
 	},
-}
+};
 
 async function main() {
 	if (isWatchMode) {
-		console.log('🔍 Starting watch mode...')
-		const ctx1 = await esbuild.context(buildOptionsNode)
+		console.log('🔍 Starting watch mode...');
+		const ctx1 = await esbuild.context(buildOptionsNode);
 		await ctx1.watch();
 
 		// const ctx2 = await esbuild.context(buildOptionsApp)
 		// await ctx2.watch();
-		console.log('👀 Watching for changes...')
-		
+		console.log('👀 Watching for changes...');
+
 		// Keep the process alive
 		process.on('SIGINT', async () => {
-			console.log('\n🛑 Stopping watch mode...')
-			await ctx.dispose()
-			process.exit(0)
-		})
+			console.log('\n🛑 Stopping watch mode...');
+			await ctx.dispose();
+			process.exit(0);
+		});
 	} else {
 		try {
-			await esbuild.build(buildOptionsNode)
-			console.log('✅ Build completed successfully')
+			await esbuild.build(buildOptionsNode);
+			console.log('✅ Build completed successfully');
 		} catch (error) {
-			console.error('❌ Build failed:', error)
-			process.exit(1)
+			console.error('❌ Build failed:', error);
+			process.exit(1);
 		} finally {
 			// Clean up temporary files
-			fs.rmSync('.build-tmp', { recursive: true, force: true })
+			fs.rmSync('.build-tmp', { recursive: true, force: true });
 		}
 	}
 }
 
 main().catch((error) => {
-	console.error('❌ Error:', error)
-	process.exit(1)
-})
+	console.error('❌ Error:', error);
+	process.exit(1);
+});

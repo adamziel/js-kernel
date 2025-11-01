@@ -345,14 +345,34 @@ const createChildStdio = (
 const createReadableStream = (
 	descriptor: ChildStdioDescriptor
 ): ChildReadableStream => {
-	console.log('[createReadableStream] fd:', descriptor.fd, 'mode:', descriptor.mode, 'hasPort:', !!descriptor.port);
+	console.log(
+		'[createReadableStream] fd:',
+		descriptor.fd,
+		'mode:',
+		descriptor.mode,
+		'hasPort:',
+		!!descriptor.port
+	);
 	if (descriptor.mode === 'ignore' || !descriptor.port) {
-		console.log('[createReadableStream] Returning NullReadableStream for fd:', descriptor.fd);
+		console.log(
+			'[createReadableStream] Returning NullReadableStream for fd:',
+			descriptor.fd
+		);
 		return new NullReadableStream();
 	}
-	const label = descriptor.fd === 0 ? 'binary:stdin' : descriptor.fd === 1 ? 'binary:stdout' : 'binary:stderr';
-	console.log('[createReadableStream] Creating MessagePortReadableStream with label:', label);
-	return new MessagePortReadableStream(descriptor.port, { debugLabel: label });
+	const label =
+		descriptor.fd === 0
+			? 'binary:stdin'
+			: descriptor.fd === 1
+			? 'binary:stdout'
+			: 'binary:stderr';
+	console.log(
+		'[createReadableStream] Creating MessagePortReadableStream with label:',
+		label
+	);
+	return new MessagePortReadableStream(descriptor.port, {
+		debugLabel: label,
+	});
 };
 
 const createWritableStream = (
@@ -719,7 +739,10 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 				try {
 					const debugLog = (globalThis as any).__mpDebug;
 					if (Array.isArray(debugLog) && debugLog.length > 0) {
-						self.postMessage({ type: '__debug_log__', data: debugLog });
+						self.postMessage({
+							type: '__debug_log__',
+							data: debugLog,
+						});
 					}
 				} catch {}
 
@@ -772,6 +795,7 @@ export function redirectConsoleToStdio(isDebug: boolean) {
 			.join(' ');
 
 	const writeStdout = (...args: unknown[]) => {
+		originalConsole.log(...args);
 		// if (!isDebug) return
 		const value = joinArgs(args);
 		if (value.includes('[vite]')) {
@@ -782,6 +806,7 @@ export function redirectConsoleToStdio(isDebug: boolean) {
 	};
 
 	const writeStderr = (...args: unknown[]) => {
+		originalConsole.error(...args);
 		// if (!isDebug) return
 		const value = joinArgs(args);
 		if (value.includes('[vite]')) {
@@ -816,7 +841,13 @@ const handleKernelInit = (event: MessageEvent) => {
 
 	const payload = event.data.payload as ChildProcessInitOptions;
 	// Log stdio descriptors received by worker (use both console.log and originalConsole)
-	const stdioInfo = JSON.stringify(payload.stdio?.map((d: any) => ({ fd: d.fd, mode: d.mode, hasPort: !!d.port })) || []);
+	const stdioInfo = JSON.stringify(
+		payload.stdio?.map((d: any) => ({
+			fd: d.fd,
+			mode: d.mode,
+			hasPort: !!d.port,
+		})) || []
+	);
 	console.log('[BINARY handleKernelInit] stdio received:', stdioInfo);
 	const oc = (globalThis as any).originalConsole;
 	if (oc) {
@@ -827,7 +858,11 @@ const handleKernelInit = (event: MessageEvent) => {
 
 	// Log stdio configuration AFTER console is redirected so we can see it
 	console.log('[BINARY after init] stdio descriptors received:', stdioInfo);
-	console.log('[BINARY after init] stdin stream type:', (globalThis as any).processController?.stdin?.constructor?.name || 'unknown');
+	console.log(
+		'[BINARY after init] stdin stream type:',
+		(globalThis as any).processController?.stdin?.constructor?.name ||
+			'unknown'
+	);
 
 	queueMicrotask(() => startProgram(payload));
 };
@@ -911,6 +946,23 @@ const startProgram = async (options: ChildProcessInitOptions) => {
 			`const module = globalThis[${JSON.stringify(moduleKey)}];` +
 			programBody;
 
+		// Write program body to OPFS for better debugging and source maps
+		try {
+			const opfsRoot = await navigator.storage.getDirectory();
+			const programFileName = `${moduleKey}.js`;
+			const fileHandle = await opfsRoot.getFileHandle(programFileName, {
+				create: true,
+			});
+			const writable = await fileHandle.createWritable();
+			await writable.write(programBody);
+			await writable.close();
+		} catch (opfsError) {
+			// OPFS write failed, continue with data URL approach
+			console.warn(
+				'[controller] Failed to write program to OPFS:',
+				opfsError
+			);
+		}
 		const dataUrl =
 			'data:text/javascript;charset=utf-8,' +
 			encodeURIComponent(programBody);
@@ -1036,32 +1088,50 @@ function createChildProcessHandle(
 	let parentStderr: MessagePortReadableStream | undefined;
 
 	for (const descriptor of plan.stdio) {
-		console.log('[spawn plan stdio] fd:', descriptor.fd, 'mode:', descriptor.mode, 'hasParentPort:', !!descriptor.parentPort, 'hasWorkerPort:', !!descriptor.workerPort);
+		console.log(
+			'[spawn plan stdio] fd:',
+			descriptor.fd,
+			'mode:',
+			descriptor.mode,
+			'hasParentPort:',
+			!!descriptor.parentPort,
+			'hasWorkerPort:',
+			!!descriptor.workerPort
+		);
 		if (descriptor.workerPort) {
 			transferList.push(descriptor.workerPort);
 		}
 		if (descriptor.mode === 'pipe' && descriptor.fd === 0) {
 			// Always create stdin - either with MessagePort if available, or null stream for control-port-only
-			console.log('[spawn plan] Creating parentStdin stream, hasParentPort:', !!descriptor.parentPort);
+			console.log(
+				'[spawn plan] Creating parentStdin stream, hasParentPort:',
+				!!descriptor.parentPort
+			);
 			// For nested spawns, parentPort will be null, but we still need stdin property on handle
 			// Wrapping below will forward via control port
 			parentStdin = descriptor.parentPort
 				? new MessagePortWritableStream(descriptor.parentPort)
-				: new NullWritableStream() as any;
+				: (new NullWritableStream() as any);
 		} else if (
 			descriptor.mode === 'pipe' &&
 			descriptor.parentPort &&
 			descriptor.fd === 1
 		) {
 			console.log('[spawn plan] Creating parentStdout stream');
-			parentStdout = new MessagePortReadableStream(descriptor.parentPort, { debugLabel: 'parent:stdout' });
+			parentStdout = new MessagePortReadableStream(
+				descriptor.parentPort,
+				{ debugLabel: 'parent:stdout' }
+			);
 		} else if (
 			descriptor.mode === 'pipe' &&
 			descriptor.parentPort &&
 			descriptor.fd === 2
 		) {
 			console.log('[spawn plan] Creating parentStderr stream');
-			parentStderr = new MessagePortReadableStream(descriptor.parentPort, { debugLabel: 'parent:stderr' });
+			parentStderr = new MessagePortReadableStream(
+				descriptor.parentPort,
+				{ debugLabel: 'parent:stderr' }
+			);
 		}
 	}
 
@@ -1201,7 +1271,11 @@ function createChildProcessHandle(
 			const code =
 				typeof payload.data === 'number' ? payload.data : exitCode ?? 0;
 			setExitCode(code);
-		} else if (payload && typeof payload === 'object' && payload.type === '__debug_log__') {
+		} else if (
+			payload &&
+			typeof payload === 'object' &&
+			payload.type === '__debug_log__'
+		) {
 			// Store worker debug logs in parent's globalThis for inspection
 			if (!(globalThis as any).__workerDebugLogs) {
 				(globalThis as any).__workerDebugLogs = {};
@@ -1242,7 +1316,11 @@ function createChildProcessHandle(
 		},
 	};
 
-	console.log('[createChildProcessHandle] transferList has', transferList.length, 'ports');
+	console.log(
+		'[createChildProcessHandle] transferList has',
+		transferList.length,
+		'ports'
+	);
 	worker.postMessage(initMessage, transferList);
 
 	return handle;

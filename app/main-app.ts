@@ -95,6 +95,11 @@ export async function testEsbuildLikeInTests() {
 	}
 	const bundleJsZip = new Uint8Array(await bundleJsResponse.arrayBuffer());
 	kernel.writeFileSync('/esbuild/bundle.js', bundleJsZip, null);
+	kernel.writeFileSync(
+		'/esbuild/package.json',
+		JSON.stringify({ type: 'module', name: 'esbuild-bundle-runner' }),
+		null
+	);
 	// kernel.mkdirSync('/esbuild/src', { recursive: true });
 	await TestCases.createSimpleBlock();
 

@@ -4,7 +4,7 @@
 	"main": "index.js",
 	"scripts": {
 		"test": "vitest run",
-		"dev": "vite & cd app/programs/node-loader && node build.js --watch"
+		"dev": "vite & (cd app/programs/node-loader && node build.js --watch) & wait"
 	},
 	"type": "module",
 	"author": "",

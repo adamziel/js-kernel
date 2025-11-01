@@ -1,6 +1,45 @@
 globalThis.primordials = {};
 globalThis.global = globalThis;
 import * as builtins from './builtins.js';
+
+import { createTokenizer } from './naive-tokenizer.js';
+const tokenize = createTokenizer();
+function isESMSyntax(code) {
+	// Fast pass to check if the code contains import or export statements.
+	if (!code.includes('import') && !code.includes('export')) {
+		return false;
+	}
+	const tokens = tokenize(code);
+	let sawImport = false;
+
+	for (const token of tokens) {
+		// If we saw 'import' in the previous token, check if this is '('
+		if (sawImport) {
+			sawImport = false;
+			if (token[0] === 'Punctuator' && token[3] === '(') {
+				// This is import() function call, not ESM syntax
+				continue;
+			}
+			// Previous import was not followed by '(', so it's an import statement
+			return true;
+		}
+
+		if (token[0] === 'IdentifierName' && token[3] === 'export') {
+			return true;
+		}
+		if (token[0] === 'IdentifierName' && token[3] === 'import') {
+			// Mark that we saw import, check next token
+			sawImport = true;
+		}
+	}
+
+	// If we ended with sawImport still true, it was an import statement
+	if (sawImport) {
+		return true;
+	}
+	return false;
+}
+
 // @TODO: Do not rely on `window` here. We're running a Node.js process after all.
 globalThis.window = globalThis.global = globalThis;
 globalThis.globalFs = processController.fsSync;
@@ -122,12 +161,12 @@ const applyFsPathNormalization = (target, pathArgMap) => {
 			if (
 				typeof console !== 'undefined' &&
 				console &&
-            (method === 'readdirSync' ||
-                    method === 'statSync' ||
-                    method === 'readFileSync' ||
-                    method === 'readdir' ||
-                    method === 'stat' ||
-                    method === 'readFile')
+				(method === 'readdirSync' ||
+					method === 'statSync' ||
+					method === 'readFileSync' ||
+					method === 'readdir' ||
+					method === 'stat' ||
+					method === 'readFile')
 			) {
 				try {
 					const displayArg =
@@ -2460,48 +2499,50 @@ globalThis.internalModules = {
 		getConstructorName: internalGetConstructorName,
 		getExternalValue,
 	}),
-	options: {
-		// CLI Flags here.
-		// By default, no flags are passed.
-		getCLIOptionsValues: () => {
-			return new Proxy(
-				{},
-				{
+	options: (function () {
+		const options = {
+			// '--experimental-detect-module': true,
+			// '--experimental-require-module': true,
+		};
+		return {
+			// CLI Flags here.
+			// By default, no flags are passed.
+			getCLIOptionsValues: () => {
+				return new Proxy(options, {
 					get: (target, prop) => {
 						if (!(prop in target)) {
 							target[prop] = '';
 						}
 						return target[prop];
 					},
-				}
-			);
-		},
-		getCLIOptionsInfo: () => {
-			return {
-				options: [],
-				aliases: [],
-			};
-		},
-		getOptionsAsFlags: () => {
-			return [];
-		},
-		getEmbedderOptions: () => {
-			return {};
-		},
-		getEnvOptionsInputType: () => {
-			return {};
-		},
-		getNamespaceOptionsInputType: () => {
-			return {};
-		},
-	},
+				});
+			},
+			getCLIOptionsInfo: () => {
+				return {
+					options: Object.keys(options),
+					aliases: [],
+				};
+			},
+			getOptionsAsFlags: () => {
+				return Object.keys(options);
+			},
+			getEmbedderOptions: () => {
+				return {};
+			},
+			getEnvOptionsInputType: () => {
+				return {};
+			},
+			getNamespaceOptionsInputType: () => {
+				return {};
+			},
+		};
+	})(),
 	config: {
 		get: () => ({}),
 	},
 	contextify: createDebugProxy('contextify', {
-		containsModuleSyntax() {
-			console.warn('containsModuleSyntax called', { arguments });
-			return false;
+		containsModuleSyntax(source, fileUrl, url) {
+			return isESMSyntax(source);
 		},
 		compileFunction() {
 			console.error('compileFunction not implemented');
@@ -2532,16 +2573,20 @@ globalThis.internalModules = {
 				content = lines.join('\n');
 			}
 
-			// Super naive replacement of import() to require(). It won't even
-			// return a promise.
-			content = globalThis.coreModules.module.Module.wrap(`
-				${content}
-			`);
 			let fn = '';
 			if (filename.endsWith('.json')) {
 				fn = () => JSON.parse(content);
 			} else {
+				// if (isESMSyntax(content)) {
+				// 	fn = () => eval(content);
+				// } else {
+				// Super naive replacement of import() to require(). It won't even
+				// return a promise.
+				content = globalThis.coreModules.module.Module.wrap(`
+						${content}
+					`);
 				fn = eval(content);
+				// }
 			}
 			// if (content.includes('brotliDecompressSync')) {
 			// 	window.stableConsole.log('BROTLI DECOMPRESS SYNC', content);
@@ -2612,6 +2657,7 @@ globalThis.internalModules = {
 			}
 		},
 		getNearestParentPackageJSONType(mainPath) {
+			console.log('getNearestParentPackageJSONType', mainPath);
 			// Start from the directory containing mainPath
 			let currentDir = globalThis.coreModules.path.dirname(mainPath);
 
@@ -2729,10 +2775,15 @@ globalThis.internalModules = {
 			internalModuleStat(receiver /* unknown */, path /* string */) {
 				const targetPath =
 					typeof path !== 'undefined' ? path : receiver;
-const normalizedPath = shouldNormalizePathValue(targetPath)
-    ? resolveFsPath(targetPath)
-    : targetPath;
-console.log('[internalModuleStat] request', targetPath, 'normalized to', normalizedPath);
+				const normalizedPath = shouldNormalizePathValue(targetPath)
+					? resolveFsPath(targetPath)
+					: targetPath;
+				console.log(
+					'[internalModuleStat] request',
+					targetPath,
+					'normalized to',
+					normalizedPath
+				);
 				let stats;
 				try {
 					stats = globalFs.statSync(normalizedPath);
@@ -5208,9 +5259,44 @@ console.log('[internalModuleStat] request', targetPath, 'normalized to', normali
 	// @TODO: Implement those modules
 	module_wrap: {
 		ModuleWrap: class ModuleWrap {
-			constructor() {
+			constructor(url) {
+				console.trace('ModuleWrap constructor', url);
 				this.exports = {};
 			}
+		},
+		setInitializeImportMetaObjectCallback(
+			/**
+			 * Defines the `import.meta` object for a given module.
+			 * @param {symbol} symbol - Reference to the module.
+			 * @param {Record<string, string | Function>} meta - The import.meta object to initialize.
+			 * @param {ModuleWrap} wrap - The ModuleWrap of the SourceTextModule where `import.meta` is referenced.
+			 */
+			initializeImportMetaObject
+		) {
+			// TODO: What do I do with this?
+			console.log(
+				'setInitializeImportMetaObjectCallback',
+				initializeImportMetaObject
+			);
+		},
+		setImportModuleDynamicallyCallback(
+			/**
+			 * Asynchronously imports a module dynamically using a callback function. The native callback.
+			 * @param {symbol} referrerSymbol - Referrer symbol of the registered script, function, module, or contextified object.
+			 * @param {string} specifier - The module specifier string.
+			 * @param {number} phase - The module import phase.
+			 * @param {Record<string, string>} attributes - The import attributes object.
+			 * @param {string|null|undefined} referrerName - name of the referrer.
+			 * @returns {Promise<import('internal/modules/esm/loader.js').ModuleExports>} - The imported module object.
+			 * @throws {ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING} - If the callback function is missing.
+			 */
+			importModuleDynamicallyCallback
+		) {
+			// TODO: What do I do with this?
+			console.log(
+				'setImportModuleDynamicallyCallback',
+				importModuleDynamicallyCallback
+			);
 		},
 	},
 	block_list: {
@@ -5263,6 +5349,15 @@ globalThis.internalModules.util = {
 globalThis.internalModules.types = {
 	...globalThis.internalModules.types,
 	...types,
+};
+
+const internalProcessPreExecution = await import(
+	'../../dist/internal/process/pre_execution.js'
+);
+// console.log({ internalProcessPreExecution });
+globalThis.internalModules.process = {
+	...(globalThis.internalModules.process || {}),
+	...(internalProcessPreExecution.default || {}),
 };
 
 const internalConstants = await import('../../dist/internal/constants.js');
@@ -6990,6 +7085,7 @@ function ensureEntryFromArgv(argv) {
 
 export function runMain() {
 	globalThis.coreModules.module.initializeCJS();
+	globalThis.internalModules.process.setupUserModules(true);
 	return globalThis.coreModules.module.Module.runMain();
 }
 
