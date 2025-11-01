@@ -5471,51 +5471,100 @@ globalThis.internalModules = {
 				console.log('[ModuleWrap] evaluate', this.url);
 				this._evaluated = true;
 
-				// For now, we'll try to route to the CJS loader for compatibility
-				// This is a minimal implementation to prevent hanging
 				try {
-					// If we have the importDynamically callback and this is an ESM module
-					// we need to actually load and execute it
-					if (esmCallbacks.importDynamically && this.url) {
-						console.log('[ModuleWrap] Using importDynamically callback for', this.url);
+					// First try CJS fallback for compatibility
+					const Module = globalThis.coreModules?.module?.Module;
+					if (Module && Module._load) {
+						try {
+							let modulePath = this.url;
+							if (modulePath.startsWith('file://')) {
+								modulePath = modulePath.slice(7);
+							}
 
-						// Try to use the CJS loader as a fallback
-						// This allows require() to work even in ESM context
-						const Module = globalThis.coreModules?.module?.Module;
-						if (Module && Module._load) {
+							console.log('[ModuleWrap] Attempting CJS load for', modulePath);
+							const exports = Module._load(modulePath, null, false);
+
+							if (exports && typeof exports === 'object') {
+								Object.assign(this.namespace, exports);
+								this.exports = exports;
+							}
+
+							console.log('[ModuleWrap] Successfully loaded via CJS', modulePath);
+							return;
+						} catch (cjsError) {
+							console.log('[ModuleWrap] CJS failed, trying ESM:', cjsError.message);
+							// Fall through to ESM execution
+						}
+					}
+
+					// Execute as ESM using browser's native import()
+					if (this._source && typeof this._source === 'string') {
+						console.log('[ModuleWrap] Executing ESM code with native import()');
+
+						// Create a blob URL from the source code
+						const blob = new Blob([this._source], { type: 'application/javascript' });
+						const blobUrl = URL.createObjectURL(blob);
+
+						try {
+							// Use dynamic import to execute the ESM code
+							const module = await import(blobUrl);
+
+							// Copy all exports to our namespace
+							Object.assign(this.namespace, module);
+							if (module.default) {
+								this.namespace.default = module.default;
+							}
+
+							console.log('[ModuleWrap] Successfully executed ESM code', this.url);
+							console.log('[ModuleWrap] Exports:', Object.keys(this.namespace));
+
+							// Clean up the blob URL
+							URL.revokeObjectURL(blobUrl);
+							return;
+						} catch (importError) {
+							URL.revokeObjectURL(blobUrl);
+							console.error('[ModuleWrap] ESM import failed:', importError);
+							throw importError;
+						}
+					}
+
+					// If we have no source, try to read the file
+					if (this.url && this.url.startsWith('file://')) {
+						const filePath = this.url.slice(7);
+						console.log('[ModuleWrap] Reading source from', filePath);
+
+						const fs = globalThis.coreModules?.fs;
+						if (fs && fs.readFileSync) {
 							try {
-								// Convert file:// URL to path
-								let modulePath = this.url;
-								if (modulePath.startsWith('file://')) {
-									modulePath = modulePath.slice(7); // Remove 'file://'
+								const source = fs.readFileSync(filePath, 'utf8');
+								this._source = source;
+
+								// Now that we have source, evaluate it
+								const blob = new Blob([source], { type: 'application/javascript' });
+								const blobUrl = URL.createObjectURL(blob);
+
+								try {
+									const module = await import(blobUrl);
+									Object.assign(this.namespace, module);
+									if (module.default) {
+										this.namespace.default = module.default;
+									}
+
+									console.log('[ModuleWrap] Successfully executed ESM from file', this.url);
+									URL.revokeObjectURL(blobUrl);
+									return;
+								} catch (importError) {
+									URL.revokeObjectURL(blobUrl);
+									throw importError;
 								}
-
-								console.log('[ModuleWrap] Attempting CJS load for', modulePath);
-								const exports = Module._load(modulePath, null, false);
-
-								// Set up the namespace with the exports
-								if (exports && typeof exports === 'object') {
-									Object.assign(this.namespace, exports);
-									this.exports = exports;
-								}
-
-								console.log('[ModuleWrap] Successfully loaded via CJS', modulePath);
-								return;
-							} catch (cjsError) {
-								console.warn('[ModuleWrap] CJS fallback failed:', cjsError.message);
-								// Continue to throw the error below
+							} catch (fsError) {
+								console.error('[ModuleWrap] Failed to read file:', fsError);
+								throw fsError;
 							}
 						}
 					}
 
-					// If we get here, we don't have proper ESM support yet
-					console.error('[ModuleWrap] ESM evaluation not fully implemented for', this.url);
-					console.error('[ModuleWrap] The module system is trying to evaluate an ESM module,');
-					console.error('[ModuleWrap] but the browser-based Node.js polyfill only has partial ESM support.');
-					console.error('[ModuleWrap] Consider using CommonJS (require) instead, or ensure all modules use .cjs extension.');
-
-					// Don't throw immediately - return a resolved promise to unblock
-					// This allows the module loading to continue, even if not all features work
+					console.error('[ModuleWrap] No source available to evaluate', this.url);
 					return Promise.resolve();
 
 				} catch (error) {

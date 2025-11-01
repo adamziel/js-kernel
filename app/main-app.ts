@@ -89,18 +89,13 @@ export async function testEsbuildLikeInTests() {
 	// 	null
 	// );
 	// An actual block:
-	const bundleJsResponse = await fetch(bundleFixtureSource);
-	if (!bundleJsResponse.ok) {
-		throw new Error('Failed to fetch bundle.js');
-	}
-	const bundleJsZip = new Uint8Array(await bundleJsResponse.arrayBuffer());
-	kernel.writeFileSync('/esbuild/bundle.js', bundleJsZip, null);
-	// bundle.js is ESM code with import statements
-	// Use the ESM loader which now has proper callback storage and ModuleWrap.evaluate()
+	// bundleFixtureSource is imported with ?raw so it's already the file content
+	kernel.writeFileSync('/esbuild/bundle.js', bundleFixtureSource, 'utf8');
+	// bundle.js from the fixture uses require() (CommonJS), not import (ESM)
 	kernel.writeFileSync(
 		'/esbuild/package.json',
-		JSON.stringify({ type: 'module', name: 'esbuild-bundle-runner' }),
-		null
+		JSON.stringify({ type: 'commonjs', name: 'esbuild-bundle-runner' }),
+		'utf8'
 	);
 	// kernel.mkdirSync('/esbuild/src', { recursive: true });
 	await TestCases.createSimpleBlock();
@@ -118,7 +113,7 @@ export async function testEsbuildLikeInTests() {
 		argv: [
 			'node',
 			'/esbuild/bundle.js',
-			'/jsx',
+			'/jsx/src',
 			'/tmp/esbuild-bundle-fs.txt',
 		],
 		env: {
