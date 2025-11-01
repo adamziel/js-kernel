@@ -946,25 +946,17 @@ setTimeout(() => {
 
 	const runBundleFixture = async () => {
 		await prepareEsbuildEnvironment(kernel);
+		// await createSimpleImportFixture(kernel);
 		await createSimpleBlock(kernel);
 		await installNpm(kernel);
 		console.error('[fixture setup]', {
-			hasEdit: kernel.existsSync('/esbuild/src/edit.js'),
-			hasBlockJson: kernel.existsSync('/esbuild/src/block.json'),
-			hasBlocksModule: kernel.existsSync(
-				'/esbuild/src/node_modules/@wordpress/blocks/index.js'
-			),
+			hasHelper: kernel.existsSync('/esbuild/src/helper.js'),
+			hasIndex: kernel.existsSync('/esbuild/src/index.js'),
 		});
 		const scriptPath = '/esbuild/bundle.js';
-		// Add logging at the very start to see if the script executes
-		const modifiedSource = bundleFixtureSource.replace(
-			'#!/usr/bin/env node',
-			'#!/usr/bin/env node\nconsole.error("[bundle.js:SCRIPT-START] Script is executing!");'
-		);
-		console.error('[test] Modified source starts with:', modifiedSource.substring(0, 200));
 		kernel.writeFileSync(
 			scriptPath,
-			encoder.encode(modifiedSource),
+			encoder.encode(bundleFixtureSource),
 			null
 		);
 		// const npmInstallSubprocess = kernel.spawn({
@@ -1020,6 +1012,10 @@ setTimeout(() => {
 		const exitCode: number = await new Promise((resolve) => {
 			subprocess.onExit((code) => resolve(code ?? 0));
 		});
+
+		console.log(kernel.readdirSync('/', 'utf8'));
+		console.log(kernel.readdirSync('/tmp', 'utf8'));
+		console.log(kernel.readFileSync('/tmp/esbuild-bundle-fs.txt', 'utf8'));
 
 		const bundleText = kernel.existsSync(BUNDLE_OUTPUT_PATH)
 			? (kernel.readFileSync(BUNDLE_OUTPUT_PATH, 'utf8') as string)
@@ -1140,7 +1136,7 @@ console.error('[script] exports index', JSON.stringify(entry));
 		expect(bundleText).toContain('answer = 42');
 	}, 20000);
 
-	it('can bundle via esbuild-wasm using bundle fixture script', async () => {
+	it.only('can bundle via esbuild-wasm using bundle fixture script', async () => {
 		const { exitCode, stderr, bundleText } = await runBundleFixture();
 		console.error('[fixture stderr result]', stderr);
 		expect(stderr).toBe('');

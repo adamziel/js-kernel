@@ -82,23 +82,38 @@ export async function testEsbuildLikeInTests() {
 	await unzipKernelFile(kernel, '/esbuild/es-bundler.zip', '/esbuild');
 
 	kernel.mkdirSync('/esbuild/src', { recursive: true });
-	kernel.writeFileSync(
-		'/esbuild/src/index.js',
-		sharedTextEncoder.encode(`export const answer = 21 * 2;`),
-		null
-	);
+	// Simplified bundle just to see if esbuild works:
+	// kernel.writeFileSync(
+	// 	'/esbuild/src/index.js',
+	// 	sharedTextEncoder.encode(`export const answer = 21 * 2;`),
+	// 	null
+	// );
+	// An actual block:
+	const bundleJsResponse = await fetch(bundleFixtureSource);
+	if (!bundleJsResponse.ok) {
+		throw new Error('Failed to fetch bundle.js');
+	}
+	const bundleJsZip = new Uint8Array(await bundleJsResponse.arrayBuffer());
+	kernel.writeFileSync('/esbuild/bundle.js', bundleJsZip, null);
+	// kernel.mkdirSync('/esbuild/src', { recursive: true });
+	await TestCases.createSimpleBlock();
 
-	kernel.writeFileSync(
-		'/esbuild/bundle.js',
-		sharedTextEncoder.encode(bundleFixtureSource),
-		null
-	);
+	// kernel.writeFileSync(
+	// 	'/esbuild/bundle.js',
+	// 	sharedTextEncoder.encode(bundleFixtureSource),
+	// 	null
+	// );
 	if (kernel.existsSync('/tmp/esbuild-bundle-fs.txt')) {
 		kernel.unlinkSync('/tmp/esbuild-bundle-fs.txt');
 	}
 
 	const subprocess = kernel.spawn({
-		argv: ['node', '/esbuild/bundle.js', '/esbuild/src', '/tmp/esbuild-bundle-fs.txt'],
+		argv: [
+			'node',
+			'/esbuild/bundle.js',
+			'/jsx',
+			'/tmp/esbuild-bundle-fs.txt',
+		],
 		env: {
 			PATH: '/bin',
 			TMPDIR: '/tmp',
@@ -1151,6 +1166,7 @@ class TestCases {
 			"description": "Gutenberg Examples",
 			"author": "The WordPress Contributors",
 			"license": "GPL-2.0-or-later",
+			"type": "module",
 			"keywords": [
 				"WordPress",
 				"editor",
