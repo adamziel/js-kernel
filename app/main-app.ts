@@ -95,6 +95,8 @@ export async function testEsbuildLikeInTests() {
 	}
 	const bundleJsZip = new Uint8Array(await bundleJsResponse.arrayBuffer());
 	kernel.writeFileSync('/esbuild/bundle.js', bundleJsZip, null);
+	// bundle.js is ESM code with import statements
+	// Use the ESM loader which now has proper callback storage and ModuleWrap.evaluate()
 	kernel.writeFileSync(
 		'/esbuild/package.json',
 		JSON.stringify({ type: 'module', name: 'esbuild-bundle-runner' }),

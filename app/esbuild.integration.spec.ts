@@ -946,8 +946,7 @@ setTimeout(() => {
 
 	const runBundleFixture = async () => {
 		await prepareEsbuildEnvironment(kernel);
-		// await createSimpleImportFixture(kernel);
-		await createSimpleBlock(kernel);
+		await createSimpleImportFixture(kernel);
 		await installNpm(kernel);
 		console.error('[fixture setup]', {
 			hasHelper: kernel.existsSync('/esbuild/src/helper.js'),
@@ -958,6 +957,12 @@ setTimeout(() => {
 			scriptPath,
 			encoder.encode(bundleFixtureSource),
 			null
+		);
+		// bundle.js fixture uses require(), so mark it as CommonJS
+		kernel.writeFileSync(
+			'/esbuild/package.json',
+			JSON.stringify({ type: 'commonjs', name: 'esbuild-test' }),
+			'utf8'
 		);
 		// const npmInstallSubprocess = kernel.spawn({
 		// 	argv: ['node', '/bin/npm', 'install'],

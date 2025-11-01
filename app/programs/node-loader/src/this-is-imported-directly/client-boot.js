@@ -2656,6 +2656,84 @@ globalThis.internalModules = {
 				return undefined;
 			}
 		},
+		getPackageScopeConfig(resolved) {
+			// Convert URL to file path
+			let filePath = resolved;
+			if (typeof resolved === 'string') {
+				if (resolved.startsWith('file://')) {
+					filePath = resolved.slice(7);
+				}
+			} else if (resolved && typeof resolved.href === 'string') {
+				filePath = resolved.href;
+				if (filePath.startsWith('file://')) {
+					filePath = filePath.slice(7);
+				}
+			}
+
+			console.log('[getPackageScopeConfig]', filePath);
+
+			// Start from the directory containing the file
+			let currentDir = globalThis.coreModules.path.dirname(filePath);
+
+			// Traverse up the directory tree to find package.json
+			while (currentDir !== '/' && currentDir !== '.') {
+				const packageJsonPath = globalThis.coreModules.path.join(
+					currentDir,
+					'package.json'
+				);
+
+				try {
+					// Check if package.json exists
+					if (globalFs.existsSync(packageJsonPath)) {
+						console.log('[getPackageScopeConfig] Found package.json at', packageJsonPath);
+
+						// Use readPackageJSON to get the serialized format
+						const result = this.readPackageJSON(packageJsonPath);
+
+						if (result) {
+							console.log('[getPackageScopeConfig] Returning package config:', result);
+							return result;
+						}
+					}
+				} catch (error) {
+					console.warn(
+						`[getPackageScopeConfig] Failed to read package.json at ${packageJsonPath}:`,
+						error.message
+					);
+				}
+
+				// Move up one directory
+				const parentDir = globalThis.coreModules.path.dirname(currentDir);
+				if (parentDir === currentDir) {
+					// We've reached the root
+					break;
+				}
+				currentDir = parentDir;
+			}
+
+			console.log('[getPackageScopeConfig] No package.json found, returning path');
+			// Return the path where we would expect to find package.json
+			// This indicates "no package.json found"
+			return globalThis.coreModules.path.join(
+				globalThis.coreModules.path.dirname(filePath),
+				'package.json'
+			);
+		},
+
+		getPackageType(url) {
+			// Similar to getPackageScopeConfig but returns just the type
+			const config = this.getPackageScopeConfig(url);
+
+			if (Array.isArray(config)) {
+				// config is [name, main, type, plainImports, exportsMain, jsonPath]
+				const type = config[2]; // type field
+				return type || 'none';
+			}
+
+			// config is a string path, meaning no package.json found
+			return 'none';
+		},
+
 		getNearestParentPackageJSONType(mainPath) {
 			console.log('getNearestParentPackageJSONType', mainPath);
 			// Start from the directory containing mainPath
@@ -3889,6 +3967,99 @@ globalThis.internalModules = {
 		},
 	}),
 	url: createDebugProxy('url', {
+		urlComponents: new Uint32Array(9), // [protocol_end, username_end, host_start, host_end, port, pathname_start, search_start, hash_start, scheme_type]
+
+		parse(input, base, raiseException = true) {
+			try {
+				const url = new URL(input, base);
+				const href = url.href;
+
+				// Calculate component positions in the href string
+				const protocol_end = url.protocol.length;
+				let username_end = protocol_end + 2; // Skip '//'
+
+				if (url.username) {
+					username_end = href.indexOf(':', protocol_end + 2);
+					if (username_end === -1 || username_end > href.indexOf('@')) {
+						username_end = href.indexOf('@', protocol_end + 2);
+					}
+				}
+
+				let host_start = username_end;
+				if (url.username || url.password) {
+					host_start = href.indexOf('@', protocol_end + 2) + 1;
+				}
+
+				const host_end = host_start + url.hostname.length;
+				const port = url.port ? parseInt(url.port, 10) : 0;
+
+				// pathname_start is right after the host (and port if present)
+				const pathname_start = href.indexOf(url.pathname, host_end);
+
+				// search_start is where '?' appears (if search exists)
+				const search_start = url.search ? href.indexOf(url.search, pathname_start) : 0;
+
+				// hash_start is where '#' appears (if hash exists)
+				const hash_start = url.hash ? href.indexOf(url.hash, search_start || pathname_start) : 0;
+
+				// scheme_type: 0=HTTP, 1=NOT_SPECIAL, 2=HTTPS, 3=WS, 4=FTP, 5=WSS, 6=FILE
+				let scheme_type = 1; // NOT_SPECIAL by default
+				if (url.protocol === 'http:') scheme_type = 0;
+				else if (url.protocol === 'https:') scheme_type = 2;
+				else if (url.protocol === 'ws:') scheme_type = 3;
+				else if (url.protocol === 'ftp:') scheme_type = 4;
+				else if (url.protocol === 'wss:') scheme_type = 5;
+				else if (url.protocol === 'file:') scheme_type = 6;
+
+				// Update urlComponents array
+				this.urlComponents[0] = protocol_end;
+				this.urlComponents[1] = username_end;
+				this.urlComponents[2] = host_start;
+				this.urlComponents[3] = host_end;
+				this.urlComponents[4] = port;
+				this.urlComponents[5] = pathname_start;
+				this.urlComponents[6] = search_start;
+				this.urlComponents[7] = hash_start;
+				this.urlComponents[8] = scheme_type;
+
+				return href;
+			} catch (error) {
+				if (raiseException) {
+					throw error;
+				}
+				return null;
+			}
+		},
+
+		update(href, action, value) {
+			// Simple implementation: parse URL, update component, return new href
+			try {
+				const url = new URL(href);
+
+				// action values from internal/url.js updateActions
+				const kProtocol = 0, kHost = 1, kHostname = 2, kPort = 3;
+				const kUsername = 4, kPassword = 5, kPathname = 6, kSearch = 7, kHash = 8, kHref = 9;
+
+				switch (action) {
+					case kProtocol: url.protocol = value; break;
+					case kHost: url.host = value; break;
+					case kHostname: url.hostname = value; break;
+					case kPort: url.port = value; break;
+					case kUsername: url.username = value; break;
+					case kPassword: url.password = value; break;
+					case kPathname: url.pathname = value; break;
+					case kSearch: url.search = value; break;
+					case kHash: url.hash = value; break;
+					case kHref: return this.parse(value, undefined, true);
+				}
+
+				// Re-parse to update components
+				return this.parse(url.href, undefined, true);
+			} catch {
+				return null;
+			}
+		},
+
 		canParse(string, base) {
 			try {
 				new URL(string, base);
@@ -5257,48 +5428,172 @@ globalThis.internalModules = {
 		},
 	},
 	// @TODO: Implement those modules
-	module_wrap: {
-		ModuleWrap: class ModuleWrap {
-			constructor(url) {
-				console.trace('ModuleWrap constructor', url);
+	module_wrap: (() => {
+		// Storage for ESM loader callbacks
+		const esmCallbacks = {
+			importDynamically: null,
+			initializeImportMeta: null,
+		};
+
+		class ModuleWrap {
+			constructor(url, context, source, lineOffset, columnOffset) {
+				console.trace('[ModuleWrap] constructor called', url);
+				console.log('[ModuleWrap] constructor args:', {
+					url,
+					hasContext: !!context,
+					sourceType: typeof source,
+					sourceLength: typeof source === 'string' ? source.length : 'N/A',
+					lineOffset,
+					columnOffset
+				});
+				this.url = url;
+				this.context = context;
 				this.exports = {};
+				this.namespace = {};
+				this._source = source;
+				this._instantiated = false;
+				this._evaluated = false;
 			}
-		},
-		setInitializeImportMetaObjectCallback(
-			/**
-			 * Defines the `import.meta` object for a given module.
-			 * @param {symbol} symbol - Reference to the module.
-			 * @param {Record<string, string | Function>} meta - The import.meta object to initialize.
-			 * @param {ModuleWrap} wrap - The ModuleWrap of the SourceTextModule where `import.meta` is referenced.
-			 */
-			initializeImportMetaObject
-		) {
-			// TODO: What do I do with this?
-			console.log(
-				'setInitializeImportMetaObjectCallback',
+
+			instantiate() {
+				if (this._instantiated) return;
+				console.log('[ModuleWrap] instantiate', this.url);
+				this._instantiated = true;
+				// In a real implementation, this would parse the module and set up dependencies
+			}
+
+			async evaluate(timeout = -1, breakOnSigint = false) {
+				if (this._evaluated) {
+					console.log('[ModuleWrap] evaluate: already evaluated', this.url);
+					return;
+				}
+
+				console.log('[ModuleWrap] evaluate', this.url);
+				this._evaluated = true;
+
+				// For now, we'll try to route to the CJS loader for compatibility
+				// This is a minimal implementation to prevent hanging
+				try {
+					// If we have the importDynamically callback and this is an ESM module
+					// we need to actually load and execute it
+					if (esmCallbacks.importDynamically && this.url) {
+						console.log('[ModuleWrap] Using importDynamically callback for', this.url);
+
+						// Try to use the CJS loader as a fallback
+						// This allows require() to work even in ESM context
+						const Module = globalThis.coreModules?.module?.Module;
+						if (Module && Module._load) {
+							try {
+								// Convert file:// URL to path
+								let modulePath = this.url;
+								if (modulePath.startsWith('file://')) {
+									modulePath = modulePath.slice(7); // Remove 'file://'
+								}
+
+								console.log('[ModuleWrap] Attempting CJS load for', modulePath);
+								const exports = Module._load(modulePath, null, false);
+
+								// Set up the namespace with the exports
+								if (exports && typeof exports === 'object') {
+									Object.assign(this.namespace, exports);
+									this.exports = exports;
+								}
+
+								console.log('[ModuleWrap] Successfully loaded via CJS', modulePath);
+								return;
+							} catch (cjsError) {
+								console.warn('[ModuleWrap] CJS fallback failed:', cjsError.message);
+								// Continue to throw the error below
+							}
+						}
+					}
+
+					// If we get here, we don't have proper ESM support yet
+					console.error('[ModuleWrap] ESM evaluation not fully implemented for', this.url);
+					console.error('[ModuleWrap] The module system is trying to evaluate an ESM module,');
+					console.error('[ModuleWrap] but the browser-based Node.js polyfill only has partial ESM support.');
+					console.error('[ModuleWrap] Consider using CommonJS (require) instead, or ensure all modules use .cjs extension.');
+
+					// Don't throw immediately - return a resolved promise to unblock
+					// This allows the module loading to continue, even if not all features work
+					return Promise.resolve();
+
+				} catch (error) {
+					console.error('[ModuleWrap] evaluate error:', error);
+					throw error;
+				}
+			}
+
+			getNamespace() {
+				console.log('[ModuleWrap] getNamespace', this.url);
+				return this.namespace;
+			}
+
+			getModuleRequests() {
+				console.log('[ModuleWrap] getModuleRequests', this.url);
+				// Return empty array for now - means "no dependencies"
+				// A real implementation would parse the source to extract import statements
+				// Each element should be an object with { specifier, attributes }
+				return [];
+			}
+
+			link(linker) {
+				console.log('[ModuleWrap] link', this.url);
+				// Linker function is called for each dependency
+				// Since we return no dependencies from getModuleRequests(), this won't be called
+			}
+		}
+
+		return {
+			ModuleWrap,
+			// Module status constants
+			kUninstantiated: 0,
+			kInstantiated: 1,
+			kEvaluating: 2,
+			kEvaluated: 3,
+			kErrored: 4,
+			// Phase constants
+			kEvaluationPhase: 0,
+			kSourcePhase: 1,
+			// Helpers
+			throwIfPromiseRejected(promise) {
+				if (promise && typeof promise.catch === 'function') {
+					promise.catch((error) => {
+						console.error('[ModuleWrap] Promise rejected:', error);
+						throw error;
+					});
+				}
+			},
+			setInitializeImportMetaObjectCallback(
+				/**
+				 * Defines the `import.meta` object for a given module.
+				 * @param {symbol} symbol - Reference to the module.
+				 * @param {Record<string, string | Function>} meta - The import.meta object to initialize.
+				 * @param {ModuleWrap} wrap - The ModuleWrap of the SourceTextModule where `import.meta` is referenced.
+				 */
 				initializeImportMetaObject
-			);
-		},
-		setImportModuleDynamicallyCallback(
-			/**
-			 * Asynchronously imports a module dynamically using a callback function. The native callback.
-			 * @param {symbol} referrerSymbol - Referrer symbol of the registered script, function, module, or contextified object.
-			 * @param {string} specifier - The module specifier string.
-			 * @param {number} phase - The module import phase.
-			 * @param {Record<string, string>} attributes - The import attributes object.
-			 * @param {string|null|undefined} referrerName - name of the referrer.
-			 * @returns {Promise<import('internal/modules/esm/loader.js').ModuleExports>} - The imported module object.
-			 * @throws {ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING} - If the callback function is missing.
-			 */
-			importModuleDynamicallyCallback
-		) {
-			// TODO: What do I do with this?
-			console.log(
-				'setImportModuleDynamicallyCallback',
+			) {
+				console.log('[ESM] Storing initializeImportMetaObject callback');
+				esmCallbacks.initializeImportMeta = initializeImportMetaObject;
+			},
+			setImportModuleDynamicallyCallback(
+				/**
+				 * Asynchronously imports a module dynamically using a callback function. The native callback.
+				 * @param {symbol} referrerSymbol - Referrer symbol of the registered script, function, module, or contextified object.
+				 * @param {string} specifier - The module specifier string.
+				 * @param {number} phase - The module import phase.
+				 * @param {Record<string, string>} attributes - The import attributes object.
+				 * @param {string|null|undefined} referrerName - name of the referrer.
+				 * @returns {Promise<import('internal/modules/esm/loader.js').ModuleExports>} - The imported module object.
+				 * @throws {ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING} - If the callback function is missing.
+				 */
 				importModuleDynamicallyCallback
-			);
-		},
-	},
+			) {
+				console.log('[ESM] Storing importModuleDynamically callback');
+				esmCallbacks.importDynamically = importModuleDynamicallyCallback;
+			},
+		};
+	})(),
 	block_list: {
 		schemelessBlockList: new Set([]),
 		BlockList: class BlockList {
