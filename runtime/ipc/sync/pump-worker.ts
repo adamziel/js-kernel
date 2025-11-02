@@ -64,18 +64,21 @@ const handleFsKernelMessage = (payload: any) => {
 	}
 
 	const requestId = payload.requestId
+	console.error(`[pump-worker] Received FS response #${requestId}`);
 	if (typeof requestId !== 'number') {
 		return
 	}
 
 	const pending = pendingFsRequests.get(requestId)
 	if (!pending) {
+		console.error(`[pump-worker] No pending request found for #${requestId}`);
 		return
 	}
 	pendingFsRequests.delete(requestId)
 
 	const response: SerializedFsResponse | undefined = payload.response
 	if (pending.kind === 'async') {
+		console.error(`[pump-worker] Posting async response #${requestId} to client`);
 		self.postMessage({
 			type: 'asyncResponse',
 			requestId,
@@ -85,6 +88,7 @@ const handleFsKernelMessage = (payload: any) => {
 	}
 
 	if (!response) {
+		console.error(`[pump-worker] No response payload for sync request #${requestId}`);
 		writeFsError(
 			pending.buffer,
 			new Error('Missing filesystem response payload')
@@ -92,7 +96,9 @@ const handleFsKernelMessage = (payload: any) => {
 		return
 	}
 
+	console.error(`[pump-worker] Writing sync response #${requestId} to SharedArrayBuffer`);
 	writeFsResponse(pending.buffer, response)
+	console.error(`[pump-worker] Completed sync response #${requestId}`);
 }
 
 const handleSpawnKernelMessage = (payload: any) => {
@@ -227,6 +233,8 @@ const dispatchFsRequest = (
 		throw new Error('Filesystem bridge is not initialized')
 	}
 
+	console.error(`[pump-worker] Dispatching FS request #${requestId}: ${method}(${JSON.stringify(argumentList).slice(0, 100)})`);
+
 	pendingFsRequests.set(requestId, record)
 
 	kernelPort.postMessage({
@@ -235,6 +243,8 @@ const dispatchFsRequest = (
 		method,
 		args: argumentList,
 	})
+
+	console.error(`[pump-worker] Posted FS request #${requestId} to kernelPort`);
 }
 
 const handleSpawnClientMessage = (payload: any) => {

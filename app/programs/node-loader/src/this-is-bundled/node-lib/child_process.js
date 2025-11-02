@@ -318,7 +318,7 @@ const runHandler = async (child, command, args, options, handler) => {
 		stderr: child.stderr,
 		writeStdout: (data) => {
 			var _a;
-			console.log('[writeStdout] called with', data && (data.length || data.byteLength), 'bytes, child.stdout exists:', !!child.stdout);
+			// console.log('[writeStdout] called with', data && (data.length || data.byteLength), 'bytes, child.stdout exists:', !!child.stdout);
 			try {
 				if (
 					command === 'node' &&
@@ -350,19 +350,19 @@ const runHandler = async (child, command, args, options, handler) => {
 							preview = Buffer.from(view).toString('base64');
 						}
 					}
-					console.log('[spawn] esbuild stdout chunk', {
-						length,
-						type: data && data.constructor && data.constructor.name,
-						preview,
-					});
+					// console.log('[spawn] esbuild stdout chunk', {
+					// 	length,
+					// 	type: data && data.constructor && data.constructor.name,
+					// 	preview,
+					// });
 				}
 			} catch (err) {
-				console.error('[writeStdout] logging error:', err && err.message);
+				// console.error('[writeStdout] logging error:', err && err.message);
 			}
 			(_a = child.stdout) === null || _a === void 0
 				? void 0
 				: _a.write(data);
-			console.log('[writeStdout] child.stdout.write called');
+			// console.log('[writeStdout] child.stdout.write called');
 		},
 		writeStderr: (data) => {
 			var _a;
@@ -610,10 +610,6 @@ export const spawn = (command, args = [], options = {}) => {
 				return;
 			}
 			const wrappedOnData = (chunk) => {
-			// Skip string chunks to prevent console.log pollution of binary IPC streams
-			if (typeof chunk === 'string') {
-				return;
-			}
 				try {
 					onData(chunk);
 				} catch (error) {

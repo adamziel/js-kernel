@@ -2114,7 +2114,7 @@ export class InMemoryFileSystem {
 
 	// Async wrappers for FSReqCallback pattern
 	readFileAsync(path, options, req) {
-		setTimeout(() => {
+		queueMicrotask(() => {
 			try {
 				const result = this.readFileSync(path, options);
 				if (req && req.oncomplete) {
@@ -2129,7 +2129,7 @@ export class InMemoryFileSystem {
 	}
 
 	writeFileAsync(path, data, options, req) {
-		setTimeout(() => {
+		queueMicrotask(() => {
 			try {
 				this.writeFileSync(path, data, options);
 				if (req && req.oncomplete) {
@@ -2144,7 +2144,7 @@ export class InMemoryFileSystem {
 	}
 
 	openAsync(path, flags, mode, req) {
-		setTimeout(() => {
+		queueMicrotask(() => {
 			try {
 				const fd = this.openSync(path, flags, mode);
 				if (req && req.oncomplete) {
@@ -2159,7 +2159,7 @@ export class InMemoryFileSystem {
 	}
 
 	closeAsync(fd, req) {
-		setTimeout(() => {
+		queueMicrotask(() => {
 			try {
 				this.closeSync(fd);
 				if (req && req.oncomplete) {
@@ -2174,7 +2174,7 @@ export class InMemoryFileSystem {
 	}
 
 	readAsync(fd, length, position, req) {
-		setTimeout(() => {
+		queueMicrotask(() => {
 			try {
 				const buffer = this.readSync(fd, length, position);
 				if (req && req.oncomplete) {
@@ -2189,7 +2189,7 @@ export class InMemoryFileSystem {
 	}
 
 	writeAsync(fd, buffer, offset, length, position, req) {
-		setTimeout(() => {
+		queueMicrotask(() => {
 			try {
 				const bytesWritten = this.writeSync(
 					fd,
@@ -2210,7 +2210,7 @@ export class InMemoryFileSystem {
 	}
 
 	statAsync(path, bigint, req) {
-		setTimeout(() => {
+		queueMicrotask(() => {
 			try {
 				const stats = this.statSync(path);
 				if (req && req.oncomplete) {
@@ -2225,7 +2225,7 @@ export class InMemoryFileSystem {
 	}
 
 	fstatAsync(fd, bigint, req) {
-		setTimeout(() => {
+		queueMicrotask(() => {
 			try {
 				const stats = this.fstatSync(fd);
 				if (req && req.oncomplete) {
@@ -2240,7 +2240,7 @@ export class InMemoryFileSystem {
 	}
 
 	lstatAsync(path, bigint, req) {
-		setTimeout(() => {
+		queueMicrotask(() => {
 			try {
 				const stats = this.lstatSync(path);
 				if (req && req.oncomplete) {
@@ -2255,7 +2255,7 @@ export class InMemoryFileSystem {
 	}
 
 	mkdirAsync(path, options, req) {
-		setTimeout(() => {
+		queueMicrotask(() => {
 			try {
 				this.mkdirSync(path, options);
 				if (req && req.oncomplete) {
@@ -2270,7 +2270,7 @@ export class InMemoryFileSystem {
 	}
 
 	unlinkAsync(path, req) {
-		setTimeout(() => {
+		queueMicrotask(() => {
 			try {
 				this.unlinkSync(path);
 				if (req && req.oncomplete) {
@@ -2285,7 +2285,7 @@ export class InMemoryFileSystem {
 	}
 
 	rmdirAsync(path, options, req) {
-		setTimeout(() => {
+		queueMicrotask(() => {
 			try {
 				this.rmdirSync(path, options);
 				if (req && req.oncomplete) {
@@ -2300,7 +2300,7 @@ export class InMemoryFileSystem {
 	}
 
 	renameAsync(oldPath, newPath, req) {
-		setTimeout(() => {
+		queueMicrotask(() => {
 			try {
 				this.renameSync(oldPath, newPath);
 				if (req && req.oncomplete) {

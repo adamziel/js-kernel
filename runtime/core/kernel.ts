@@ -728,6 +728,20 @@ export class Kernel extends InMemoryFileSystem {
 		}
 
 		const worker = createProcessWorker();
+		worker.addEventListener('error', (error) => {
+			console.error('[kernel] Worker error for pid', resources.pid);
+			console.error('  Error object:', error);
+			if (error instanceof ErrorEvent) {
+				console.error('  message:', error.message);
+				console.error('  filename:', error.filename);
+				console.error('  lineno:', error.lineno);
+				console.error('  colno:', error.colno);
+				console.error('  error:', error.error);
+			}
+		});
+		worker.addEventListener('messageerror', (error) => {
+			console.error('[kernel] Worker message error for pid', resources.pid, ':', error);
+		});
 
 		const threadId = options.workerThreadId ?? resources.pid;
 		const threadName =
@@ -858,7 +872,9 @@ export class Kernel extends InMemoryFileSystem {
 			},
 		};
 
+		console.log('[kernel] About to post init message to worker, pid:', resources.pid, 'argv:', options.argv);
 		worker.postMessage(initMessage, transferList);
+		console.log('[kernel] Posted init message to worker');
 
 		return subprocess;
 	}
@@ -996,19 +1012,24 @@ export class Kernel extends InMemoryFileSystem {
 				return;
 			}
 
+			console.error(`[kernel] Received FS request #${requestId} for PID ${record.pid}: ${method}(${JSON.stringify(args).slice(0, 100)})`);
+
 			// Queue this filesystem operation on the GLOBAL queue to ensure
 			// sequential execution across ALL processes, not just this one
 			// This prevents race conditions when multiple processes access the same files
 			this.fsQueue = this.fsQueue
 				.then(async () => {
+					console.error(`[kernel] Processing FS request #${requestId}: ${method}`);
 					const previousActive = this.activeFsProcessRecord;
 					this.activeFsProcessRecord = record;
 					let response;
 					try {
 						const result = await this.invokeFsMethod(method, args);
 						response = serializeFsResponse(result);
+						console.error(`[kernel] FS request #${requestId} succeeded`);
 					} catch (error) {
 						response = serializeFsError(error);
+						console.error(`[kernel] FS request #${requestId} failed:`, error);
 					} finally {
 						this.activeFsProcessRecord = previousActive;
 					}
@@ -1018,15 +1039,19 @@ export class Kernel extends InMemoryFileSystem {
 							requestId,
 							response,
 						});
-					} catch {
+						console.error(`[kernel] Sent FS response #${requestId} to PID ${record.pid}`);
+					} catch (e) {
+						console.error(`[kernel] Failed to send FS response #${requestId}:`, e);
 						// Ignore failures sending responses on a closed port.
 					}
 				})
-				.catch(() => {
+				.catch((err) => {
+					console.error(`[kernel] FS queue error for request #${requestId}:`, err);
 					// Catch any errors to prevent breaking the queue chain
 				});
 		};
 
+		console.error(`[kernel] Installing FS handler for PID ${record.pid}`);
 		record.fsPort.addEventListener('message', handleFsMessage);
 		record.fsPort.start();
 
@@ -1596,42 +1621,28 @@ export class Kernel extends InMemoryFileSystem {
 					// Set up relay from parent -> binary
 					const relayPort = stdinRelayChannel.port2;
 					relayPort.start();
+
 					relayPort.addEventListener('message', (event) => {
 						const data = event.data;
 						if (data && data.type === 'data') {
-							let preview: string | null = null;
-							const payload = data.payload;
-							if (typeof payload === 'string') {
-								preview = payload.slice(0, 32);
-							} else if (payload instanceof Uint8Array) {
-								const len = Math.min(payload.byteLength, 16);
-								preview = Array.from(payload.slice(0, len))
-									.map((value) => value.toString(16).padStart(2, '0'))
-									.join('');
-							}
 							try {
 								stdinHostPort!.postMessage({ type: 'data', payload: data.payload });
-								console.log('[kernel] Relayed stdin data to binary, size:',
-									typeof data.payload === 'string' ? data.payload.length : data.payload?.byteLength || 0,
-									preview ? 'preview:' + preview : '');
 							} catch (error) {
-								console.log('[kernel] Failed to relay stdin data:', error);
+								console.error('[kernel] Failed to relay stdin data:', error);
 							}
 						} else if (data && data.type === 'end') {
 							try {
 								stdinHostPort!.postMessage({ type: 'end' });
 								stdinHostPort!.close();
 								relayPort.close();
-								console.log('[kernel] Relayed stdin end to binary');
 							} catch (error) {
-								console.log('[kernel] Failed to relay stdin end:', error);
+								console.error('[kernel] Failed to relay stdin end:', error);
 							}
 						}
 					});
 
 					// Transfer port1 to parent
 					transferList.push(stdinRelayChannel.port1);
-					console.error('[kernel] Created stdin relay channel for pid:', resources.pid);
 				} else {
 					// For stdout/stderr in pipe mode, transfer to parent so they can read
 					transferList.push(descriptor.hostPort);

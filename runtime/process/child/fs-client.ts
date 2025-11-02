@@ -412,23 +412,23 @@ const requestAsync = (
 	method: string,
 	args: unknown[]
 ): Promise<unknown> => {
-		if (disposed) {
-			return Promise.reject(
-				new Error('Filesystem bridge has been disposed')
-			);
-		}
+	if (disposed) {
+		return Promise.reject(
+			new Error('Filesystem bridge has been disposed')
+		);
+	}
 
-		// Intercept stdio operations
-		if (stdio) {
-			const stdioResult = tryHandleStdioAsync(method, args, stdio);
-			if (stdioResult !== null) {
-				return stdioResult;
-			}
+	// Intercept stdio operations
+	if (stdio) {
+		const stdioResult = tryHandleStdioAsync(method, args, stdio);
+		if (stdioResult !== null) {
+			return stdioResult;
 		}
+	}
 
-		const requestId = nextRequestId++;
-		return new Promise<unknown>((resolve, reject) => {
-			pendingAsync.set(requestId, { resolve, reject });
+	const requestId = nextRequestId++;
+	return new Promise<unknown>((resolve, reject) => {
+		pendingAsync.set(requestId, { resolve, reject });
 			try {
 				pumpWorker.postMessage({
 					type: 'asyncRequest',
@@ -448,19 +448,19 @@ const requestAsync = (
 	};
 
 	const requestSync = (method: string, args: unknown[]): unknown => {
-		if (disposed) {
-			throw new Error('Filesystem bridge has been disposed');
-		}
+	if (disposed) {
+		throw new Error('Filesystem bridge has been disposed');
+	}
 
-		// Intercept stdio operations
-		if (stdio) {
-			const stdioResult = tryHandleStdioSync(method, args, stdio);
-			if (stdioResult !== null) {
-				return stdioResult;
-			}
+	// Intercept stdio operations
+	if (stdio) {
+		const stdioResult = tryHandleStdioSync(method, args, stdio);
+		if (stdioResult !== null) {
+			return stdioResult;
 		}
+	}
 
-		const normalizedArgs = Array.isArray(args) ? [...args] : [];
+	const normalizedArgs = Array.isArray(args) ? [...args] : [];
 		let bufferBytes = SYNC_TOTAL_BYTES;
 		const MAX_BUFFER_BYTES = 64 * 1024 * 1024;
 
@@ -526,13 +526,22 @@ const requestAsync = (
 	};
 
 	const asyncProxy = createMethodProxy(
-		resolveKernelMethodName,
-		(method, args) => requestAsync(method, args)
+		resolveKernelMethodNameAsync,
+		(method, args, property) => {
+			if (property.endsWith('Sync')) {
+				return requestSync(method, args);
+			}
+			return requestAsync(method, args);
+		},
+		'ASYNC',
+		false
 	);
 	(asyncProxy as any).promises = asyncProxy;
 	const syncProxy = createMethodProxy(
-		resolveKernelMethodName,
-		(method, args) => requestSync(method, args)
+		resolveKernelMethodNameSync,
+		(method, args) => requestSync(method, args),
+		'SYNC',
+		true
 	);
 
 	const dispose = () => {
@@ -569,7 +578,9 @@ const requestAsync = (
 
 const createMethodProxy = <T>(
 	resolveMethod: (method: string) => string | null,
-	invoke: (method: string, args: unknown[]) => T
+	invoke: (method: string, args: unknown[], property: string) => T,
+	label?: string,
+	isSync?: boolean
 ): Record<string, (...args: unknown[]) => T> => {
 	const target = {} as Record<string, (...args: unknown[]) => T>;
 	return new Proxy(target, {
@@ -578,7 +589,8 @@ const createMethodProxy = <T>(
 				return undefined;
 			}
 			if (Reflect.has(currentTarget, property)) {
-				return Reflect.get(currentTarget, property, receiver);
+				const existing = Reflect.get(currentTarget, property, receiver);
+				return existing;
 			}
 			if (typeof property !== 'string') {
 				return undefined;
@@ -587,14 +599,45 @@ const createMethodProxy = <T>(
 			if (!kernelMethod) {
 				return undefined;
 			}
-			return (...args: unknown[]) => invoke(kernelMethod, args);
+			return (...args: unknown[]) => {
+				return invoke(kernelMethod, args, property);
+			};
 		},
 	});
 };
 
-const resolveKernelMethodName = (method: string): string => {
-	if (method.endsWith('Sync') || method.endsWith('Async')) {
+const ASYNC_KERNEL_METHODS = new Set<string>([
+	'readFile',
+	'writeFile',
+	'open',
+	'close',
+	'read',
+	'write',
+	'stat',
+	'fstat',
+	'lstat',
+	'mkdir',
+	'unlink',
+	'rmdir',
+	'rename',
+]);
+
+const resolveKernelMethodNameSync = (method: string): string | null => {
+	if (method.endsWith('Async')) {
+		return null;
+	}
+	if (method.endsWith('Sync')) {
 		return method;
+	}
+	return `${method}Sync`;
+};
+
+const resolveKernelMethodNameAsync = (method: string): string | null => {
+	if (method.endsWith('Async') || method.endsWith('Sync')) {
+		return method;
+	}
+	if (ASYNC_KERNEL_METHODS.has(method)) {
+		return `${method}Async`;
 	}
 	return `${method}Sync`;
 };

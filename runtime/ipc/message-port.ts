@@ -95,8 +95,6 @@ export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents>
 	constructor(private readonly port: MessagePort, options?: { debugLabel?: string }) {
 		super();
 		this.debugLabel = options?.debugLabel ?? null;
-		// Log EVERY MessagePortReadableStream creation to track stdin
-		console.log('[MPR constructor] created with label:', this.debugLabel);
 		if (typeof Atomics === 'object' && typeof Atomics.wait === 'function') {
 			this.waitBuffer = new SharedArrayBuffer(4);
 			this.waitView = new Int32Array(this.waitBuffer);
@@ -104,8 +102,10 @@ export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents>
 			this.waitBuffer = null;
 			this.waitView = null;
 		}
-		port.addEventListener('message', this.handleMessage);
+
+		// Start the port BEFORE adding listener to ensure messages aren't lost
 		port.start();
+		port.addEventListener('message', this.handleMessage);
 	}
 
 	on<K extends keyof ReadableEvents>(
@@ -191,39 +191,12 @@ export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents>
 
 	private receiveCount = 0;
 	private handleMessage = (event: MessageEvent) => {
-		// ALWAYS log to see if this is ever called
-		console.log('[MPR] handleMessage called', this.debugLabel);
-
 		const payload = event.data;
 		if (!payload || typeof payload !== 'object') {
-			console.log('[MPR] invalid payload', this.debugLabel);
 			return;
 		}
 		if (payload.type === 'data') {
 			this.receiveCount++;
-			const size = typeof payload.payload === 'string'
-				? payload.payload.length
-				: payload.payload.byteLength;
-
-			const label = this.debugLabel || 'ipc:readable';
-
-			if (typeof payload.payload !== 'string') {
-				const chunk = payload.payload;
-				let preview = '';
-				if (
-					typeof Buffer !== 'undefined' &&
-					chunk instanceof Uint8Array
-				) {
-					const len = Math.min(chunk.byteLength, 32);
-					preview = Buffer.from(chunk.slice(0, len)).toString('hex');
-				}
-				console.log(
-					`[${label}] received`,
-					describeChunk(chunk),
-					preview ? preview : ''
-				);
-			}
-
 			this.buffer.push(payload.payload);
 			this.emit('data', payload.payload);
 
@@ -232,13 +205,13 @@ export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents>
 				Atomics.notify(this.waitView, 0);
 			}
 		} else if (payload.type === 'end') {
-			console.log('[MPR] received end', this.debugLabel);
+			// console.log('[MPR] received end', this.debugLabel);
 			this.ended = true;
 			this.remoteClosed = true;
 			this.emit('end', undefined as unknown as void);
 			this.close(true);
 		} else if (payload.type === 'close') {
-			console.log('[MPR] received close', this.debugLabel);
+			// console.log('[MPR] received close', this.debugLabel);
 			this.remoteClosed = true;
 			this.close(true);
 		}

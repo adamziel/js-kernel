@@ -955,8 +955,8 @@ setTimeout(() => {
 		const scriptPath = '/esbuild/bundle.js';
 		kernel.writeFileSync(
 			scriptPath,
-			encoder.encode(bundleFixtureSource),
-			null
+			bundleFixtureSource,
+			'utf8'
 		);
 		// bundle.js fixture uses require(), so mark it as CommonJS
 		kernel.writeFileSync(

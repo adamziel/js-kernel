@@ -5,6 +5,8 @@ import type { KernelStdioChunk } from '../runtime/ipc/message-port.ts';
 import { BlobReader, ZipReader, Uint8ArrayWriter } from '@zip.js/zip.js';
 import esBundlerZipUrl from './programs/node-loader/es-bundler.zip?url';
 import bundleFixtureSource from './tests/fixtures/esbuild-wasm/bundle.js?raw';
+import wasmExecNode from './tests/fixtures/esbuild-wasm/wasm_exec_node.js?raw';
+import wasmExec from './tests/fixtures/esbuild-wasm/wasm_exec.js?raw';
 
 const kernel = new Kernel();
 globalThis.kernel = kernel;
@@ -80,6 +82,16 @@ export async function testEsbuildLikeInTests() {
 	kernel.mkdirSync('/esbuild', { recursive: true });
 	kernel.writeFileSync('/esbuild/es-bundler.zip', bundleZip, null);
 	await unzipKernelFile(kernel, '/esbuild/es-bundler.zip', '/esbuild');
+	kernel.writeFileSync(
+		'/esbuild/node_modules/esbuild-wasm/wasm_exec_node.js',
+		wasmExecNode,
+		'utf8'
+	);
+	kernel.writeFileSync(
+		'/esbuild/node_modules/esbuild-wasm/wasm_exec.js',
+		wasmExec,
+		'utf8'
+	);
 
 	kernel.mkdirSync('/esbuild/src', { recursive: true });
 	// Simplified bundle just to see if esbuild works:
@@ -153,6 +165,10 @@ export async function testEsbuildLikeInTests() {
 	const exitCode: number = await new Promise((resolve) => {
 		subprocess.onExit((code) => resolve(code ?? 0));
 	});
+
+	console.log('[main-app] Exit code:', exitCode);
+	console.log('[main-app] Stdout:', stdout);
+	console.log('[main-app] Stderr:', stderr);
 
 	const bundleText = kernel.existsSync('/tmp/esbuild-bundle-fs.txt')
 		? (kernel.readFileSync('/tmp/esbuild-bundle-fs.txt', 'utf8') as string)

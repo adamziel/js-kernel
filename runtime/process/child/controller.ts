@@ -28,6 +28,8 @@ import {
 	type SpawnSyncClient,
 } from '../spawn-sync/client.ts';
 
+console.error('[controller.ts] Worker script loading!');
+
 // Error handling
 // Preserve the original console for easier debugging and error logging.
 // @TODO: How to balance having stderr with direct console access?
@@ -201,6 +203,54 @@ const createProcessControllerFs = (
 	getCwd: () => string
 ): ProcessControllerFs => {
 	const asyncApi = client.async as Record<string, unknown>;
+	const syncApi = client.sync as Record<string, unknown>;
+	const isAbsolutePath = (path: string) =>
+		path.startsWith('/') || /^[a-zA-Z]+:/.test(path);
+
+	const getPathArgIndexes = (method: string): number[] | undefined => {
+		if (FS_METHOD_PATH_ARGUMENTS[method]) {
+			return FS_METHOD_PATH_ARGUMENTS[method];
+		}
+		if (method.endsWith('Sync')) {
+			return FS_METHOD_PATH_ARGUMENTS[method.slice(0, -4)];
+		}
+		if (method.endsWith('Async')) {
+			return FS_METHOD_PATH_ARGUMENTS[method.slice(0, -5)];
+		}
+		return undefined;
+	};
+
+	const withPathNormalization = (
+		method: string,
+		fn: (...args: unknown[]) => unknown,
+		invokeTarget: Record<string, unknown>
+	) => {
+		const indexes = getPathArgIndexes(method);
+		if (!Array.isArray(indexes) || indexes.length === 0) {
+			return (...args: unknown[]) =>
+				Reflect.apply(fn, invokeTarget, args);
+		}
+		return (...args: unknown[]) => {
+			const adjustedArgs = [...args];
+			for (const index of indexes) {
+				if (index < adjustedArgs.length) {
+					const value = adjustedArgs[index];
+					if (typeof value === 'string' && value.length > 0) {
+						const cwd = getCwd();
+						const absolute = isAbsolutePath(value)
+							? value
+							: joinPaths(
+									cwd && cwd.length > 0 ? cwd : '/',
+									value
+							  );
+						adjustedArgs[index] = absolute;
+					}
+				}
+			}
+			return Reflect.apply(fn, invokeTarget, adjustedArgs);
+		};
+	};
+
 	return new Proxy(asyncApi, {
 		get(target, property, receiver) {
 			if (property === 'async') {
@@ -216,43 +266,22 @@ const createProcessControllerFs = (
 				return undefined;
 			}
 			if (typeof property === 'string') {
+				if (property.endsWith('Sync')) {
+					const syncValue = Reflect.get(syncApi, property, syncApi);
+					if (typeof syncValue === 'function') {
+						return withPathNormalization(
+							property,
+							syncValue,
+							syncApi
+						);
+					}
+					return syncValue;
+				}
 				const original = Reflect.get(target, property, receiver);
 				if (typeof original === 'function') {
-					const pathArgs = FS_METHOD_PATH_ARGUMENTS[property];
-					if (Array.isArray(pathArgs) && pathArgs.length > 0) {
-						return (...args: unknown[]) => {
-							const adjustedArgs = [...args];
-							const isAbsolutePath = (path: string) =>
-								path.startsWith('/') ||
-								/^[a-zA-Z]+:/.test(path);
-							for (const index of pathArgs) {
-								if (index < adjustedArgs.length) {
-									const value = adjustedArgs[index];
-									if (
-										typeof value === 'string' &&
-										value.length > 0
-									) {
-										const cwd = getCwd();
-										const absolute = isAbsolutePath(value)
-											? value
-											: joinPaths(
-													cwd && cwd.length > 0
-														? cwd
-														: '/',
-													value
-											  );
-										adjustedArgs[index] = absolute;
-									}
-								}
-							}
-							return Reflect.apply(
-								original,
-								target,
-								adjustedArgs
-							);
-						};
-					}
+					return withPathNormalization(property, original, target);
 				}
+				return original;
 			}
 			return Reflect.get(target, property, receiver);
 		},
@@ -345,19 +374,7 @@ const createChildStdio = (
 const createReadableStream = (
 	descriptor: ChildStdioDescriptor
 ): ChildReadableStream => {
-	console.log(
-		'[createReadableStream] fd:',
-		descriptor.fd,
-		'mode:',
-		descriptor.mode,
-		'hasPort:',
-		!!descriptor.port
-	);
 	if (descriptor.mode === 'ignore' || !descriptor.port) {
-		console.log(
-			'[createReadableStream] Returning NullReadableStream for fd:',
-			descriptor.fd
-		);
 		return new NullReadableStream();
 	}
 	const label =
@@ -366,10 +383,6 @@ const createReadableStream = (
 			: descriptor.fd === 1
 			? 'binary:stdout'
 			: 'binary:stderr';
-	console.log(
-		'[createReadableStream] Creating MessagePortReadableStream with label:',
-		label
-	);
 	return new MessagePortReadableStream(descriptor.port, {
 		debugLabel: label,
 	});
@@ -730,7 +743,7 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 		exit(code: number) {
 			const pid = childProcessState?.pid ?? -1;
 			// console.error('[processController.exit] CALLED! PID:', pid, 'code:', code);
-			console.log('[processController.exit] PID:', pid, 'code:', code);
+			// console.log('[processController.exit] PID:', pid, 'code:', code);
 			// Give all the streams and async actions chance to flush.
 			setTimeout(() => {
 				// console.error('[processController.exit] In setTimeout, sending exit message');
@@ -829,13 +842,17 @@ export function redirectConsoleToStdio(isDebug: boolean) {
 const KERNEL_INIT_MESSAGE = '__kernel_internal__/initChildProcess';
 
 const handleKernelInit = (event: MessageEvent) => {
+	console.error('[handleKernelInit] Called, event.data.type:', event.data?.type);
 	if (bootstrapComplete) {
+		console.error('[handleKernelInit] Bootstrap already complete, returning');
 		return;
 	}
 	if (event.data?.type !== KERNEL_INIT_MESSAGE) {
+		console.error('[handleKernelInit] Wrong message type, returning');
 		return;
 	}
 
+	console.error('[handleKernelInit] Processing init message');
 	bootstrapComplete = true;
 	self.removeEventListener('message', handleKernelInit);
 
@@ -848,23 +865,27 @@ const handleKernelInit = (event: MessageEvent) => {
 			hasPort: !!d.port,
 		})) || []
 	);
-	console.log('[BINARY handleKernelInit] stdio received:', stdioInfo);
+	// console.log('[BINARY handleKernelInit] stdio received:', stdioInfo);
 	const oc = (globalThis as any).originalConsole;
 	if (oc) {
 		oc.error('[BINARY handleKernelInit] stdio received:', stdioInfo);
 	}
+	console.error('[handleKernelInit] About to call initChildProcess');
 	initChildProcess(payload);
+	console.error('[handleKernelInit] About to call redirectConsoleToStdio');
 	redirectConsoleToStdio(payload.debug);
 
 	// Log stdio configuration AFTER console is redirected so we can see it
-	console.log('[BINARY after init] stdio descriptors received:', stdioInfo);
-	console.log(
-		'[BINARY after init] stdin stream type:',
-		(globalThis as any).processController?.stdin?.constructor?.name ||
-			'unknown'
-	);
+	// console.log('[BINARY after init] stdio descriptors received:', stdioInfo);
+	// console.log(
+	// 	'[BINARY after init] stdin stream type:',
+	// 	(globalThis as any).processController?.stdin?.constructor?.name ||
+	// 		'unknown'
+	// );
 
+	console.error('[handleKernelInit] About to queue startProgram');
 	queueMicrotask(() => startProgram(payload));
+	console.error('[handleKernelInit] Queued startProgram');
 };
 
 self.addEventListener('message', handleKernelInit);
@@ -908,7 +929,9 @@ const reportProgramError = (error: unknown) => {
 };
 
 const startProgram = async (options: ChildProcessInitOptions) => {
+	console.error('[startProgram] Called with programPath:', options.programPath);
 	if (programStarted) {
+		console.error('[startProgram] Already started, returning');
 		return;
 	}
 	programStarted = true;
@@ -921,12 +944,14 @@ const startProgram = async (options: ChildProcessInitOptions) => {
 	const originalDirname = (globalThis as any).__dirname;
 
 	try {
+		console.error('[startProgram] About to call fs.readdir("/")');
 		// Somehow this makes all the sync calls work in the imported module.
 		// Without it, they hang indefinitely.
 		// @TODO: Look into initialization flows, most likely,
 		// there's a missing await between something is initialized and
 		// Atomics.wait() is called.
 		await (globalThis as any).processController.fs.readdir('/');
+		console.error('[startProgram] fs.readdir("/") completed');
 
 		// Vite is stubborn and wraps dynamic imports with a __vite__injectQuery call.
 		// that adds a query parameter. Vite assumes that function exists in the worker.
@@ -1088,25 +1113,25 @@ function createChildProcessHandle(
 	let parentStderr: MessagePortReadableStream | undefined;
 
 	for (const descriptor of plan.stdio) {
-		console.log(
-			'[spawn plan stdio] fd:',
-			descriptor.fd,
-			'mode:',
-			descriptor.mode,
-			'hasParentPort:',
-			!!descriptor.parentPort,
-			'hasWorkerPort:',
-			!!descriptor.workerPort
-		);
+		// console.log(
+		// 	'[spawn plan stdio] fd:',
+		// 	descriptor.fd,
+		// 	'mode:',
+		// 	descriptor.mode,
+		// 	'hasParentPort:',
+		// 	!!descriptor.parentPort,
+		// 	'hasWorkerPort:',
+		// 	!!descriptor.workerPort
+		// );
 		if (descriptor.workerPort) {
 			transferList.push(descriptor.workerPort);
 		}
 		if (descriptor.mode === 'pipe' && descriptor.fd === 0) {
 			// Always create stdin - either with MessagePort if available, or null stream for control-port-only
-			console.log(
-				'[spawn plan] Creating parentStdin stream, hasParentPort:',
-				!!descriptor.parentPort
-			);
+			// console.log(
+			// 	'[spawn plan] Creating parentStdin stream, hasParentPort:',
+			// 	!!descriptor.parentPort
+			// );
 			// For nested spawns, parentPort will be null, but we still need stdin property on handle
 			// Wrapping below will forward via control port
 			parentStdin = descriptor.parentPort
@@ -1117,7 +1142,7 @@ function createChildProcessHandle(
 			descriptor.parentPort &&
 			descriptor.fd === 1
 		) {
-			console.log('[spawn plan] Creating parentStdout stream');
+			// console.log('[spawn plan] Creating parentStdout stream');
 			parentStdout = new MessagePortReadableStream(
 				descriptor.parentPort,
 				{ debugLabel: 'parent:stdout' }
@@ -1127,7 +1152,7 @@ function createChildProcessHandle(
 			descriptor.parentPort &&
 			descriptor.fd === 2
 		) {
-			console.log('[spawn plan] Creating parentStderr stream');
+			// console.log('[spawn plan] Creating parentStderr stream');
 			parentStderr = new MessagePortReadableStream(
 				descriptor.parentPort,
 				{ debugLabel: 'parent:stderr' }
@@ -1316,11 +1341,11 @@ function createChildProcessHandle(
 		},
 	};
 
-	console.log(
-		'[createChildProcessHandle] transferList has',
-		transferList.length,
-		'ports'
-	);
+	// console.log(
+	// 	'[createChildProcessHandle] transferList has',
+	// 	transferList.length,
+	// 	'ports'
+	// );
 	worker.postMessage(initMessage, transferList);
 
 	return handle;

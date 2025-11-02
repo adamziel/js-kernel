@@ -42,8 +42,12 @@ function isESMSyntax(code) {
 
 // @TODO: Do not rely on `window` here. We're running a Node.js process after all.
 globalThis.window = globalThis.global = globalThis;
+console.error('[client-boot] Assigning globalFs from processController.fsSync');
+console.error('[client-boot] processController.fsSync === processController.fs?', processController.fsSync === processController.fs);
+console.error('[client-boot] typeof processController.fsSync:', typeof processController.fsSync);
 globalThis.globalFs = processController.fsSync;
 globalThis.globalFsAsync = processController.fs;
+console.error('[client-boot] Assigned. globalFs === globalFsAsync?', globalThis.globalFs === globalThis.globalFsAsync);
 
 const fsPathTextDecoder =
 	typeof TextDecoder !== 'undefined' ? new TextDecoder() : null;
@@ -148,6 +152,11 @@ const applyFsPathNormalization = (target, pathArgMap) => {
 		if (original.__kernelPathWrapped) {
 			continue;
 		}
+		if (method.includes('Sync')) {
+			console.error(`[client-boot] Wrapping ${method}`);
+			console.error(`  - original function name:`, original.name);
+			console.error(`  - original.toString():`, original.toString().slice(0, 100));
+		}
 		const wrapped = function (...args) {
 			const normalizedArgs =
 				indexes && indexes.length > 0
@@ -173,16 +182,24 @@ const applyFsPathNormalization = (target, pathArgMap) => {
 						normalizedArgs.length > 0
 							? normalizedArgs[0]
 							: undefined;
-					console.log(
-						`[kernel-fs ${method}]`,
-						displayArg,
-						args[0] === displayArg ? '' : `(from ${args[0]})`
-					);
+// 					console.log(
+// 						`[kernel-fs ${method}]`,
+// 						displayArg,
+// 						args[0] === displayArg ? '' : `(from ${args[0]})`
+// 					);
 				} catch {
 					// ignore logging errors
 				}
 			}
-			return original.apply(this, normalizedArgs);
+			if (method.includes('Sync')) {
+				console.error(`[client-boot wrapper] About to call original for ${method}`);
+				console.error(`  - original is:`, typeof original, original.name);
+			}
+			const result = original.apply(this, normalizedArgs);
+			if (method.includes('Sync')) {
+				console.error(`[client-boot wrapper] Returned from original for ${method}`);
+			}
+			return result;
 		};
 		wrapped.__kernelPathWrapped = true;
 		target[method] = wrapped;
@@ -2735,7 +2752,7 @@ globalThis.internalModules = {
 		},
 
 		getNearestParentPackageJSONType(mainPath) {
-			console.log('getNearestParentPackageJSONType', mainPath);
+			console.error('getNearestParentPackageJSONType', mainPath);
 			// Start from the directory containing mainPath
 			let currentDir = globalThis.coreModules.path.dirname(mainPath);
 
@@ -2856,12 +2873,12 @@ globalThis.internalModules = {
 				const normalizedPath = shouldNormalizePathValue(targetPath)
 					? resolveFsPath(targetPath)
 					: targetPath;
-				console.log(
-					'[internalModuleStat] request',
-					targetPath,
-					'normalized to',
-					normalizedPath
-				);
+// 				console.log(
+// 					'[internalModuleStat] request',
+// 					targetPath,
+// 					'normalized to',
+// 					normalizedPath
+// 				);
 				let stats;
 				try {
 					stats = globalFs.statSync(normalizedPath);
@@ -2871,9 +2888,9 @@ globalThis.internalModules = {
 				return stats?.isDirectory() ? 1 : stats?.isFile() ? 0 : -1;
 			},
 			exists(path) {
-				console.log(
-					'Regular exists – how is it different from existsSync?'
-				);
+// 				console.log(
+// 					'Regular exists – how is it different from existsSync?'
+// 				);
 				return globalFs.existsSync(path);
 			},
 			existsSync(path) {
@@ -5622,7 +5639,7 @@ globalThis.internalModules = {
 				 */
 				initializeImportMetaObject
 			) {
-				console.log('[ESM] Storing initializeImportMetaObject callback');
+				// console.log('[ESM] Storing initializeImportMetaObject callback');
 				esmCallbacks.initializeImportMeta = initializeImportMetaObject;
 			},
 			setImportModuleDynamicallyCallback(
@@ -5638,7 +5655,7 @@ globalThis.internalModules = {
 				 */
 				importModuleDynamicallyCallback
 			) {
-				console.log('[ESM] Storing importModuleDynamically callback');
+				// console.log('[ESM] Storing importModuleDynamically callback');
 				esmCallbacks.importDynamically = importModuleDynamicallyCallback;
 			},
 		};
@@ -5830,6 +5847,8 @@ globalThis.internalModules.fs_dir_exports =
 
 globalThis.coreModules.fs = fs.default;
 globalThis.fs = globalThis.coreModules.fs;
+globalThis.fs.writeSync = (...args) =>
+	globalThis.globalFs.writeSync(...args);
 
 const supportsBinaryResult = (options) => {
 	if (options === undefined || options === null) {
@@ -7561,9 +7580,19 @@ const stdin = new (class Stdin extends Readable {
 	#detachData = null;
 	#detachEnd = null;
 	#detachClose = null;
+	#initialized = false;
 	constructor() {
 		super({ objectMode: true });
 		this.fd = 0;
+		// Don't connect to source yet - processController may not be initialized
+		// Connection will happen lazily on first read
+	}
+	#ensureConnected() {
+		if (this.#initialized) {
+			return;
+		}
+		this.#initialized = true;
+
 		const source = processController.stdin;
 		if (!source || typeof source.on !== 'function') {
 			queueMicrotask(() => this.push(null));
@@ -7580,6 +7609,8 @@ const stdin = new (class Stdin extends Readable {
 		});
 	}
 	_read(_size) {
+		// Lazy initialization - connect to processController.stdin on first read
+		this.#ensureConnected();
 		// Data is pushed via processController stdin events.
 	}
 	_destroy(err, callback) {
