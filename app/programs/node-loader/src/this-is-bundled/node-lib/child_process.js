@@ -318,7 +318,6 @@ const runHandler = async (child, command, args, options, handler) => {
 		stderr: child.stderr,
 		writeStdout: (data) => {
 			var _a;
-			// console.log('[writeStdout] called with', data && (data.length || data.byteLength), 'bytes, child.stdout exists:', !!child.stdout);
 			try {
 				if (
 					command === 'node' &&
@@ -337,24 +336,30 @@ const runHandler = async (child, command, args, options, handler) => {
 					if (typeof data === 'string') {
 						preview = data.slice(0, 80);
 					} else if (data && typeof data === 'object') {
-						const view = data instanceof Uint8Array
-							? data
-							: ArrayBuffer.isView(data)
-							? new Uint8Array(
-									data.buffer,
-									data.byteOffset ?? 0,
-									Math.min(data.byteLength ?? data.length ?? 0, 128)
-							  )
-							: null;
-						if (view) {
-							preview = Buffer.from(view).toString('base64');
+						const view =
+							data instanceof Uint8Array
+								? data
+								: ArrayBuffer.isView(data)
+								? new Uint8Array(
+										data.buffer,
+										data.byteOffset ?? 0,
+										Math.min(
+											data.byteLength ?? data.length ?? 0,
+											256
+										)
+								  )
+								: null;
+						if (view && typeof Buffer !== 'undefined') {
+							preview = Buffer.from(view)
+								.toString('hex')
+								.slice(0, 512);
 						}
 					}
-					// console.log('[spawn] esbuild stdout chunk', {
-					// 	length,
-					// 	type: data && data.constructor && data.constructor.name,
-					// 	preview,
-					// });
+					console.error('[spawn] esbuild stdout chunk', {
+						length,
+						type: data && data.constructor && data.constructor.name,
+						preview,
+					});
 				}
 			} catch (err) {
 				// console.error('[writeStdout] logging error:', err && err.message);
@@ -362,7 +367,6 @@ const runHandler = async (child, command, args, options, handler) => {
 			(_a = child.stdout) === null || _a === void 0
 				? void 0
 				: _a.write(data);
-			// console.log('[writeStdout] child.stdout.write called');
 		},
 		writeStderr: (data) => {
 			var _a;
@@ -521,27 +525,67 @@ export const spawn = (command, args = [], options = {}) => {
 				let stdinEnded = false;
 				if (context.stdin) {
 					const handleData = (chunk) => {
+						const describeChunk = () => {
+							const chunkLength =
+								typeof chunk === 'string'
+									? chunk.length
+									: chunk && typeof chunk === 'object'
+									? chunk.byteLength ?? chunk.length ?? 0
+									: 0;
+							let preview = '';
+							if (
+								typeof chunk !== 'string' &&
+								chunk &&
+								typeof Buffer !== 'undefined'
+							) {
+								try {
+									preview = Buffer.from(chunk)
+										.toString('hex')
+										.slice(0, 80);
+								} catch {
+									preview = '';
+								}
+							} else if (typeof chunk === 'string') {
+								preview = chunk.slice(0, 80);
+							}
+							return { length: chunkLength, preview };
+						};
 						if (handle && handle.stdin) {
 							try {
+								const info = describeChunk();
+								console.error(
+									'[child-process bridge] stdin data immediate write',
+									info
+								);
 								handle.stdin.write(chunk);
 							} catch (err) {
 								// Silently ignore write errors to avoid polluting stdio
 							}
 							return;
 						}
+						try {
+							console.error(
+								'[child-process bridge] queue stdin chunk',
+								describeChunk()
+							);
+						} catch {}
 						pendingInput.push(chunk);
 					};
-					const handleEnd = () => {
-						if (handle && handle.stdin) {
-							try {
-								handle.stdin.end();
-							} catch {
-								// ignore
-							}
-							return;
+				const handleEnd = () => {
+					if (handle && handle.stdin) {
+						try {
+							console.error(
+								'[child-process bridge] stdin end signalled'
+							);
+							handle.stdin.end();
+						} catch {
+							// ignore
 						}
-						stdinEnded = true;
-					};
+						return;
+					}
+					console.error('[child-process bridge] stdin end queued');
+					stdinEnded = true;
+				};
 					context.stdin.on('data', handleData);
 					context.stdin.on('end', handleEnd);
 					context.stdin.on('close', handleEnd);
@@ -563,6 +607,32 @@ export const spawn = (command, args = [], options = {}) => {
 					const chunks = pendingInput.splice(0);
 					for (const chunk of chunks) {
 						try {
+							const chunkLength =
+								typeof chunk === 'string'
+									? chunk.length
+									: chunk && typeof chunk === 'object'
+									? chunk.byteLength ?? chunk.length ?? 0
+									: 0;
+							let preview = '';
+							if (
+								typeof chunk !== 'string' &&
+								chunk &&
+								typeof Buffer !== 'undefined'
+							) {
+								try {
+									preview = Buffer.from(chunk)
+										.toString('hex')
+										.slice(0, 80);
+								} catch {
+									preview = '';
+								}
+							} else if (typeof chunk === 'string') {
+								preview = chunk.slice(0, 80);
+							}
+							console.error(
+								'[child-process bridge] flushPendingInput write',
+								{ length: chunkLength, preview }
+							);
 							handle.stdin.write(chunk);
 						} catch (err) {
 							// Silently ignore write errors to avoid polluting stdio
@@ -595,7 +665,37 @@ export const spawn = (command, args = [], options = {}) => {
 			)
 		) {
 			const originalWrite = handle.stdin.write.bind(handle.stdin);
-			handle.stdin.write = (chunk) => originalWrite(chunk);
+			handle.stdin.write = (chunk, ...writeArgs) => {
+				try {
+					const chunkLength =
+						typeof chunk === 'string'
+							? chunk.length
+							: chunk && typeof chunk === 'object'
+							? chunk.byteLength ?? chunk.length ?? 0
+							: 0;
+					let preview = '';
+					if (
+						typeof chunk !== 'string' &&
+						chunk &&
+						typeof Buffer !== 'undefined'
+					) {
+						try {
+							preview = Buffer.from(chunk)
+								.toString('hex')
+								.slice(0, 80);
+						} catch {
+							preview = '';
+						}
+					} else if (typeof chunk === 'string') {
+						preview = chunk.slice(0, 80);
+					}
+					console.error(
+						'[child-process bridge] stdin.write',
+						{ length: chunkLength, preview }
+					);
+				} catch {}
+				return originalWrite(chunk, ...writeArgs);
+			};
 		}
 				if (typeof handle.threadId === 'number') {
 					child.pid = handle.threadId;

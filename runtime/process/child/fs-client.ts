@@ -101,6 +101,8 @@ export const createKernelFsClient = (
 const stdinRemainders = new WeakMap<StdioStreams['stdin'], Uint8Array>();
 const textEncoder =
 	typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
+const debugTextDecoder =
+	typeof TextDecoder !== 'undefined' ? new TextDecoder() : null;
 
 	const toReadResult = (bytes: Uint8Array, lengthOverride?: number) => {
 		const view =
@@ -274,21 +276,36 @@ const textEncoder =
 
 		// Handle write operations to stdout (1) or stderr (2)
 		// writeSync(fd, data, offsetOrPos, lengthOrEnc, position)
-		if (
-			(method === 'write' || method === 'writeSync') &&
-			(fd === 1 || fd === 2)
-		) {
-			return Promise.resolve().then(() => {
-				const stream = fd === 1 ? streams.stdout : streams.stderr;
-				const data = args[1];
-				const offsetOrPos = args[2];
-				const lengthOrEnc = args[3];
-				const position = args[4];
+	if (
+		(method === 'write' || method === 'writeSync') &&
+		(fd === 1 || fd === 2)
+	) {
+		return Promise.resolve().then(() => {
+			const stream = fd === 1 ? streams.stdout : streams.stderr;
+			const data = args[1];
+			const offsetOrPos = args[2];
+			const lengthOrEnc = args[3];
+			const position = args[4];
+			try {
+				const typeName =
+					data && typeof data === 'object' && data.constructor
+						? data.constructor.name
+						: typeof data;
+				let preview = data;
+				if (debugTextDecoder && data instanceof Uint8Array) {
+					preview = debugTextDecoder.decode(data.slice(0, 200));
+				}
+				console.error(
+					`[fs-client stdio async] ${method} fd=${fd} type=${typeName} preview=${String(
+						preview
+					).slice(0, 200)}`
+				);
+			} catch {}
 
-				const chunk = extractWriteData(
-					data,
-					offsetOrPos,
-					lengthOrEnc,
+			const chunk = extractWriteData(
+				data,
+				offsetOrPos,
+				lengthOrEnc,
 					position
 				);
 				stream.write(chunk);
@@ -322,21 +339,37 @@ const textEncoder =
 
 		// Handle write operations to stdout (1) or stderr (2)
 		// writeSync(fd, data, offsetOrPos, lengthOrEnc, position)
-		if (
-			(method === 'writeSync' || method === 'write') &&
-			(fd === 1 || fd === 2)
-		) {
-			const stream = fd === 1 ? streams.stdout : streams.stderr;
-			const data = args[1];
-			const offsetOrPos = args[2];
-			const lengthOrEnc = args[3];
-			const position = args[4];
+	if (
+		(method === 'writeSync' || method === 'write') &&
+		(fd === 1 || fd === 2)
+	) {
+		const stream = fd === 1 ? streams.stdout : streams.stderr;
+		const data = args[1];
+		const offsetOrPos = args[2];
+		const lengthOrEnc = args[3];
+		const position = args[4];
 
-			const chunk = extractWriteData(
-				data,
-				offsetOrPos,
-				lengthOrEnc,
-				position
+		try {
+			const typeName =
+				data && typeof data === 'object' && data.constructor
+					? data.constructor.name
+					: typeof data;
+			let preview = data;
+			if (debugTextDecoder && data instanceof Uint8Array) {
+				preview = debugTextDecoder.decode(data.slice(0, 200));
+			}
+			console.error(
+				`[fs-client stdio] ${method} fd=${fd} type=${typeName} preview=${String(
+					preview
+				).slice(0, 200)}`
+			);
+		} catch {}
+
+		const chunk = extractWriteData(
+			data,
+			offsetOrPos,
+			lengthOrEnc,
+			position
 			);
 			stream.write(chunk);
 			return chunk instanceof Uint8Array
@@ -408,19 +441,19 @@ const textEncoder =
 		return null;
 	};
 
-const requestAsync = (
-	method: string,
-	args: unknown[]
-): Promise<unknown> => {
-	if (disposed) {
-		return Promise.reject(
-			new Error('Filesystem bridge has been disposed')
-		);
-	}
+	const requestAsync = (
+		method: string,
+		args: unknown[]
+	): Promise<unknown> => {
+		if (disposed) {
+			return Promise.reject(
+				new Error('Filesystem bridge has been disposed')
+			);
+		}
 
-	// Intercept stdio operations
-	if (stdio) {
-		const stdioResult = tryHandleStdioAsync(method, args, stdio);
+		// Intercept stdio operations
+		if (stdio) {
+			const stdioResult = tryHandleStdioAsync(method, args, stdio);
 		if (stdioResult !== null) {
 			return stdioResult;
 		}
@@ -429,11 +462,34 @@ const requestAsync = (
 	const requestId = nextRequestId++;
 	return new Promise<unknown>((resolve, reject) => {
 		pendingAsync.set(requestId, { resolve, reject });
-			try {
-				pumpWorker.postMessage({
-					type: 'asyncRequest',
-					requestId,
-					method,
+		try {
+			if (method === 'write') {
+		try {
+			const fd = args?.[0];
+			const value = args?.[1];
+			let data = value;
+			if (debugTextDecoder && value instanceof Uint8Array) {
+				try {
+					data = debugTextDecoder.decode(
+						(value as Uint8Array).slice(0, 200)
+					);
+				} catch {}
+			}
+			const typeName =
+				value && typeof value === 'object' && value.constructor
+					? value.constructor.name
+					: typeof value;
+			console.error(
+				`[fs-client] async write request fd=${fd} type=${typeName} preview=${String(
+					data
+				).slice(0, 200)}`
+			);
+		} catch {}
+	}
+			pumpWorker.postMessage({
+				type: 'asyncRequest',
+				requestId,
+				method,
 					args,
 				});
 			} catch (error) {
@@ -460,7 +516,30 @@ const requestAsync = (
 		}
 	}
 
-	const normalizedArgs = Array.isArray(args) ? [...args] : [];
+		const normalizedArgs = Array.isArray(args) ? [...args] : [];
+	if (method === 'writeSync') {
+		try {
+			const fd = normalizedArgs?.[0];
+			const value = normalizedArgs?.[1];
+			let dataPreview = value;
+			if (debugTextDecoder && value instanceof Uint8Array) {
+				try {
+					dataPreview = debugTextDecoder
+						.decode((value as Uint8Array).slice(0, 200))
+						.replace(/\s+/g, ' ');
+				} catch {}
+			}
+			const typeName =
+				value && typeof value === 'object' && value.constructor
+					? value.constructor.name
+					: typeof value;
+			console.error(
+				`[fs-client] writeSync request fd=${fd} type=${typeName} preview=${String(
+					dataPreview
+				).slice(0, 200)}`
+			);
+		} catch {}
+	}
 		let bufferBytes = SYNC_TOTAL_BYTES;
 		const MAX_BUFFER_BYTES = 64 * 1024 * 1024;
 
@@ -635,9 +714,6 @@ const resolveKernelMethodNameSync = (method: string): string | null => {
 const resolveKernelMethodNameAsync = (method: string): string | null => {
 	if (method.endsWith('Async') || method.endsWith('Sync')) {
 		return method;
-	}
-	if (ASYNC_KERNEL_METHODS.has(method)) {
-		return `${method}Async`;
 	}
 	return `${method}Sync`;
 };

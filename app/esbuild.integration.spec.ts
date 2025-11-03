@@ -4,6 +4,10 @@ import { installCustomPrograms } from './programs/index.ts';
 import { ZipReader, BlobReader, Uint8ArrayWriter } from '@zip.js/zip.js';
 import esBundlerZipUrl from './programs/node-loader/es-bundler.zip?url';
 import bundleFixtureSource from './tests/fixtures/esbuild-wasm/bundle.js?raw';
+import esbuildLibMainSource from './tests/fixtures/esbuild-wasm/lib/main.js?raw';
+import wasmExecSource from './tests/fixtures/esbuild-wasm/wasm_exec.js?raw';
+import wasmExecNodeSource from './tests/fixtures/esbuild-wasm/wasm_exec_node.js?raw';
+import esbuildLibMainSource from './tests/fixtures/esbuild-wasm/lib/main.js?raw';
 const npmSingle = '/programs/node-loader/npm/npm-single.js?raw';
 const defaultInput = '/programs/node-loader/npm/default-input.js?raw';
 import './read-opfs-logs.ts';
@@ -285,6 +289,47 @@ export default { useBlockProps };`,
 	}
 }
 
+const writeInstrumentedEsbuildFiles = (kernel: Kernel) => {
+	if (!kernel.existsSync('/esbuild/node_modules/esbuild-wasm')) {
+		console.error(
+			'[prepare] esbuild-wasm module missing; skipping instrumentation'
+		);
+		return;
+	}
+	const replacements: Array<[string, string, string]> = [
+		[
+			'/esbuild/node_modules/esbuild-wasm/lib/main.js',
+			esbuildLibMainSource,
+			'lib/main.js',
+		],
+		[
+			'/esbuild/node_modules/esbuild-wasm/wasm_exec.js',
+			wasmExecSource,
+			'wasm_exec.js',
+		],
+		[
+			'/esbuild/node_modules/esbuild-wasm/wasm_exec_node.js',
+			wasmExecNodeSource,
+			'wasm_exec_node.js',
+		],
+	];
+	for (const [target, contents, label] of replacements) {
+		try {
+			kernel.writeFileSync(target, contents, 'utf8');
+			const size =
+				typeof contents === 'string' ? contents.length : contents.byteLength;
+			const preview = kernel.readFileSync(target, 'utf8') as string;
+			console.error('[prepare] wrote instrumented', label, 'size', size, 'preview', preview.slice(0, 80));
+		} catch (error) {
+			console.error(
+				'[prepare] failed to write',
+				label,
+				error && (error as Error).message
+			);
+		}
+	}
+};
+
 const prepareEsbuildEnvironment = async (kernel: Kernel) => {
 	const response = await fetch(esBundlerZipUrl);
 	if (!response.ok) {
@@ -299,6 +344,7 @@ const prepareEsbuildEnvironment = async (kernel: Kernel) => {
 		null
 	);
 	await unzipKernelFile(kernel, '/esbuild/es-bundler.zip', '/esbuild');
+	writeInstrumentedEsbuildFiles(kernel);
 	kernel.mkdirSync('/esbuild/src', { recursive: true });
 	// kernel.writeFileSync(
 	// 	'/esbuild/src/index.js',
@@ -854,7 +900,6 @@ setTimeout(() => {
 			);
 		}
 
-		mainJsInstrumented = mainJsOriginal;
 		kernel.writeFileSync(mainJsPath, mainJsInstrumented, 'utf8');
 
 		kernel.mkdirSync('/esbuild/src', { recursive: true });
@@ -946,12 +991,7 @@ setTimeout(() => {
 
 	const runBundleFixture = async () => {
 		await prepareEsbuildEnvironment(kernel);
-		await createSimpleImportFixture(kernel);
-		await installNpm(kernel);
-		console.error('[fixture setup]', {
-			hasHelper: kernel.existsSync('/esbuild/src/helper.js'),
-			hasIndex: kernel.existsSync('/esbuild/src/index.js'),
-		});
+	await createSimpleImportFixture(kernel);
 		const scriptPath = '/esbuild/bundle.js';
 		kernel.writeFileSync(
 			scriptPath,
@@ -999,9 +1039,193 @@ setTimeout(() => {
 			},
 		});
 
-		if (typeof subprocess === 'number') {
-			throw new Error('failed to spawn bundle fixture');
+	if (typeof subprocess === 'number') {
+		throw new Error('failed to spawn bundle fixture');
+	}
+
+	globalThis.setTimeout(() => {
+		try {
+			const channelLog = kernel.existsSync(
+				'/tmp/esbuild-channel-log.txt'
+			)
+				? (kernel.readFileSync(
+						'/tmp/esbuild-channel-log.txt',
+						'utf8'
+				  ) as string)
+				: '<missing>';
+			console.error('[fixture snapshot] esbuild-channel-log start');
+			for (const line of channelLog.split('\n')) {
+				if (!line) continue;
+				console.error(
+					'[fixture snapshot] esbuild-channel-log line',
+					line
+				);
+			}
+			console.error('[fixture snapshot] esbuild-channel-log end');
+		} catch (error) {
+			console.error(
+				'[fixture snapshot] esbuild-channel-log read error',
+				error
+			);
 		}
+		try {
+			const bundleLog = kernel.existsSync('/tmp/bundle-log.txt')
+				? (kernel.readFileSync('/tmp/bundle-log.txt', 'utf8') as string)
+				: '<missing>';
+			console.error('[fixture snapshot] bundle-log start');
+		for (const rawLine of bundleLog.split('\n')) {
+			if (!rawLine) continue;
+			const line = JSON.stringify(rawLine);
+			console.error('[fixture snapshot] bundle-log line', line);
+		}
+			console.error('[fixture snapshot] bundle-log end');
+		} catch (error) {
+			console.error(
+				'[fixture snapshot] bundle-log read error',
+				error
+			);
+		}
+	}, 5000);
+	globalThis.setTimeout(() => {
+		try {
+			const channelLog = kernel.existsSync(
+				'/tmp/esbuild-channel-log.txt'
+			)
+				? (kernel.readFileSync(
+						'/tmp/esbuild-channel-log.txt',
+						'utf8'
+				  ) as string)
+				: '<missing>';
+			console.error('[fixture snapshot 2] esbuild-channel-log start');
+			for (const line of channelLog.split('\n')) {
+				if (!line) continue;
+				console.error(
+					'[fixture snapshot 2] esbuild-channel-log line',
+					line
+				);
+			}
+			console.error('[fixture snapshot 2] esbuild-channel-log end');
+		} catch (error) {
+			console.error(
+				'[fixture snapshot 2] esbuild-channel-log read error',
+				error
+			);
+		}
+		try {
+			const bundleLog = kernel.existsSync('/tmp/bundle-log.txt')
+				? (kernel.readFileSync('/tmp/bundle-log.txt', 'utf8') as string)
+				: '<missing>';
+			console.error('[fixture snapshot 2] bundle-log start');
+		for (const rawLine of bundleLog.split('\n')) {
+			if (!rawLine) continue;
+			const line = JSON.stringify(rawLine);
+			console.error(
+				'[fixture snapshot 2] bundle-log line',
+				line
+			);
+			}
+			console.error('[fixture snapshot 2] bundle-log end');
+		} catch (error) {
+			console.error(
+				'[fixture snapshot 2] bundle-log read error',
+				error
+			);
+		}
+	}, 15000);
+	globalThis.setTimeout(() => {
+		try {
+			const channelLog = kernel.existsSync(
+				'/tmp/esbuild-channel-log.txt'
+			)
+				? (kernel.readFileSync(
+						'/tmp/esbuild-channel-log.txt',
+						'utf8'
+				  ) as string)
+				: '<missing>';
+			console.error('[fixture snapshot 3] esbuild-channel-log start');
+			for (const line of channelLog.split('\n')) {
+				if (!line) continue;
+				console.error(
+					'[fixture snapshot 3] esbuild-channel-log line',
+					line
+				);
+			}
+			console.error('[fixture snapshot 3] esbuild-channel-log end');
+		} catch (error) {
+			console.error(
+				'[fixture snapshot 3] esbuild-channel-log read error',
+				error
+			);
+		}
+		try {
+			const bundleLog = kernel.existsSync('/tmp/bundle-log.txt')
+				? (kernel.readFileSync('/tmp/bundle-log.txt', 'utf8') as string)
+				: '<missing>';
+			console.error('[fixture snapshot 3] bundle-log start');
+			for (const rawLine of bundleLog.split('\n')) {
+				if (!rawLine) continue;
+				const line = JSON.stringify(rawLine);
+				if (!line) continue;
+				console.error(
+					'[fixture snapshot 3] bundle-log line',
+					line
+				);
+			}
+			console.error('[fixture snapshot 3] bundle-log end');
+		} catch (error) {
+			console.error(
+				'[fixture snapshot 3] bundle-log read error',
+				error
+			);
+		}
+	}, 30000);
+	globalThis.setTimeout(() => {
+		try {
+			const channelLog = kernel.existsSync(
+				'/tmp/esbuild-channel-log.txt'
+			)
+				? (kernel.readFileSync(
+						'/tmp/esbuild-channel-log.txt',
+						'utf8'
+				  ) as string)
+				: '<missing>';
+			console.error('[fixture snapshot 4] esbuild-channel-log start');
+			for (const rawLine of channelLog.split('\n')) {
+				if (!rawLine) continue;
+				const line = JSON.stringify(rawLine);
+				console.error(
+					'[fixture snapshot 4] esbuild-channel-log line',
+					line
+				);
+			}
+			console.error('[fixture snapshot 4] esbuild-channel-log end');
+		} catch (error) {
+			console.error(
+				'[fixture snapshot 4] esbuild-channel-log read error',
+				error
+			);
+		}
+		try {
+			const bundleLog = kernel.existsSync('/tmp/bundle-log.txt')
+				? (kernel.readFileSync('/tmp/bundle-log.txt', 'utf8') as string)
+				: '<missing>';
+			console.error('[fixture snapshot 4] bundle-log start');
+			for (const rawLine of bundleLog.split('\n')) {
+				if (!rawLine) continue;
+				const line = JSON.stringify(rawLine);
+				console.error(
+					'[fixture snapshot 4] bundle-log line',
+					line
+				);
+			}
+			console.error('[fixture snapshot 4] bundle-log end');
+		} catch (error) {
+			console.error(
+				'[fixture snapshot 4] bundle-log read error',
+				error
+			);
+		}
+	}, 38000);
 
 		let stdout = '';
 		let stderr = '';
@@ -1014,13 +1238,39 @@ setTimeout(() => {
 			stderr += chunkToString(chunk);
 		});
 
-		const exitCode: number = await new Promise((resolve) => {
-			subprocess.onExit((code) => resolve(code ?? 0));
-		});
+	const exitCode: number = await new Promise((resolve) => {
+		subprocess.onExit((code) => resolve(code ?? 0));
+	});
 
 		console.log(kernel.readdirSync('/', 'utf8'));
 		console.log(kernel.readdirSync('/tmp', 'utf8'));
 		console.log(kernel.readFileSync('/tmp/esbuild-bundle-fs.txt', 'utf8'));
+
+		try {
+			const libLog = kernel.existsSync('/tmp/esbuild-lib-log.txt')
+				? (kernel.readFileSync(
+						'/tmp/esbuild-lib-log.txt',
+						'utf8'
+					) as string)
+				: '<missing>';
+			console.error('[fixture] esbuild-lib-log', libLog);
+		} catch (error) {
+			console.error('[fixture] esbuild-lib-log read error', error);
+		}
+		try {
+			const channelLog = kernel.existsSync('/tmp/esbuild-channel-log.txt')
+				? (kernel.readFileSync(
+						'/tmp/esbuild-channel-log.txt',
+						'utf8'
+				  ) as string)
+				: '<missing>';
+			console.error('[fixture] esbuild-channel-log', channelLog);
+		} catch (error) {
+			console.error(
+				'[fixture] esbuild-channel-log read error',
+				error
+			);
+		}
 
 		const bundleText = kernel.existsSync(BUNDLE_OUTPUT_PATH)
 			? (kernel.readFileSync(BUNDLE_OUTPUT_PATH, 'utf8') as string)

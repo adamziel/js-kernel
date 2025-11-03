@@ -365,21 +365,37 @@ function handleAsyncOperation(syncFn, asyncFn, kUsePromisesOrReq) {
 	}
 
 	// Callback mode - FSReqCallback with oncomplete
-	if (
-		kUsePromisesOrReq &&
-		typeof kUsePromisesOrReq === 'object' &&
-		'oncomplete' in kUsePromisesOrReq
-	) {
-		asyncFn().then(
-			(result) => {
-				kUsePromisesOrReq.oncomplete(null, result);
-			},
-			(err) => {
-				kUsePromisesOrReq.oncomplete(err);
-			}
-		);
-		return;
-	}
+		if (
+			kUsePromisesOrReq &&
+			typeof kUsePromisesOrReq === 'object' &&
+			'oncomplete' in kUsePromisesOrReq
+		) {
+			asyncFn().then(
+				(result) => {
+					try {
+						console.error('[fs-binding] async callback success', {
+							resultType:
+								result && typeof result === 'object'
+									? result.constructor
+										? result.constructor.name
+										: 'object'
+									: typeof result,
+						});
+					} catch {}
+					kUsePromisesOrReq.oncomplete(null, result);
+				},
+				(err) => {
+					try {
+						console.error(
+							'[fs-binding] async callback error',
+							err && err.message
+						);
+					} catch {}
+					kUsePromisesOrReq.oncomplete(err);
+				}
+			);
+			return;
+		}
 
 	// Promise mode - return the genuine async promise
 	return asyncFn();
@@ -2924,12 +2940,76 @@ globalThis.internalModules = {
 				);
 			},
 			read(fd, buffer, offset, length, position, reqOrPromise) {
-				const processReadBuffer = (sourceBuffer) => {
+				console.error(
+					'[fs-binding] read called',
+					fd,
+					'offset',
+					offset,
+					'length',
+					length,
+					'position',
+					position,
+					'mode',
+					reqOrPromise &&
+						typeof reqOrPromise === 'object' &&
+						'oncomplete' in reqOrPromise
+						? 'callback'
+						: typeof reqOrPromise === 'symbol'
+						? 'promise'
+						: 'sync'
+				);
+				const copyIntoTarget = (sourceBuffer) => {
+					try {
+						console.error(
+							'[fs-binding] processReadBuffer input',
+							sourceBuffer,
+							sourceBuffer?.constructor?.name,
+							typeof sourceBuffer
+						);
+						if (
+							sourceBuffer &&
+							typeof sourceBuffer === 'object' &&
+							typeof TextDecoder !== 'undefined'
+						) {
+							const preview = new TextDecoder()
+								.decode(sourceBuffer.slice?.(0, 200) ?? [])
+								.replace(/\s+/g, ' ');
+							console.error(
+								'[fs-binding] processReadBuffer preview',
+								preview.slice(0, 200)
+							);
+						}
+					} catch {}
+
 					try {
 						const bytesToCopy = Math.min(
 							sourceBuffer.length,
 							length
 						);
+						console.error(
+							'[fs-binding] read buffer',
+							{ fd, sourceLength: sourceBuffer.length, requested: length, bytesToCopy }
+						);
+						if (
+							fd === 0 &&
+							bytesToCopy > 0 &&
+							typeof Buffer !== 'undefined'
+						) {
+							try {
+								const hexPreview = Buffer.from(
+									sourceBuffer.subarray(
+										0,
+										Math.min(bytesToCopy, 256)
+									)
+								)
+									.toString('hex')
+									.slice(0, 512);
+								console.error(
+									'[fs-binding] read chunk preview',
+									hexPreview
+								);
+							} catch {}
+						}
 						if (bytesToCopy > 0) {
 							let targetView;
 							if (
@@ -2968,24 +3048,162 @@ globalThis.internalModules = {
 								offset
 							);
 						}
+						try {
+							if (fd === 0) {
+								const controller =
+									globalThis.processController;
+								const dumpPath =
+									'/tmp/esbuild-service-read.bin';
+								const exists =
+									controller?.fsSync?.existsSync?.(
+										dumpPath
+									) ?? false;
+								controller?.fsSync?.writeFileSync?.(
+									dumpPath,
+									sourceBuffer.subarray(0, bytesToCopy),
+									exists
+										? { flag: 'a', mode: 0o600 }
+										: { mode: 0o600 }
+								);
+							}
+						} catch {}
 						return bytesToCopy;
 					} catch (error) {
-						console.error('[fs-binding] read error', error);
+						console.error(
+							'[fs-binding] read error',
+							error,
+							error?.message,
+							error?.stack
+						);
 						throw error;
 					}
 				};
 
-				return handleAsyncOperation(
-					() =>
-						processReadBuffer(
-							globalFs.readSync(fd, length, position)
-						),
-					() =>
-						globalFsAsync
-							.read(fd, length, position)
-							.then(processReadBuffer),
-					reqOrPromise
+				const runSync = () =>
+					copyIntoTarget(globalFs.readSync(fd, length, position));
+				const runAsyncOnce = () =>
+					globalFsAsync
+						.read(fd, length, position)
+						.then((sourceBuffer) => copyIntoTarget(sourceBuffer));
+
+				const stdinStream =
+					fd === 0 ? globalThis.processController?.stdin ?? null : null;
+				const shouldWaitForMore = (bytesRead) =>
+					fd === 0 &&
+					bytesRead === 0 &&
+					stdinStream &&
+					typeof stdinStream.isEnded === 'function' &&
+					typeof stdinStream.isClosed === 'function' &&
+					!stdinStream.isEnded() &&
+					!stdinStream.isClosed();
+
+				const waitForAdditionalStdinData = () => {
+					if (
+						!stdinStream ||
+						typeof stdinStream.on !== 'function'
+					) {
+						return new Promise((resolve) =>
+							setTimeout(() => resolve(false), 5)
+						);
+					}
+					return new Promise((resolve) => {
+						const cleanup = () => {
+							if (removeData) removeData();
+							if (removeReadable) removeReadable();
+							if (removeEnd) removeEnd();
+							clearTimeout(timer);
+						};
+						const removeData = stdinStream.on('data', () => {
+							cleanup();
+							resolve(true);
+						});
+						const removeReadable = stdinStream.on('readable', () => {
+							if (
+								typeof stdinStream.readableLength === 'number' &&
+								stdinStream.readableLength > 0
+							) {
+								cleanup();
+								resolve(true);
+							}
+						});
+						const removeEnd = stdinStream.on('end', () => {
+							cleanup();
+							resolve(false);
+						});
+						const timer = setTimeout(() => {
+							cleanup();
+							resolve(false);
+						}, 5);
+					});
+				};
+
+				const runAsyncWithRetry = async () => {
+					while (true) {
+						const bytesRead = await runAsyncOnce();
+						if (shouldWaitForMore(bytesRead)) {
+							console.error(
+								'[fs-binding] read awaiting more stdin data'
+							);
+							const hasMore = await waitForAdditionalStdinData();
+							if (hasMore) {
+								continue;
+							}
+						}
+						return bytesRead;
+					}
+				};
+
+				if (reqOrPromise === undefined) {
+					// Synchronous invocation
+					return runSync();
+				}
+
+				const isCallbackRequest =
+					reqOrPromise &&
+					typeof reqOrPromise === 'object' &&
+					'oncomplete' in reqOrPromise;
+				const usePromises =
+					typeof reqOrPromise === 'symbol' && reqOrPromise !== null;
+
+				if (isCallbackRequest) {
+					runAsyncWithRetry().then(
+						(bytesRead) => {
+							console.error(
+								'[fs-binding] read callback complete',
+								bytesRead
+							);
+						reqOrPromise.oncomplete(null, bytesRead, buffer);
+					},
+					(err) => {
+						console.error(
+							'[fs-binding] read callback error',
+							err && err.message
+						);
+						reqOrPromise.oncomplete(err);
+					}
 				);
+					return;
+				}
+
+				const promise = runAsyncWithRetry().then(
+					(bytesRead) => {
+						console.error(
+							'[fs-binding] read promise result',
+							bytesRead
+						);
+						return {
+							bytesRead,
+							buffer,
+						};
+					}
+				);
+
+				if (usePromises) {
+					return promise;
+				}
+
+				// Fallback: return promise result even if unexpected arg type.
+				return promise;
 			},
 			readdir(path, encoding, withFileTypes, kUsePromises) {
 				return handleAsyncOperation(
@@ -6686,6 +6904,60 @@ const ensureNodeSpawnBridge = () => {
 					waitForExit: () => exitPromise,
 					write(data) {
 						try {
+							const length =
+								typeof data === 'string'
+									? data.length
+									: data && typeof data === 'object'
+									? data.byteLength ?? data.length ?? 0
+									: 0;
+							let preview = '';
+							if (
+								typeof data !== 'string' &&
+								data &&
+								typeof Buffer !== 'undefined'
+							) {
+								try {
+									preview = Buffer.from(data)
+										.toString('hex')
+										.slice(0, 80);
+								} catch {
+									preview = '';
+								}
+							} else if (typeof data === 'string') {
+								preview = data.slice(0, 80);
+							}
+							console.error(
+								'[spawn bridge] stdin.write',
+								length,
+								preview
+							);
+							try {
+								if (
+									processController &&
+									processController.fsSync &&
+									typeof processController.fsSync.writeFileSync ===
+										'function'
+								) {
+									const targetPath =
+										'/tmp/esbuild-stdin-dump.bin';
+									const existing =
+										processController.fsSync.existsSync(
+											targetPath
+										);
+									processController.fsSync.writeFileSync(
+										targetPath,
+										data,
+										existing
+											? { flag: 'a', mode: 0o600 }
+											: { mode: 0o600 }
+									);
+								}
+							} catch (dumpError) {
+								console.error(
+									'[spawn bridge] failed to dump stdin',
+									dumpError && dumpError.message
+								);
+							}
 							handle.stdin?.write(data);
 						} catch {
 							// ignore

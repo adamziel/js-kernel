@@ -394,7 +394,15 @@ const createWritableStream = (
 	if (descriptor.mode === 'ignore' || !descriptor.port) {
 		return new NullWritableStream();
 	}
-	return new MessagePortWritableStream(descriptor.port);
+	const label =
+		descriptor.fd === 0
+			? 'binary:stdin'
+			: descriptor.fd === 1
+			? 'binary:stdout'
+			: 'binary:stderr';
+	return new MessagePortWritableStream(descriptor.port, {
+		debugLabel: label,
+	});
 };
 
 const toKernelChunk = (value: unknown): KernelStdioChunk => {
@@ -809,7 +817,7 @@ export function redirectConsoleToStdio(isDebug: boolean) {
 
 	const writeStdout = (...args: unknown[]) => {
 		originalConsole.log(...args);
-		// if (!isDebug) return
+		if (!isDebug) return;
 		const value = joinArgs(args);
 		if (value.includes('[vite]')) {
 			return;
@@ -820,7 +828,7 @@ export function redirectConsoleToStdio(isDebug: boolean) {
 
 	const writeStderr = (...args: unknown[]) => {
 		originalConsole.error(...args);
-		// if (!isDebug) return
+		if (!isDebug) return;
 		const value = joinArgs(args);
 		if (value.includes('[vite]')) {
 			return;

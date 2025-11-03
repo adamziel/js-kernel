@@ -55,6 +55,44 @@ const createSymlinkNode = (target): SymlinkNode => {
 	};
 };
 
+const SHOULD_EMULATE_WINDOWS_DRIVES = (() => {
+	try {
+		const processPlatform =
+			typeof globalThis.process?.platform === 'string'
+				? globalThis.process.platform
+				: typeof globalThis.process?.versions?.platform === 'string'
+				? globalThis.process.versions.platform
+				: '';
+		if (
+			processPlatform &&
+			processPlatform.toLowerCase().startsWith('win')
+		) {
+			return true;
+		}
+		const navigatorPlatform =
+			typeof globalThis.navigator?.platform === 'string'
+				? globalThis.navigator.platform
+				: '';
+		if (
+			navigatorPlatform &&
+			navigatorPlatform.toLowerCase().startsWith('win')
+		) {
+			return true;
+		}
+		const userAgent =
+			typeof globalThis.navigator?.userAgent === 'string'
+				? globalThis.navigator.userAgent
+				: '';
+		if (userAgent && userAgent.toLowerCase().includes('windows')) {
+			return true;
+		}
+	} catch {
+		// Ignore detection failures and assume non-Windows semantics.
+	}
+	return false;
+})();
+
+
 const parseOpenFlags = (flags) => {
 	const O_RDONLY = 0;
 	const O_WRONLY = 1;
@@ -488,13 +526,20 @@ export class InMemoryFileSystem {
 			buffered = new Uint8Array(0);
 		}
 
-		while (buffered.byteLength < requestedLength) {
-			const chunk = stdin.read();
-			if (!chunk) {
-				break;
-			}
-			buffered = this.concatBuffers(buffered, this.toUint8Array(chunk));
+	while (buffered.byteLength < requestedLength) {
+		const chunk = stdin.read();
+		if (!chunk) {
+			try {
+				console.error('[kernel-fs] stdin.read returned null', {
+					requestedLength,
+					ended: stdin.isEnded?.() ?? false,
+					closed: stdin.isClosed?.() ?? false,
+				});
+			} catch {}
+			break;
 		}
+		buffered = this.concatBuffers(buffered, this.toUint8Array(chunk));
+	}
 
 		if (buffered.byteLength > requestedLength) {
 			const head = buffered.slice(0, requestedLength);
@@ -828,6 +873,13 @@ export class InMemoryFileSystem {
 		return [names, types];
 	}
 	statSync(path) {
+		if (
+			SHOULD_EMULATE_WINDOWS_DRIVES &&
+			typeof path === 'string' &&
+			path.match(/[A-Za-z]:[\\/]*$/)
+		) {
+			return new Stats(createDirectoryNode(DEFAULT_DIRECTORY_MODE));
+		}
 		const { node, blockedBy, missingParent } = this.walk(path);
 		if (missingParent) {
 			throw createFsError(
@@ -859,6 +911,13 @@ export class InMemoryFileSystem {
 		return new Stats(node);
 	}
 	lstatSync(path) {
+		if (
+			SHOULD_EMULATE_WINDOWS_DRIVES &&
+			typeof path === 'string' &&
+			path.match(/[A-Za-z]:[\\/]*$/)
+		) {
+				return new Stats(createDirectoryNode(DEFAULT_DIRECTORY_MODE));
+			}
 		// lstat does NOT follow symlinks, unlike stat
 		const { node, blockedBy, missingParent } = this.walk(path);
 

@@ -197,8 +197,58 @@ export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents>
 		}
 		if (payload.type === 'data') {
 			this.receiveCount++;
-			this.buffer.push(payload.payload);
-			this.emit('data', payload.payload);
+			const chunk = payload.payload;
+			this.buffer.push(chunk);
+			try {
+				const length =
+					typeof chunk === 'string'
+						? chunk.length
+						: chunk && typeof chunk === 'object'
+						? chunk.byteLength ?? chunk.length ?? 0
+						: 0;
+				let preview: string | null = null;
+				if (this.debugLabel === 'binary:stdin') {
+					if (typeof chunk === 'string') {
+						preview = chunk.slice(0, 200);
+					} else if (chunk && typeof chunk === 'object') {
+						try {
+							const view =
+								chunk instanceof Uint8Array
+									? chunk
+									: ArrayBuffer.isView(chunk)
+									? new Uint8Array(
+											chunk.buffer,
+											chunk.byteOffset ?? 0,
+											chunk.byteLength ??
+												chunk.length ??
+												0
+									  )
+									: null;
+							if (view) {
+								if (typeof Buffer !== 'undefined') {
+									preview = Buffer.from(view).toString('hex');
+								} else {
+									preview = Array.from(view)
+										.map((b) => b.toString(16).padStart(2, '0'))
+										.join('');
+								}
+							}
+						} catch {}
+					}
+					console.error('[MPR] received chunk', {
+						label: this.debugLabel,
+						length,
+						type:
+							typeof chunk === 'string'
+								? 'string'
+								: chunk && chunk.constructor
+								? chunk.constructor.name
+								: typeof chunk,
+						preview,
+					});
+				}
+			} catch {}
+			this.emit('data', chunk);
 
 			if (this.waitView) {
 				Atomics.store(this.waitView, 0, 1);
@@ -304,6 +354,54 @@ export class MessagePortWritableStream extends BasicEventEmitter<WritableEvents>
 				try {
 					// Chunk was already cloned in write(), just use it directly
 					const payload = item.chunk;
+					try {
+						const isString = typeof payload === 'string';
+						const length = isString
+							? payload.length
+							: payload && typeof payload === 'object'
+							? payload.byteLength ?? payload.length ?? 0
+							: 0;
+						let preview: string | null = null;
+						if (this.logLabel === 'binary:stdout') {
+							if (isString) {
+								preview = payload.slice(0, 200);
+							} else if (
+								payload &&
+								typeof Buffer !== 'undefined' &&
+								typeof payload === 'object'
+							) {
+								try {
+									const view =
+										payload instanceof Uint8Array
+											? payload
+											: ArrayBuffer.isView(payload)
+											? new Uint8Array(
+													payload.buffer,
+													payload.byteOffset ?? 0,
+													payload.byteLength ??
+														payload.length ??
+														0
+												)
+											: null;
+						if (view) {
+							preview = Buffer.from(view).toString('hex');
+									}
+								} catch {}
+							}
+						}
+						if (this.logLabel === 'binary:stdout') {
+							console.error('[MPR write] sending chunk', {
+								label: this.logLabel,
+								length,
+								type: isString
+									? 'string'
+									: payload && payload.constructor
+									? payload.constructor.name
+									: typeof payload,
+								preview,
+							});
+						}
+					} catch {}
 					this.port.postMessage({ type: 'data', payload });
 				} catch (err) {
 					// Error reporting without stdio pollution - errors thrown will
