@@ -134,7 +134,7 @@ export async function testEsbuildLikeInTests() {
 			HOME: '/home',
 			ESBUILD_LOG_LEVEL: 'debug',
 		},
-		cwd: '/esbuild',
+		cwd: '/jsx/src',
 		name: 'esbuild-bundle-runner',
 		stdio: {
 			stdin: 'pipe',
@@ -173,7 +173,7 @@ export async function testEsbuildLikeInTests() {
 	const bundleText = kernel.existsSync('/tmp/esbuild-bundle-fs.txt')
 		? (kernel.readFileSync('/tmp/esbuild-bundle-fs.txt', 'utf8') as string)
 		: '';
-
+	debugger;
 	return {
 		exitCode,
 		stdout,

@@ -850,9 +850,14 @@ export function redirectConsoleToStdio(isDebug: boolean) {
 const KERNEL_INIT_MESSAGE = '__kernel_internal__/initChildProcess';
 
 const handleKernelInit = (event: MessageEvent) => {
-	console.error('[handleKernelInit] Called, event.data.type:', event.data?.type);
+	console.error(
+		'[handleKernelInit] Called, event.data.type:',
+		event.data?.type
+	);
 	if (bootstrapComplete) {
-		console.error('[handleKernelInit] Bootstrap already complete, returning');
+		console.error(
+			'[handleKernelInit] Bootstrap already complete, returning'
+		);
 		return;
 	}
 	if (event.data?.type !== KERNEL_INIT_MESSAGE) {
@@ -937,7 +942,10 @@ const reportProgramError = (error: unknown) => {
 };
 
 const startProgram = async (options: ChildProcessInitOptions) => {
-	console.error('[startProgram] Called with programPath:', options.programPath);
+	console.error(
+		'[startProgram] Called with programPath:',
+		options.programPath
+	);
 	if (programStarted) {
 		console.error('[startProgram] Already started, returning');
 		return;

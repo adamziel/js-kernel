@@ -111,7 +111,7 @@ interface KernelProcessRecord {
 		stdout?: MessagePortReadableStream;
 		stderr?: MessagePortReadableStream;
 	};
-	stdinRelayPort?: MessagePort | null;  // For nested spawns: kernel relays stdin from parent to child
+	stdinRelayPort?: MessagePort | null; // For nested spawns: kernel relays stdin from parent to child
 	controlCleanup: () => void;
 	fsCleanup: () => void;
 	spawnSyncCleanup: () => void;
@@ -241,7 +241,10 @@ export class Kernel extends InMemoryFileSystem {
 			if (ArrayBuffer.isView(input)) {
 				const view = input as ArrayBufferView;
 				return new Uint8Array(
-					view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength)
+					view.buffer.slice(
+						view.byteOffset,
+						view.byteOffset + view.byteLength
+					)
 				);
 			}
 		}
@@ -407,11 +410,12 @@ export class Kernel extends InMemoryFileSystem {
 		let exited = false;
 
 		let stdinConsumed = false;
-		const clonedInput = typeof stdinInput === 'string'
-			? stdinInput
-			: stdinInput instanceof Uint8Array
-			? stdinInput.slice()
-			: undefined;
+		const clonedInput =
+			typeof stdinInput === 'string'
+				? stdinInput
+				: stdinInput instanceof Uint8Array
+				? stdinInput.slice()
+				: undefined;
 
 		const stdin = {
 			read: (): KernelStdioChunk | null => {
@@ -442,11 +446,13 @@ export class Kernel extends InMemoryFileSystem {
 		};
 
 		const stdout = {
-			write: (chunk: KernelStdioChunk) => writeChunk(stdoutChunks, stdio.stdout, chunk),
+			write: (chunk: KernelStdioChunk) =>
+				writeChunk(stdoutChunks, stdio.stdout, chunk),
 		};
 
 		const stderr = {
-			write: (chunk: KernelStdioChunk) => writeChunk(stderrChunks, stdio.stderr, chunk),
+			write: (chunk: KernelStdioChunk) =>
+				writeChunk(stderrChunks, stdio.stderr, chunk),
 		};
 
 		const processController = {
@@ -485,15 +491,17 @@ export class Kernel extends InMemoryFileSystem {
 				program.executablePath,
 				this.getDirname(program.executablePath)
 			);
-			const entry =
-				(module.exports?.default ?? exports.default) as
-					| ((controller: typeof processController) => unknown)
-					| undefined;
+			const entry = (module.exports?.default ?? exports.default) as
+				| ((controller: typeof processController) => unknown)
+				| undefined;
 			if (typeof entry !== 'function') {
 				throw new Error('Program missing default export for spawnSync');
 			}
 			const result = entry(processController as any);
-			if (result && typeof (result as Promise<unknown>).then === 'function') {
+			if (
+				result &&
+				typeof (result as Promise<unknown>).then === 'function'
+			) {
 				throw new Error(
 					'SpawnSync programs must complete synchronously in this environment'
 				);
@@ -697,7 +705,8 @@ export class Kernel extends InMemoryFileSystem {
 						this.closeProcessStdin(resources.pid);
 						return originalEnd(chunk);
 					};
-					const originalDestroy = parentStdin.destroy.bind(parentStdin);
+					const originalDestroy =
+						parentStdin.destroy.bind(parentStdin);
 					parentStdin.destroy = () => {
 						this.closeProcessStdin(resources.pid);
 						originalDestroy();
@@ -729,18 +738,26 @@ export class Kernel extends InMemoryFileSystem {
 
 		const worker = createProcessWorker();
 		worker.addEventListener('error', (error) => {
-			console.error('[kernel] Worker error for pid', resources.pid);
-			console.error('  Error object:', error);
+			((console.error, function () {}), function () {})(
+				'[kernel] Worker error for pid',
+				resources.pid
+			);
+			(console.error, function () {})('  Error object:', error);
 			if (error instanceof ErrorEvent) {
-				console.error('  message:', error.message);
-				console.error('  filename:', error.filename);
-				console.error('  lineno:', error.lineno);
-				console.error('  colno:', error.colno);
-				console.error('  error:', error.error);
+				(console.error, function () {})('  message:', error.message);
+				(console.error, function () {})('  filename:', error.filename);
+				(console.error, function () {})('  lineno:', error.lineno);
+				(console.error, function () {})('  colno:', error.colno);
+				(console.error, function () {})('  error:', error.error);
 			}
 		});
 		worker.addEventListener('messageerror', (error) => {
-			console.error('[kernel] Worker message error for pid', resources.pid, ':', error);
+			((console.error, function () {}), function () {})(
+				'[kernel] Worker message error for pid',
+				resources.pid,
+				':',
+				error
+			);
 		});
 
 		const threadId = options.workerThreadId ?? resources.pid;
@@ -830,18 +847,18 @@ export class Kernel extends InMemoryFileSystem {
 				} catch {
 					// Ignore stream cleanup errors.
 				}
-			for (const listener of Array.from(exitListeners)) {
-				try {
-					listener(code);
-				} catch {
-					// Ignore listener failures.
+				for (const listener of Array.from(exitListeners)) {
+					try {
+						listener(code);
+					} catch {
+						// Ignore listener failures.
+					}
 				}
-			}
-			exitListeners.clear();
-			this.closeProcessStdin(resources.pid);
-			this.stdinStates.delete(resources.pid);
-		},
-	};
+				exitListeners.clear();
+				this.closeProcessStdin(resources.pid);
+				this.stdinStates.delete(resources.pid);
+			},
+		};
 
 		this.processes.set(resources.pid, record);
 		record.controlCleanup = this.installProcessControl(record);
@@ -872,9 +889,14 @@ export class Kernel extends InMemoryFileSystem {
 			},
 		};
 
-		console.log('[kernel] About to post init message to worker, pid:', resources.pid, 'argv:', options.argv);
+		(console.log, function () {})(
+			'[kernel] About to post init message to worker, pid:',
+			resources.pid,
+			'argv:',
+			options.argv
+		);
 		worker.postMessage(initMessage, transferList);
-		console.log('[kernel] Posted init message to worker');
+		(console.log, function () {})('[kernel] Posted init message to worker');
 
 		return subprocess;
 	}
@@ -1012,24 +1034,35 @@ export class Kernel extends InMemoryFileSystem {
 				return;
 			}
 
-			console.error(`[kernel] Received FS request #${requestId} for PID ${record.pid}: ${method}(${JSON.stringify(args).slice(0, 100)})`);
+			(console.error, function () {})(
+				`[kernel] Received FS request #${requestId} for PID ${
+					record.pid
+				}: ${method}(${JSON.stringify(args).slice(0, 100)})`
+			);
 
 			// Queue this filesystem operation on the GLOBAL queue to ensure
 			// sequential execution across ALL processes, not just this one
 			// This prevents race conditions when multiple processes access the same files
 			this.fsQueue = this.fsQueue
 				.then(async () => {
-					console.error(`[kernel] Processing FS request #${requestId}: ${method}`);
+					(console.error, function () {})(
+						`[kernel] Processing FS request #${requestId}: ${method}`
+					);
 					const previousActive = this.activeFsProcessRecord;
 					this.activeFsProcessRecord = record;
 					let response;
 					try {
 						const result = await this.invokeFsMethod(method, args);
 						response = serializeFsResponse(result);
-						console.error(`[kernel] FS request #${requestId} succeeded`);
+						(console.error, function () {})(
+							`[kernel] FS request #${requestId} succeeded`
+						);
 					} catch (error) {
 						response = serializeFsError(error);
-						console.error(`[kernel] FS request #${requestId} failed:`, error);
+						(console.error, function () {})(
+							`[kernel] FS request #${requestId} failed:`,
+							error
+						);
 					} finally {
 						this.activeFsProcessRecord = previousActive;
 					}
@@ -1039,19 +1072,29 @@ export class Kernel extends InMemoryFileSystem {
 							requestId,
 							response,
 						});
-						console.error(`[kernel] Sent FS response #${requestId} to PID ${record.pid}`);
+						(console.error, function () {})(
+							`[kernel] Sent FS response #${requestId} to PID ${record.pid}`
+						);
 					} catch (e) {
-						console.error(`[kernel] Failed to send FS response #${requestId}:`, e);
+						(console.error, function () {})(
+							`[kernel] Failed to send FS response #${requestId}:`,
+							e
+						);
 						// Ignore failures sending responses on a closed port.
 					}
 				})
 				.catch((err) => {
-					console.error(`[kernel] FS queue error for request #${requestId}:`, err);
+					(console.error, function () {})(
+						`[kernel] FS queue error for request #${requestId}:`,
+						err
+					);
 					// Catch any errors to prevent breaking the queue chain
 				});
 		};
 
-		console.error(`[kernel] Installing FS handler for PID ${record.pid}`);
+		(console.error, function () {})(
+			`[kernel] Installing FS handler for PID ${record.pid}`
+		);
 		record.fsPort.addEventListener('message', handleFsMessage);
 		record.fsPort.start();
 
@@ -1125,7 +1168,10 @@ export class Kernel extends InMemoryFileSystem {
 		requestId: number,
 		rawOptions: unknown
 	) {
-		console.error('[kernel:handleSpawnSyncRequest] RECEIVED! requestId:', requestId);
+		(console.error, function () {})(
+			'[kernel:handleSpawnSyncRequest] RECEIVED! requestId:',
+			requestId
+		);
 		const sendResponse = (response: {
 			ok: boolean;
 			result?: {
@@ -1190,8 +1236,13 @@ export class Kernel extends InMemoryFileSystem {
 		stderr?: string;
 		error?: string;
 	}> {
-		console.error('[kernel:runSpawnSyncProcess] CALLED! argv:', options.argv[0], 'stdio:', JSON.stringify(options.stdio || {}));
-		console.log('spawn sync', options);
+		(console.error, function () {})(
+			'[kernel:runSpawnSyncProcess] CALLED! argv:',
+			options.argv[0],
+			'stdio:',
+			JSON.stringify(options.stdio || {})
+		);
+		(console.log, function () {})('spawn sync', options);
 		const program = this.loadProgram(options.argv[0], options.cwd);
 		if (!program) {
 			throw new Error(`Command not found: ${options.argv[0]}`);
@@ -1356,12 +1407,30 @@ export class Kernel extends InMemoryFileSystem {
 		});
 
 		worker.addEventListener('error', (event) => {
-			console.error('[kernel] Worker error event:', event);
-			console.error('[kernel] Worker error message:', event.message);
-			console.error('[kernel] Worker error filename:', event.filename);
-			console.error('[kernel] Worker error lineno:', event.lineno);
-			console.error('[kernel] Worker error colno:', event.colno);
-			console.error('[kernel] Worker error error:', event.error);
+			((console.error, function () {}), function () {})(
+				'[kernel] Worker error event:',
+				event
+			);
+			((console.error, function () {}), function () {})(
+				'[kernel] Worker error message:',
+				event.message
+			);
+			((console.error, function () {}), function () {})(
+				'[kernel] Worker error filename:',
+				event.filename
+			);
+			((console.error, function () {}), function () {})(
+				'[kernel] Worker error lineno:',
+				event.lineno
+			);
+			((console.error, function () {}), function () {})(
+				'[kernel] Worker error colno:',
+				event.colno
+			);
+			((console.error, function () {}), function () {})(
+				'[kernel] Worker error error:',
+				event.error
+			);
 			finalize(null, 'Process worker crashed');
 			this.handleProcessExit(resources.pid, ExitCode.ERROR);
 		});
@@ -1434,48 +1503,71 @@ export class Kernel extends InMemoryFileSystem {
 				return;
 			}
 
-		if (payload.type === CONTROL_MESSAGE_SPAWN_REQUEST) {
-			this.handleSpawnRequestFromProcess(
-				record,
-				payload.requestId,
-				payload.options
-			);
-		} else if (payload.type === CONTROL_MESSAGE_STDIN_DATA) {
-			const pid = typeof payload.pid === 'number' ? payload.pid : null;
-			if (pid && this.processes.has(pid)) {
-				const targetRecord = this.processes.get(pid)!;
-				const chunk = payload.chunk as KernelStdioChunk | undefined;
+			if (payload.type === CONTROL_MESSAGE_SPAWN_REQUEST) {
+				this.handleSpawnRequestFromProcess(
+					record,
+					payload.requestId,
+					payload.options
+				);
+			} else if (payload.type === CONTROL_MESSAGE_STDIN_DATA) {
+				const pid =
+					typeof payload.pid === 'number' ? payload.pid : null;
+				if (pid && this.processes.has(pid)) {
+					const targetRecord = this.processes.get(pid)!;
+					const chunk = payload.chunk as KernelStdioChunk | undefined;
 
-				// For nested spawns with relay port, forward data directly to child's stdin
-				if (targetRecord.stdinRelayPort) {
-					console.error('[kernel] Relaying stdin data to pid:', pid, 'chunk size:', chunk ? (typeof chunk === 'string' ? chunk.length : chunk.byteLength) : 0);
-					if (chunk !== undefined && chunk !== null) {
-						try {
-							targetRecord.stdinRelayPort.postMessage({ type: 'data', payload: chunk });
-						} catch (error) {
-							console.error('[kernel] Failed to relay stdin:', error);
+					// For nested spawns with relay port, forward data directly to child's stdin
+					if (targetRecord.stdinRelayPort) {
+						((console.error, function () {}), function () {})(
+							'[kernel] Relaying stdin data to pid:',
+							pid,
+							'chunk size:',
+							chunk
+								? typeof chunk === 'string'
+									? chunk.length
+									: chunk.byteLength
+								: 0
+						);
+						if (chunk !== undefined && chunk !== null) {
+							try {
+								targetRecord.stdinRelayPort.postMessage({
+									type: 'data',
+									payload: chunk,
+								});
+							} catch (error) {
+								((console.error, function () {}),
+								function () {})(
+									'[kernel] Failed to relay stdin:',
+									error
+								);
+							}
 						}
-					}
-					if (payload.end) {
-						try {
-							targetRecord.stdinRelayPort.postMessage({ type: 'end' });
-							targetRecord.stdinRelayPort.close();
-							targetRecord.stdinRelayPort = null;
-						} catch (error) {
-							console.error('[kernel] Failed to close relay port:', error);
+						if (payload.end) {
+							try {
+								targetRecord.stdinRelayPort.postMessage({
+									type: 'end',
+								});
+								targetRecord.stdinRelayPort.close();
+								targetRecord.stdinRelayPort = null;
+							} catch (error) {
+								((console.error, function () {}),
+								function () {})(
+									'[kernel] Failed to close relay port:',
+									error
+								);
+							}
 						}
-					}
-				} else {
-					// For direct spawns, use the existing enqueue mechanism
-					if (chunk !== undefined && chunk !== null) {
-						this.enqueueProcessStdin(pid, chunk);
-					}
-					if (payload.end) {
-						this.closeProcessStdin(pid);
+					} else {
+						// For direct spawns, use the existing enqueue mechanism
+						if (chunk !== undefined && chunk !== null) {
+							this.enqueueProcessStdin(pid, chunk);
+						}
+						if (payload.end) {
+							this.closeProcessStdin(pid);
+						}
 					}
 				}
-			}
-		} else if (payload.type === CONTROL_MESSAGE_KILL_REQUEST) {
+			} else if (payload.type === CONTROL_MESSAGE_KILL_REQUEST) {
 				const targetPid = payload.pid;
 				const requestId = payload.requestId;
 				const success =
@@ -1548,7 +1640,14 @@ export class Kernel extends InMemoryFileSystem {
 
 		// Log stdio options for spawn requests
 		this.spawnRequestCounter++;
-		console.error('[kernel:handleSpawnRequest #' + this.spawnRequestCounter + '] FULL argv:', JSON.stringify(options.argv), 'stdio:', JSON.stringify(options.stdio || 'undefined'));
+		(console.error, function () {})(
+			'[kernel:handleSpawnRequest #' +
+				this.spawnRequestCounter +
+				'] FULL argv:',
+			JSON.stringify(options.argv),
+			'stdio:',
+			JSON.stringify(options.stdio || 'undefined')
+		);
 
 		const program = this.loadProgram(options.argv[0], options.cwd);
 		if (!program) {
@@ -1584,7 +1683,7 @@ export class Kernel extends InMemoryFileSystem {
 			hostType: 'process',
 			hostPid: parentRecord.pid,
 			exitCode: null,
-			stdinRelayPort: stdinHostPort,  // Store for relaying stdin data
+			stdinRelayPort: stdinHostPort, // Store for relaying stdin data
 			controlCleanup: () => undefined,
 			fsCleanup: () => undefined,
 			spawnSyncCleanup: () => undefined,
@@ -1626,9 +1725,16 @@ export class Kernel extends InMemoryFileSystem {
 						const data = event.data;
 						if (data && data.type === 'data') {
 							try {
-								stdinHostPort!.postMessage({ type: 'data', payload: data.payload });
+								stdinHostPort!.postMessage({
+									type: 'data',
+									payload: data.payload,
+								});
 							} catch (error) {
-								console.error('[kernel] Failed to relay stdin data:', error);
+								((console.error, function () {}),
+								function () {})(
+									'[kernel] Failed to relay stdin data:',
+									error
+								);
 							}
 						} else if (data && data.type === 'end') {
 							try {
@@ -1636,7 +1742,11 @@ export class Kernel extends InMemoryFileSystem {
 								stdinHostPort!.close();
 								relayPort.close();
 							} catch (error) {
-								console.error('[kernel] Failed to relay stdin end:', error);
+								((console.error, function () {}),
+								function () {})(
+									'[kernel] Failed to relay stdin end:',
+									error
+								);
 							}
 						}
 					});
@@ -1682,9 +1792,9 @@ export class Kernel extends InMemoryFileSystem {
 					workerPort: descriptor.workerPort ?? null,
 					parentPort:
 						descriptor.mode === 'pipe' && descriptor.fd === 0
-							? stdinRelayChannel?.port1 ?? null  // For stdin, parent writes to relay channel
+							? stdinRelayChannel?.port1 ?? null // For stdin, parent writes to relay channel
 							: descriptor.mode === 'pipe' && descriptor.fd !== 0
-							? descriptor.hostPort ?? null  // For stdout/stderr, parent reads from hostPort
+							? descriptor.hostPort ?? null // For stdout/stderr, parent reads from hostPort
 							: null,
 				})),
 				controlPort: resources.control.processPort,
@@ -1800,7 +1910,10 @@ export class Kernel extends InMemoryFileSystem {
 			return;
 		}
 
-		const logger = fd === 1 ? console.log : console.error;
+		const logger =
+			fd === 1
+				? (console.log, function () {})
+				: (console.error, function () {});
 		const prefix = processName ? `[${processName}:${pid}]` : `[pid ${pid}]`;
 
 		const handleMessage = (event: MessageEvent) => {
