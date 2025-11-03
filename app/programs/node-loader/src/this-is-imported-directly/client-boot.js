@@ -42,12 +42,8 @@ function isESMSyntax(code) {
 
 // @TODO: Do not rely on `window` here. We're running a Node.js process after all.
 globalThis.window = globalThis.global = globalThis;
-console.error('[client-boot] Assigning globalFs from processController.fsSync');
-console.error('[client-boot] processController.fsSync === processController.fs?', processController.fsSync === processController.fs);
-console.error('[client-boot] typeof processController.fsSync:', typeof processController.fsSync);
 globalThis.globalFs = processController.fsSync;
 globalThis.globalFsAsync = processController.fs;
-console.error('[client-boot] Assigned. globalFs === globalFsAsync?', globalThis.globalFs === globalThis.globalFsAsync);
 
 const fsPathTextDecoder =
 	typeof TextDecoder !== 'undefined' ? new TextDecoder() : null;
@@ -152,11 +148,6 @@ const applyFsPathNormalization = (target, pathArgMap) => {
 		if (original.__kernelPathWrapped) {
 			continue;
 		}
-		if (method.includes('Sync')) {
-			console.error(`[client-boot] Wrapping ${method}`);
-			console.error(`  - original function name:`, original.name);
-			console.error(`  - original.toString():`, original.toString().slice(0, 100));
-		}
 		const wrapped = function (...args) {
 			const normalizedArgs =
 				indexes && indexes.length > 0
@@ -182,23 +173,16 @@ const applyFsPathNormalization = (target, pathArgMap) => {
 						normalizedArgs.length > 0
 							? normalizedArgs[0]
 							: undefined;
-// 					console.log(
-// 						`[kernel-fs ${method}]`,
-// 						displayArg,
-// 						args[0] === displayArg ? '' : `(from ${args[0]})`
-// 					);
+					// 					console.log(
+					// 						`[kernel-fs ${method}]`,
+					// 						displayArg,
+					// 						args[0] === displayArg ? '' : `(from ${args[0]})`
+					// 					);
 				} catch {
 					// ignore logging errors
 				}
 			}
-			if (method.includes('Sync')) {
-				console.error(`[client-boot wrapper] About to call original for ${method}`);
-				console.error(`  - original is:`, typeof original, original.name);
-			}
 			const result = original.apply(this, normalizedArgs);
-			if (method.includes('Sync')) {
-				console.error(`[client-boot wrapper] Returned from original for ${method}`);
-			}
 			return result;
 		};
 		wrapped.__kernelPathWrapped = true;
@@ -365,37 +349,21 @@ function handleAsyncOperation(syncFn, asyncFn, kUsePromisesOrReq) {
 	}
 
 	// Callback mode - FSReqCallback with oncomplete
-		if (
-			kUsePromisesOrReq &&
-			typeof kUsePromisesOrReq === 'object' &&
-			'oncomplete' in kUsePromisesOrReq
-		) {
-			asyncFn().then(
-				(result) => {
-					try {
-						console.error('[fs-binding] async callback success', {
-							resultType:
-								result && typeof result === 'object'
-									? result.constructor
-										? result.constructor.name
-										: 'object'
-									: typeof result,
-						});
-					} catch {}
-					kUsePromisesOrReq.oncomplete(null, result);
-				},
-				(err) => {
-					try {
-						console.error(
-							'[fs-binding] async callback error',
-							err && err.message
-						);
-					} catch {}
-					kUsePromisesOrReq.oncomplete(err);
-				}
-			);
-			return;
-		}
+	if (
+		kUsePromisesOrReq &&
+		typeof kUsePromisesOrReq === 'object' &&
+		'oncomplete' in kUsePromisesOrReq
+	) {
+		asyncFn().then(
+			(result) => {
+				kUsePromisesOrReq.oncomplete(null, result);
+			},
+			(err) => {
+				kUsePromisesOrReq.oncomplete(err);
+			}
+		);
+		return;
+	}
 
 	// Promise mode - return the genuine async promise
 	return asyncFn();
@@ -2718,13 +2686,19 @@ globalThis.internalModules = {
 				try {
 					// Check if package.json exists
 					if (globalFs.existsSync(packageJsonPath)) {
-						console.log('[getPackageScopeConfig] Found package.json at', packageJsonPath);
+						console.log(
+							'[getPackageScopeConfig] Found package.json at',
+							packageJsonPath
+						);
 
 						// Use readPackageJSON to get the serialized format
 						const result = this.readPackageJSON(packageJsonPath);
 
 						if (result) {
-							console.log('[getPackageScopeConfig] Returning package config:', result);
+							console.log(
+								'[getPackageScopeConfig] Returning package config:',
+								result
+							);
 							return result;
 						}
 					}
@@ -2736,7 +2710,8 @@ globalThis.internalModules = {
 				}
 
 				// Move up one directory
-				const parentDir = globalThis.coreModules.path.dirname(currentDir);
+				const parentDir =
+					globalThis.coreModules.path.dirname(currentDir);
 				if (parentDir === currentDir) {
 					// We've reached the root
 					break;
@@ -2744,7 +2719,9 @@ globalThis.internalModules = {
 				currentDir = parentDir;
 			}
 
-			console.log('[getPackageScopeConfig] No package.json found, returning path');
+			console.log(
+				'[getPackageScopeConfig] No package.json found, returning path'
+			);
 			// Return the path where we would expect to find package.json
 			// This indicates "no package.json found"
 			return globalThis.coreModules.path.join(
@@ -2768,7 +2745,6 @@ globalThis.internalModules = {
 		},
 
 		getNearestParentPackageJSONType(mainPath) {
-			console.error('getNearestParentPackageJSONType', mainPath);
 			// Start from the directory containing mainPath
 			let currentDir = globalThis.coreModules.path.dirname(mainPath);
 
@@ -2889,12 +2865,12 @@ globalThis.internalModules = {
 				const normalizedPath = shouldNormalizePathValue(targetPath)
 					? resolveFsPath(targetPath)
 					: targetPath;
-// 				console.log(
-// 					'[internalModuleStat] request',
-// 					targetPath,
-// 					'normalized to',
-// 					normalizedPath
-// 				);
+				// 				console.log(
+				// 					'[internalModuleStat] request',
+				// 					targetPath,
+				// 					'normalized to',
+				// 					normalizedPath
+				// 				);
 				let stats;
 				try {
 					stats = globalFs.statSync(normalizedPath);
@@ -2904,9 +2880,9 @@ globalThis.internalModules = {
 				return stats?.isDirectory() ? 1 : stats?.isFile() ? 0 : -1;
 			},
 			exists(path) {
-// 				console.log(
-// 					'Regular exists – how is it different from existsSync?'
-// 				);
+				// 				console.log(
+				// 					'Regular exists – how is it different from existsSync?'
+				// 				);
 				return globalFs.existsSync(path);
 			},
 			existsSync(path) {
@@ -2940,76 +2916,12 @@ globalThis.internalModules = {
 				);
 			},
 			read(fd, buffer, offset, length, position, reqOrPromise) {
-				console.error(
-					'[fs-binding] read called',
-					fd,
-					'offset',
-					offset,
-					'length',
-					length,
-					'position',
-					position,
-					'mode',
-					reqOrPromise &&
-						typeof reqOrPromise === 'object' &&
-						'oncomplete' in reqOrPromise
-						? 'callback'
-						: typeof reqOrPromise === 'symbol'
-						? 'promise'
-						: 'sync'
-				);
 				const copyIntoTarget = (sourceBuffer) => {
-					try {
-						console.error(
-							'[fs-binding] processReadBuffer input',
-							sourceBuffer,
-							sourceBuffer?.constructor?.name,
-							typeof sourceBuffer
-						);
-						if (
-							sourceBuffer &&
-							typeof sourceBuffer === 'object' &&
-							typeof TextDecoder !== 'undefined'
-						) {
-							const preview = new TextDecoder()
-								.decode(sourceBuffer.slice?.(0, 200) ?? [])
-								.replace(/\s+/g, ' ');
-							console.error(
-								'[fs-binding] processReadBuffer preview',
-								preview.slice(0, 200)
-							);
-						}
-					} catch {}
-
 					try {
 						const bytesToCopy = Math.min(
 							sourceBuffer.length,
 							length
 						);
-						console.error(
-							'[fs-binding] read buffer',
-							{ fd, sourceLength: sourceBuffer.length, requested: length, bytesToCopy }
-						);
-						if (
-							fd === 0 &&
-							bytesToCopy > 0 &&
-							typeof Buffer !== 'undefined'
-						) {
-							try {
-								const hexPreview = Buffer.from(
-									sourceBuffer.subarray(
-										0,
-										Math.min(bytesToCopy, 256)
-									)
-								)
-									.toString('hex')
-									.slice(0, 512);
-								console.error(
-									'[fs-binding] read chunk preview',
-									hexPreview
-								);
-							} catch {}
-						}
 						if (bytesToCopy > 0) {
 							let targetView;
 							if (
@@ -3050,8 +2962,7 @@ globalThis.internalModules = {
 						}
 						try {
 							if (fd === 0) {
-								const controller =
-									globalThis.processController;
+								const controller = globalThis.processController;
 								const dumpPath =
 									'/tmp/esbuild-service-read.bin';
 								const exists =
@@ -3087,7 +2998,9 @@ globalThis.internalModules = {
 						.then((sourceBuffer) => copyIntoTarget(sourceBuffer));
 
 				const stdinStream =
-					fd === 0 ? globalThis.processController?.stdin ?? null : null;
+					fd === 0
+						? globalThis.processController?.stdin ?? null
+						: null;
 				const shouldWaitForMore = (bytesRead) =>
 					fd === 0 &&
 					bytesRead === 0 &&
@@ -3098,10 +3011,7 @@ globalThis.internalModules = {
 					!stdinStream.isClosed();
 
 				const waitForAdditionalStdinData = () => {
-					if (
-						!stdinStream ||
-						typeof stdinStream.on !== 'function'
-					) {
+					if (!stdinStream || typeof stdinStream.on !== 'function') {
 						return new Promise((resolve) =>
 							setTimeout(() => resolve(false), 5)
 						);
@@ -3117,15 +3027,19 @@ globalThis.internalModules = {
 							cleanup();
 							resolve(true);
 						});
-						const removeReadable = stdinStream.on('readable', () => {
-							if (
-								typeof stdinStream.readableLength === 'number' &&
-								stdinStream.readableLength > 0
-							) {
-								cleanup();
-								resolve(true);
+						const removeReadable = stdinStream.on(
+							'readable',
+							() => {
+								if (
+									typeof stdinStream.readableLength ===
+										'number' &&
+									stdinStream.readableLength > 0
+								) {
+									cleanup();
+									resolve(true);
+								}
 							}
-						});
+						);
 						const removeEnd = stdinStream.on('end', () => {
 							cleanup();
 							resolve(false);
@@ -3141,9 +3055,6 @@ globalThis.internalModules = {
 					while (true) {
 						const bytesRead = await runAsyncOnce();
 						if (shouldWaitForMore(bytesRead)) {
-							console.error(
-								'[fs-binding] read awaiting more stdin data'
-							);
 							const hasMore = await waitForAdditionalStdinData();
 							if (hasMore) {
 								continue;
@@ -3168,35 +3079,25 @@ globalThis.internalModules = {
 				if (isCallbackRequest) {
 					runAsyncWithRetry().then(
 						(bytesRead) => {
+							reqOrPromise.oncomplete(null, bytesRead, buffer);
+						},
+						(err) => {
 							console.error(
-								'[fs-binding] read callback complete',
-								bytesRead
+								'[fs-binding] read callback error',
+								err && err.message
 							);
-						reqOrPromise.oncomplete(null, bytesRead, buffer);
-					},
-					(err) => {
-						console.error(
-							'[fs-binding] read callback error',
-							err && err.message
-						);
-						reqOrPromise.oncomplete(err);
-					}
-				);
+							reqOrPromise.oncomplete(err);
+						}
+					);
 					return;
 				}
 
-				const promise = runAsyncWithRetry().then(
-					(bytesRead) => {
-						console.error(
-							'[fs-binding] read promise result',
-							bytesRead
-						);
-						return {
-							bytesRead,
-							buffer,
-						};
-					}
-				);
+				const promise = runAsyncWithRetry().then((bytesRead) => {
+					return {
+						bytesRead,
+						buffer,
+					};
+				});
 
 				if (usePromises) {
 					return promise;
@@ -3262,12 +3163,6 @@ globalThis.internalModules = {
 						(typeof raw === 'string'
 							? raw.length
 							: raw.byteLength ?? raw.length ?? 0);
-					console.log(
-						'[fs-binding] readFileSync raw',
-						path,
-						rawLength,
-						raw && raw.constructor && raw.constructor.name
-					);
 					const result = wantsBuffer ? ensureNodeBuffer(raw) : raw;
 					if (wantsBuffer) {
 						const bufLength =
@@ -3275,13 +3170,6 @@ globalThis.internalModules = {
 							(typeof result === 'string'
 								? result.length
 								: result.byteLength ?? result.length ?? 0);
-						console.log(
-							'[fs-binding] readFileSync buffer result',
-							bufLength,
-							result &&
-								result.constructor &&
-								result.constructor.name
-						);
 					}
 					return result;
 				};
@@ -4215,7 +4103,10 @@ globalThis.internalModules = {
 
 				if (url.username) {
 					username_end = href.indexOf(':', protocol_end + 2);
-					if (username_end === -1 || username_end > href.indexOf('@')) {
+					if (
+						username_end === -1 ||
+						username_end > href.indexOf('@')
+					) {
 						username_end = href.indexOf('@', protocol_end + 2);
 					}
 				}
@@ -4232,10 +4123,14 @@ globalThis.internalModules = {
 				const pathname_start = href.indexOf(url.pathname, host_end);
 
 				// search_start is where '?' appears (if search exists)
-				const search_start = url.search ? href.indexOf(url.search, pathname_start) : 0;
+				const search_start = url.search
+					? href.indexOf(url.search, pathname_start)
+					: 0;
 
 				// hash_start is where '#' appears (if hash exists)
-				const hash_start = url.hash ? href.indexOf(url.hash, search_start || pathname_start) : 0;
+				const hash_start = url.hash
+					? href.indexOf(url.hash, search_start || pathname_start)
+					: 0;
 
 				// scheme_type: 0=HTTP, 1=NOT_SPECIAL, 2=HTTPS, 3=WS, 4=FTP, 5=WSS, 6=FILE
 				let scheme_type = 1; // NOT_SPECIAL by default
@@ -4272,20 +4167,47 @@ globalThis.internalModules = {
 				const url = new URL(href);
 
 				// action values from internal/url.js updateActions
-				const kProtocol = 0, kHost = 1, kHostname = 2, kPort = 3;
-				const kUsername = 4, kPassword = 5, kPathname = 6, kSearch = 7, kHash = 8, kHref = 9;
+				const kProtocol = 0,
+					kHost = 1,
+					kHostname = 2,
+					kPort = 3;
+				const kUsername = 4,
+					kPassword = 5,
+					kPathname = 6,
+					kSearch = 7,
+					kHash = 8,
+					kHref = 9;
 
 				switch (action) {
-					case kProtocol: url.protocol = value; break;
-					case kHost: url.host = value; break;
-					case kHostname: url.hostname = value; break;
-					case kPort: url.port = value; break;
-					case kUsername: url.username = value; break;
-					case kPassword: url.password = value; break;
-					case kPathname: url.pathname = value; break;
-					case kSearch: url.search = value; break;
-					case kHash: url.hash = value; break;
-					case kHref: return this.parse(value, undefined, true);
+					case kProtocol:
+						url.protocol = value;
+						break;
+					case kHost:
+						url.host = value;
+						break;
+					case kHostname:
+						url.hostname = value;
+						break;
+					case kPort:
+						url.port = value;
+						break;
+					case kUsername:
+						url.username = value;
+						break;
+					case kPassword:
+						url.password = value;
+						break;
+					case kPathname:
+						url.pathname = value;
+						break;
+					case kSearch:
+						url.search = value;
+						break;
+					case kHash:
+						url.hash = value;
+						break;
+					case kHref:
+						return this.parse(value, undefined, true);
 				}
 
 				// Re-parse to update components
@@ -5677,9 +5599,10 @@ globalThis.internalModules = {
 					url,
 					hasContext: !!context,
 					sourceType: typeof source,
-					sourceLength: typeof source === 'string' ? source.length : 'N/A',
+					sourceLength:
+						typeof source === 'string' ? source.length : 'N/A',
 					lineOffset,
-					columnOffset
+					columnOffset,
 				});
 				this.url = url;
 				this.context = context;
@@ -5699,7 +5622,10 @@ globalThis.internalModules = {
 
 			async evaluate(timeout = -1, breakOnSigint = false) {
 				if (this._evaluated) {
-					console.log('[ModuleWrap] evaluate: already evaluated', this.url);
+					console.log(
+						'[ModuleWrap] evaluate: already evaluated',
+						this.url
+					);
 					return;
 				}
 
@@ -5716,28 +5642,45 @@ globalThis.internalModules = {
 								modulePath = modulePath.slice(7);
 							}
 
-							console.log('[ModuleWrap] Attempting CJS load for', modulePath);
-							const exports = Module._load(modulePath, null, false);
+							console.log(
+								'[ModuleWrap] Attempting CJS load for',
+								modulePath
+							);
+							const exports = Module._load(
+								modulePath,
+								null,
+								false
+							);
 
 							if (exports && typeof exports === 'object') {
 								Object.assign(this.namespace, exports);
 								this.exports = exports;
 							}
 
-							console.log('[ModuleWrap] Successfully loaded via CJS', modulePath);
+							console.log(
+								'[ModuleWrap] Successfully loaded via CJS',
+								modulePath
+							);
 							return;
 						} catch (cjsError) {
-							console.log('[ModuleWrap] CJS failed, trying ESM:', cjsError.message);
+							console.log(
+								'[ModuleWrap] CJS failed, trying ESM:',
+								cjsError.message
+							);
 							// Fall through to ESM execution
 						}
 					}
 
 					// Execute as ESM using browser's native import()
 					if (this._source && typeof this._source === 'string') {
-						console.log('[ModuleWrap] Executing ESM code with native import()');
+						console.log(
+							'[ModuleWrap] Executing ESM code with native import()'
+						);
 
 						// Create a blob URL from the source code
-						const blob = new Blob([this._source], { type: 'application/javascript' });
+						const blob = new Blob([this._source], {
+							type: 'application/javascript',
+						});
 						const blobUrl = URL.createObjectURL(blob);
 
 						try {
@@ -5750,15 +5693,24 @@ globalThis.internalModules = {
 								this.namespace.default = module.default;
 							}
 
-							console.log('[ModuleWrap] Successfully executed ESM code', this.url);
-							console.log('[ModuleWrap] Exports:', Object.keys(this.namespace));
+							console.log(
+								'[ModuleWrap] Successfully executed ESM code',
+								this.url
+							);
+							console.log(
+								'[ModuleWrap] Exports:',
+								Object.keys(this.namespace)
+							);
 
 							// Clean up the blob URL
 							URL.revokeObjectURL(blobUrl);
 							return;
 						} catch (importError) {
 							URL.revokeObjectURL(blobUrl);
-							console.error('[ModuleWrap] ESM import failed:', importError);
+							console.error(
+								'[ModuleWrap] ESM import failed:',
+								importError
+							);
 							throw importError;
 						}
 					}
@@ -5766,16 +5718,24 @@ globalThis.internalModules = {
 					// If we have no source, try to read the file
 					if (this.url && this.url.startsWith('file://')) {
 						const filePath = this.url.slice(7);
-						console.log('[ModuleWrap] Reading source from', filePath);
+						console.log(
+							'[ModuleWrap] Reading source from',
+							filePath
+						);
 
 						const fs = globalThis.coreModules?.fs;
 						if (fs && fs.readFileSync) {
 							try {
-								const source = fs.readFileSync(filePath, 'utf8');
+								const source = fs.readFileSync(
+									filePath,
+									'utf8'
+								);
 								this._source = source;
 
 								// Now that we have source, evaluate it
-								const blob = new Blob([source], { type: 'application/javascript' });
+								const blob = new Blob([source], {
+									type: 'application/javascript',
+								});
 								const blobUrl = URL.createObjectURL(blob);
 
 								try {
@@ -5785,7 +5745,10 @@ globalThis.internalModules = {
 										this.namespace.default = module.default;
 									}
 
-									console.log('[ModuleWrap] Successfully executed ESM from file', this.url);
+									console.log(
+										'[ModuleWrap] Successfully executed ESM from file',
+										this.url
+									);
 									URL.revokeObjectURL(blobUrl);
 									return;
 								} catch (importError) {
@@ -5793,15 +5756,20 @@ globalThis.internalModules = {
 									throw importError;
 								}
 							} catch (fsError) {
-								console.error('[ModuleWrap] Failed to read file:', fsError);
+								console.error(
+									'[ModuleWrap] Failed to read file:',
+									fsError
+								);
 								throw fsError;
 							}
 						}
 					}
 
-					console.error('[ModuleWrap] No source available to evaluate', this.url);
+					console.error(
+						'[ModuleWrap] No source available to evaluate',
+						this.url
+					);
 					return Promise.resolve();
-
 				} catch (error) {
 					console.error('[ModuleWrap] evaluate error:', error);
 					throw error;
@@ -5874,7 +5842,8 @@ globalThis.internalModules = {
 				importModuleDynamicallyCallback
 			) {
 				// console.log('[ESM] Storing importModuleDynamically callback');
-				esmCallbacks.importDynamically = importModuleDynamicallyCallback;
+				esmCallbacks.importDynamically =
+					importModuleDynamicallyCallback;
 			},
 		};
 	})(),
@@ -6065,8 +6034,7 @@ globalThis.internalModules.fs_dir_exports =
 
 globalThis.coreModules.fs = fs.default;
 globalThis.fs = globalThis.coreModules.fs;
-globalThis.fs.writeSync = (...args) =>
-	globalThis.globalFs.writeSync(...args);
+globalThis.fs.writeSync = (...args) => globalThis.globalFs.writeSync(...args);
 
 const supportsBinaryResult = (options) => {
 	if (options === undefined || options === null) {
@@ -6935,8 +6903,8 @@ const ensureNodeSpawnBridge = () => {
 								if (
 									processController &&
 									processController.fsSync &&
-									typeof processController.fsSync.writeFileSync ===
-										'function'
+									typeof processController.fsSync
+										.writeFileSync === 'function'
 								) {
 									const targetPath =
 										'/tmp/esbuild-stdin-dump.bin';

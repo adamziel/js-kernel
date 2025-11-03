@@ -322,8 +322,9 @@ const runHandler = async (child, command, args, options, handler) => {
 				if (
 					command === 'node' &&
 					Array.isArray(args) &&
-					args.some((arg) =>
-						typeof arg === 'string' && arg.includes('esbuild')
+					args.some(
+						(arg) =>
+							typeof arg === 'string' && arg.includes('esbuild')
 					)
 				) {
 					const length =
@@ -355,11 +356,6 @@ const runHandler = async (child, command, args, options, handler) => {
 								.slice(0, 512);
 						}
 					}
-					console.error('[spawn] esbuild stdout chunk', {
-						length,
-						type: data && data.constructor && data.constructor.name,
-						preview,
-					});
 				}
 			} catch (err) {
 				// console.error('[writeStdout] logging error:', err && err.message);
@@ -374,8 +370,9 @@ const runHandler = async (child, command, args, options, handler) => {
 				if (
 					command === 'node' &&
 					Array.isArray(args) &&
-					args.some((arg) =>
-						typeof arg === 'string' && arg.includes('esbuild')
+					args.some(
+						(arg) =>
+							typeof arg === 'string' && arg.includes('esbuild')
 					)
 				) {
 					const length =
@@ -553,39 +550,25 @@ export const spawn = (command, args = [], options = {}) => {
 						if (handle && handle.stdin) {
 							try {
 								const info = describeChunk();
-								console.error(
-									'[child-process bridge] stdin data immediate write',
-									info
-								);
 								handle.stdin.write(chunk);
 							} catch (err) {
 								// Silently ignore write errors to avoid polluting stdio
 							}
 							return;
 						}
-						try {
-							console.error(
-								'[child-process bridge] queue stdin chunk',
-								describeChunk()
-							);
-						} catch {}
 						pendingInput.push(chunk);
 					};
-				const handleEnd = () => {
-					if (handle && handle.stdin) {
-						try {
-							console.error(
-								'[child-process bridge] stdin end signalled'
-							);
-							handle.stdin.end();
-						} catch {
-							// ignore
+					const handleEnd = () => {
+						if (handle && handle.stdin) {
+							try {
+								handle.stdin.end();
+							} catch {
+								// ignore
+							}
+							return;
 						}
-						return;
-					}
-					console.error('[child-process bridge] stdin end queued');
-					stdinEnded = true;
-				};
+						stdinEnded = true;
+					};
 					context.stdin.on('data', handleData);
 					context.stdin.on('end', handleEnd);
 					context.stdin.on('close', handleEnd);
@@ -629,10 +612,6 @@ export const spawn = (command, args = [], options = {}) => {
 							} else if (typeof chunk === 'string') {
 								preview = chunk.slice(0, 80);
 							}
-							console.error(
-								'[child-process bridge] flushPendingInput write',
-								{ length: chunkLength, preview }
-							);
 							handle.stdin.write(chunk);
 						} catch (err) {
 							// Silently ignore write errors to avoid polluting stdio
@@ -646,57 +625,54 @@ export const spawn = (command, args = [], options = {}) => {
 						}
 					}
 				};
-		try {
-			handle =
-				await globalThis.processController.spawnNodeProcess(
-					spawnOptions
-				);
-		} catch (error) {
-			throw normalizeSpawnError(error);
-		}
-		if (
-			handle &&
-			handle.stdin &&
-			typeof handle.stdin.write === 'function' &&
-			commandText === 'node' &&
-			Array.isArray(argumentList) &&
-			argumentList.some((arg) =>
-				typeof arg === 'string' && arg.includes('esbuild')
-			)
-		) {
-			const originalWrite = handle.stdin.write.bind(handle.stdin);
-			handle.stdin.write = (chunk, ...writeArgs) => {
 				try {
-					const chunkLength =
-						typeof chunk === 'string'
-							? chunk.length
-							: chunk && typeof chunk === 'object'
-							? chunk.byteLength ?? chunk.length ?? 0
-							: 0;
-					let preview = '';
-					if (
-						typeof chunk !== 'string' &&
-						chunk &&
-						typeof Buffer !== 'undefined'
-					) {
+					handle =
+						await globalThis.processController.spawnNodeProcess(
+							spawnOptions
+						);
+				} catch (error) {
+					throw normalizeSpawnError(error);
+				}
+				if (
+					handle &&
+					handle.stdin &&
+					typeof handle.stdin.write === 'function' &&
+					commandText === 'node' &&
+					Array.isArray(argumentList) &&
+					argumentList.some(
+						(arg) =>
+							typeof arg === 'string' && arg.includes('esbuild')
+					)
+				) {
+					const originalWrite = handle.stdin.write.bind(handle.stdin);
+					handle.stdin.write = (chunk, ...writeArgs) => {
 						try {
-							preview = Buffer.from(chunk)
-								.toString('hex')
-								.slice(0, 80);
-						} catch {
-							preview = '';
-						}
-					} else if (typeof chunk === 'string') {
-						preview = chunk.slice(0, 80);
-					}
-					console.error(
-						'[child-process bridge] stdin.write',
-						{ length: chunkLength, preview }
-					);
-				} catch {}
-				return originalWrite(chunk, ...writeArgs);
-			};
-		}
+							const chunkLength =
+								typeof chunk === 'string'
+									? chunk.length
+									: chunk && typeof chunk === 'object'
+									? chunk.byteLength ?? chunk.length ?? 0
+									: 0;
+							let preview = '';
+							if (
+								typeof chunk !== 'string' &&
+								chunk &&
+								typeof Buffer !== 'undefined'
+							) {
+								try {
+									preview = Buffer.from(chunk)
+										.toString('hex')
+										.slice(0, 80);
+								} catch {
+									preview = '';
+								}
+							} else if (typeof chunk === 'string') {
+								preview = chunk.slice(0, 80);
+							}
+						} catch {}
+						return originalWrite(chunk, ...writeArgs);
+					};
+				}
 				if (typeof handle.threadId === 'number') {
 					child.pid = handle.threadId;
 				}
@@ -707,12 +683,12 @@ export const spawn = (command, args = [], options = {}) => {
 				}
 				const attachReadable = (stream, onData, onEnd) => {
 					if (!stream) {
-				return;
-			}
-			const wrappedOnData = (chunk) => {
-				try {
-					onData(chunk);
-				} catch (error) {
+						return;
+					}
+					const wrappedOnData = (chunk) => {
+						try {
+							onData(chunk);
+						} catch (error) {
 							// Errors will bubble up to browser console without polluting stdio
 						}
 					};
@@ -772,11 +748,11 @@ export const spawn = (command, args = [], options = {}) => {
 					handle.stderr.destroy();
 				}
 				queueMicrotask(() => child.emit('spawn'));
-			const exitInfo = await handle.waitForExit();
-			try {
-			} catch {
-				// ignore logging errors
-			}
+				const exitInfo = await handle.waitForExit();
+				try {
+				} catch {
+					// ignore logging errors
+				}
 				return exitInfo ?? { code: 0, signal: null };
 			}
 		);
@@ -992,15 +968,12 @@ export const execFileSync = (file, args, options) => {
 		throw result.error;
 	}
 	if (typeof result.status === 'number' && result.status !== 0) {
-		const error = Object.assign(
-			new Error(`Command failed: ${file}`),
-			{
-				code: result.status,
-				signal: result.signal ?? null,
-				stdout: result.stdout,
-				stderr: result.stderr,
-			}
-		);
+		const error = Object.assign(new Error(`Command failed: ${file}`), {
+			code: result.status,
+			signal: result.signal ?? null,
+			stdout: result.stdout,
+			stderr: result.stderr,
+		});
 		throw error;
 	}
 	return result.stdout;

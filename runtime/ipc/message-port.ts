@@ -92,7 +92,10 @@ export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents>
 	private static readonly WAIT_TIMEOUT_MS = 5000;
 	private readonly debugLabel: string | null;
 
-	constructor(private readonly port: MessagePort, options?: { debugLabel?: string }) {
+	constructor(
+		private readonly port: MessagePort,
+		options?: { debugLabel?: string }
+	) {
 		super();
 		this.debugLabel = options?.debugLabel ?? null;
 		if (typeof Atomics === 'object' && typeof Atomics.wait === 'function') {
@@ -229,23 +232,14 @@ export class MessagePortReadableStream extends BasicEventEmitter<ReadableEvents>
 									preview = Buffer.from(view).toString('hex');
 								} else {
 									preview = Array.from(view)
-										.map((b) => b.toString(16).padStart(2, '0'))
+										.map((b) =>
+											b.toString(16).padStart(2, '0')
+										)
 										.join('');
 								}
 							}
 						} catch {}
 					}
-					console.error('[MPR] received chunk', {
-						label: this.debugLabel,
-						length,
-						type:
-							typeof chunk === 'string'
-								? 'string'
-								: chunk && chunk.constructor
-								? chunk.constructor.name
-								: typeof chunk,
-						preview,
-					});
 				}
 			} catch {}
 			this.emit('data', chunk);
@@ -294,9 +288,8 @@ export class MessagePortWritableStream extends BasicEventEmitter<WritableEvents>
 		}
 		// Clone the chunk immediately to prevent any detachment issues
 		// Explicitly create a new ArrayBuffer to ensure complete independence
-		const cloned = typeof chunk === 'string'
-			? chunk
-			: new Uint8Array(chunk);  // Creates new ArrayBuffer with copy of data
+		const cloned =
+			typeof chunk === 'string' ? chunk : new Uint8Array(chunk); // Creates new ArrayBuffer with copy of data
 		this.queue.push({ type: 'data', chunk: cloned });
 		this.scheduleFlush();
 		return true;
@@ -305,9 +298,8 @@ export class MessagePortWritableStream extends BasicEventEmitter<WritableEvents>
 	end(chunk?: KernelStdioChunk) {
 		if (this.closed) return false;
 		if (typeof chunk !== 'undefined') {
-			const cloned = typeof chunk === 'string'
-				? chunk
-				: new Uint8Array(chunk);
+			const cloned =
+				typeof chunk === 'string' ? chunk : new Uint8Array(chunk);
 			this.queue.push({ type: 'data', chunk: cloned });
 		}
 		this.queue.push({ type: 'signal', signal: 'end', label: '<EOF>' });
@@ -354,54 +346,6 @@ export class MessagePortWritableStream extends BasicEventEmitter<WritableEvents>
 				try {
 					// Chunk was already cloned in write(), just use it directly
 					const payload = item.chunk;
-					try {
-						const isString = typeof payload === 'string';
-						const length = isString
-							? payload.length
-							: payload && typeof payload === 'object'
-							? payload.byteLength ?? payload.length ?? 0
-							: 0;
-						let preview: string | null = null;
-						if (this.logLabel === 'binary:stdout') {
-							if (isString) {
-								preview = payload.slice(0, 200);
-							} else if (
-								payload &&
-								typeof Buffer !== 'undefined' &&
-								typeof payload === 'object'
-							) {
-								try {
-									const view =
-										payload instanceof Uint8Array
-											? payload
-											: ArrayBuffer.isView(payload)
-											? new Uint8Array(
-													payload.buffer,
-													payload.byteOffset ?? 0,
-													payload.byteLength ??
-														payload.length ??
-														0
-												)
-											: null;
-						if (view) {
-							preview = Buffer.from(view).toString('hex');
-									}
-								} catch {}
-							}
-						}
-						if (this.logLabel === 'binary:stdout') {
-							console.error('[MPR write] sending chunk', {
-								label: this.logLabel,
-								length,
-								type: isString
-									? 'string'
-									: payload && payload.constructor
-									? payload.constructor.name
-									: typeof payload,
-								preview,
-							});
-						}
-					} catch {}
 					this.port.postMessage({ type: 'data', payload });
 				} catch (err) {
 					// Error reporting without stdio pollution - errors thrown will

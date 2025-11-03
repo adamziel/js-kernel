@@ -28,8 +28,6 @@ import {
 	type SpawnSyncClient,
 } from '../spawn-sync/client.ts';
 
-console.error('[controller.ts] Worker script loading!');
-
 // Error handling
 // Preserve the original console for easier debugging and error logging.
 // @TODO: How to balance having stderr with direct console access?
@@ -850,42 +848,19 @@ export function redirectConsoleToStdio(isDebug: boolean) {
 const KERNEL_INIT_MESSAGE = '__kernel_internal__/initChildProcess';
 
 const handleKernelInit = (event: MessageEvent) => {
-	console.error(
-		'[handleKernelInit] Called, event.data.type:',
-		event.data?.type
-	);
 	if (bootstrapComplete) {
-		console.error(
-			'[handleKernelInit] Bootstrap already complete, returning'
-		);
 		return;
 	}
 	if (event.data?.type !== KERNEL_INIT_MESSAGE) {
-		console.error('[handleKernelInit] Wrong message type, returning');
 		return;
 	}
 
-	console.error('[handleKernelInit] Processing init message');
 	bootstrapComplete = true;
 	self.removeEventListener('message', handleKernelInit);
 
 	const payload = event.data.payload as ChildProcessInitOptions;
 	// Log stdio descriptors received by worker (use both console.log and originalConsole)
-	const stdioInfo = JSON.stringify(
-		payload.stdio?.map((d: any) => ({
-			fd: d.fd,
-			mode: d.mode,
-			hasPort: !!d.port,
-		})) || []
-	);
-	// console.log('[BINARY handleKernelInit] stdio received:', stdioInfo);
-	const oc = (globalThis as any).originalConsole;
-	if (oc) {
-		oc.error('[BINARY handleKernelInit] stdio received:', stdioInfo);
-	}
-	console.error('[handleKernelInit] About to call initChildProcess');
 	initChildProcess(payload);
-	console.error('[handleKernelInit] About to call redirectConsoleToStdio');
 	redirectConsoleToStdio(payload.debug);
 
 	// Log stdio configuration AFTER console is redirected so we can see it
@@ -896,9 +871,7 @@ const handleKernelInit = (event: MessageEvent) => {
 	// 		'unknown'
 	// );
 
-	console.error('[handleKernelInit] About to queue startProgram');
 	queueMicrotask(() => startProgram(payload));
-	console.error('[handleKernelInit] Queued startProgram');
 };
 
 self.addEventListener('message', handleKernelInit);
@@ -942,12 +915,7 @@ const reportProgramError = (error: unknown) => {
 };
 
 const startProgram = async (options: ChildProcessInitOptions) => {
-	console.error(
-		'[startProgram] Called with programPath:',
-		options.programPath
-	);
 	if (programStarted) {
-		console.error('[startProgram] Already started, returning');
 		return;
 	}
 	programStarted = true;
@@ -960,14 +928,12 @@ const startProgram = async (options: ChildProcessInitOptions) => {
 	const originalDirname = (globalThis as any).__dirname;
 
 	try {
-		console.error('[startProgram] About to call fs.readdir("/")');
 		// Somehow this makes all the sync calls work in the imported module.
 		// Without it, they hang indefinitely.
 		// @TODO: Look into initialization flows, most likely,
 		// there's a missing await between something is initialized and
 		// Atomics.wait() is called.
 		await (globalThis as any).processController.fs.readdir('/');
-		console.error('[startProgram] fs.readdir("/") completed');
 
 		// Vite is stubborn and wraps dynamic imports with a __vite__injectQuery call.
 		// that adds a query parameter. Vite assumes that function exists in the worker.
