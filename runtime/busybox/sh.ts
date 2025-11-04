@@ -69,7 +69,6 @@ const createProgramSource = (): string => {
 				return;
 			}
 
-			processController.stdout?.write(`yay`);
 			try {
 				const exitCode = await runShellScript(processController, ast);
 				exitSafely(exitCode);

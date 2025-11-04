@@ -291,7 +291,6 @@ self.addEventListener('message', (event) => {
 	}
 
 	if (event.data.type === 'stdin') {
-		console.log('input', event.data.data);
 		worker.stdin!.write(event.data.data);
 	} else if (event.data.type === 'runProgram') {
 		runProgram(event.data.argv, event.data.cwd ?? '/bin', {

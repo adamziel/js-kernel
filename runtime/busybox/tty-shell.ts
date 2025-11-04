@@ -1,21 +1,34 @@
-// import { runShellScript } from '../shell/run';
-// import { parseShellCode } from '../shell/sh';
-
 declare const processController: any;
 
 const utilsModuleUrl = new URL('./lib/utils.ts', import.meta.url).href;
 const pathsModuleUrl = new URL('../util/paths.ts', import.meta.url).href;
+const runModuleUrl = new URL('../shell/run.ts', import.meta.url).href;
+const parseModuleUrl = new URL('../shell/sh.ts', import.meta.url).href;
 
 const createProgramSource = (): string => {
 	const program = async function main(urls: {
 		utilsModuleUrl: string;
 		pathsModuleUrl: string;
+		runModuleUrl: string;
+		parseModuleUrl: string;
 	}): Promise<void> {
-		const { errorToString, exitSafely, getArgv, writeStderr, writeStdout } =
-			await import(/* @vite-ignore */ urls.utilsModuleUrl);
-		const { joinPaths, normalizePath } = await import(
-			/* @vite-ignore */ urls.pathsModuleUrl
-		);
+		const [
+			{
+				errorToString,
+				exitSafely,
+				getArgv,
+				writeStderr,
+				writeStdout,
+			},
+			{ joinPaths, normalizePath },
+			{ runShellScript },
+			{ parseShellCode },
+		] = await Promise.all([
+			import(/* @vite-ignore */ urls.utilsModuleUrl),
+			import(/* @vite-ignore */ urls.pathsModuleUrl),
+			import(/* @vite-ignore */ urls.runModuleUrl),
+			import(/* @vite-ignore */ urls.parseModuleUrl),
+		]);
 
 		type InputToken =
 			| { kind: 'char'; value: string }
@@ -522,13 +535,135 @@ const createProgramSource = (): string => {
 			render();
 		};
 
+		const forwardStream = (
+			readable: {
+				on?: (event: string, listener: (...args: any[]) => void) => void;
+				once?: (
+					event: string,
+					listener: (...args: any[]) => void
+				) => void;
+				off?: (event: string, listener: (...args: any[]) => void) => void;
+			} | null,
+			writable: { write?: (chunk: unknown) => void } | null
+		): Promise<void> => {
+			if (!readable || typeof readable.on !== 'function') {
+				return Promise.resolve();
+			}
+			if (!writable || typeof writable.write !== 'function') {
+				return Promise.resolve();
+			}
+			return new Promise((resolve) => {
+				const handleData = (chunk: unknown) => {
+					try {
+						writable.write?.(chunk);
+					} catch {
+						// ignore write failures
+					}
+				};
+				const cleanup = () => {
+					readable.off?.('data', handleData as any);
+					readable.off?.('end', handleEnd as any);
+					readable.off?.('close', handleClose as any);
+				};
+				const handleEnd = () => {
+					cleanup();
+					resolve();
+				};
+				const handleClose = () => {
+					cleanup();
+					resolve();
+				};
+				readable.on?.('data', handleData as any);
+				(readable.once ?? readable.on)?.(
+					'end',
+					handleEnd as (...args: any[]) => void
+				);
+				(readable.once ?? readable.on)?.(
+					'close',
+					handleClose as (...args: any[]) => void
+				);
+			});
+		};
+
+		const runCommandFromLine = async (line: string) => {
+			let ast: unknown;
+			try {
+				ast = parseShellCode(line);
+			} catch (error) {
+				writeStderr(`tty-shell: ${errorToString(error)}`);
+				return;
+			}
+
+			const forwarders: Promise<void>[] = [];
+			const shellController = {
+				...processController,
+				spawn: async (options: {
+					argv: string[];
+					env?: Record<string, string>;
+					cwd?: string;
+					name?: string;
+					debug?: boolean;
+					stdio?: {
+						stdin?: string;
+						stdout?: string;
+						stderr?: string;
+					};
+					timeout?: number;
+				}) => {
+					const originalStdio = options.stdio ?? {};
+					const stdio = { ...originalStdio };
+					const parentStdout = processController.stdout ?? null;
+					const parentStderr = processController.stderr ?? null;
+					const shouldPipeStdout =
+						!stdio.stdout && parentStdout !== null;
+					const shouldPipeStderr =
+						!stdio.stderr && parentStderr !== null;
+
+					if (shouldPipeStdout) {
+						stdio.stdout = 'pipe';
+					}
+					if (shouldPipeStderr) {
+						stdio.stderr = 'pipe';
+					}
+
+					const child = await processController.spawn({
+						...options,
+						stdio:
+							stdio.stdin || stdio.stdout || stdio.stderr
+								? stdio
+								: options.stdio,
+					});
+
+					if (shouldPipeStdout) {
+						forwarders.push(
+							forwardStream(child.stdout ?? null, parentStdout)
+						);
+					}
+					if (shouldPipeStderr) {
+						forwarders.push(
+							forwardStream(child.stderr ?? null, parentStderr)
+						);
+					}
+
+					return child;
+				},
+			};
+
+			try {
+				await runShellScript(shellController, ast);
+				if (forwarders.length) {
+					await Promise.allSettled(forwarders);
+				}
+			} catch (error) {
+				writeStderr(`tty-shell: ${errorToString(error)}`);
+			}
+		};
+
 		const handleSubmit = () => {
 			const line = buffer;
-			// Echo the command and newline
 			writeStdout('\r\n', { appendNewline: false });
-			// Output the command for execution
-			writeStderr(line + '\n');
-			if (line.trim()) {
+			const trimmed = line.trim();
+			if (trimmed) {
 				pushHistory(line);
 			}
 			buffer = '';
@@ -536,35 +671,18 @@ const createProgramSource = (): string => {
 			ignoreNextLineFeed = false;
 			resetHistoryNavigation();
 
-			let ast: unknown;
-			try {
-				// @TODO: Why does this fail? "parseShellCode is not defined"
-				// ast = parseShellCode(line);
-			} catch (error) {
-				writeStderr(`sh: ${line}: ${errorToString(error)}`);
+			if (!trimmed) {
 				render();
 				return;
 			}
 
-			processController
-				.spawn({
-					argv: ['sh', '-c', line],
-					stdio: {
-						stdin: 'inherit',
-						stdout: 'inherit',
-						stderr: 'inherit',
-					},
-				})
-				.then(
-					(handle) => {
-						console.log('sh exit', handle.exitCode);
-						render();
-					},
-					(error) => {
-						writeStderr(`sh: ${line}: ${errorToString(error)}`);
-						render();
-					}
-				);
+			void (async () => {
+				try {
+					await runCommandFromLine(line);
+				} finally {
+					render();
+				}
+			})();
 		};
 
 		const handleInterrupt = () => {
@@ -926,6 +1044,8 @@ const createProgramSource = (): string => {
 	return `(${program.toString()})(${JSON.stringify({
 		utilsModuleUrl,
 		pathsModuleUrl,
+		runModuleUrl,
+		parseModuleUrl,
 	})});`;
 };
 
