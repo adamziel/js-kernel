@@ -1,4 +1,4 @@
-import { runShellScript } from '../shell/run';
+// import { runShellScript } from '../shell/run';
 // import { parseShellCode } from '../shell/sh';
 
 declare const processController: any;
@@ -82,7 +82,7 @@ const createProgramSource = (): string => {
 				}
 			}
 
-			writeStdout(output, { appendNewline: false });
+			processController.stdout?.write(output);
 		};
 
 		const clampCursor = (index: number) => {
@@ -536,25 +536,35 @@ const createProgramSource = (): string => {
 			ignoreNextLineFeed = false;
 			resetHistoryNavigation();
 
-                        let ast: unknown;
-                        try {
-                                // @TODO: Why does this fail? "parseShellCode is not defined"
-                                // ast = parseShellCode(line);
+			let ast: unknown;
+			try {
+				// @TODO: Why does this fail? "parseShellCode is not defined"
+				// ast = parseShellCode(line);
 			} catch (error) {
 				writeStderr(`sh: ${line}: ${errorToString(error)}`);
 				render();
 				return;
 			}
 
-			runShellScript(processController, ast as any).then(
-				(exitCode) => {
-					render();
-				},
-				(error) => {
-					writeStderr(`sh: ${line}: ${errorToString(error)}`);
-					render();
-				}
-			);
+			processController
+				.spawn({
+					argv: ['sh', '-c', line],
+					stdio: {
+						stdin: 'inherit',
+						stdout: 'inherit',
+						stderr: 'inherit',
+					},
+				})
+				.then(
+					(handle) => {
+						console.log('sh exit', handle.exitCode);
+						render();
+					},
+					(error) => {
+						writeStderr(`sh: ${line}: ${errorToString(error)}`);
+						render();
+					}
+				);
 		};
 
 		const handleInterrupt = () => {
@@ -862,13 +872,14 @@ const createProgramSource = (): string => {
 
 		const stdin = processController.stdin;
 		if (!stdin || typeof stdin.on !== 'function') {
-			writeStderr('tty-shell: interactive stdin is unavailable\n');
+			processController.stderr?.write(
+				'tty-shell: interactive stdin is unavailable\n'
+			);
 			exitSafely(1);
 			return;
 		}
 
 		const handleData = (chunk: unknown) => {
-			console.log('handleData', chunk);
 			try {
 				const text =
 					typeof chunk === 'string'
@@ -876,7 +887,9 @@ const createProgramSource = (): string => {
 						: decoder.decode(chunk as Uint8Array);
 				processInput(text);
 			} catch (error) {
-				writeStderr(`tty-shell: error: ${errorToString(error)}\n`);
+				processController.stderr?.write(
+					`tty-shell: error: ${errorToString(error)}\n`
+				);
 			}
 		};
 
@@ -904,6 +917,10 @@ const createProgramSource = (): string => {
 
 		// Initial render
 		render();
+
+		return new Promise(() => {
+			// @TODO: resolve on exit.
+		});
 	};
 
 	return `(${program.toString()})(${JSON.stringify({

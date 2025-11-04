@@ -1316,7 +1316,7 @@ class TestCases {
 try {
 	// await TestCases.testWpScriptsLocal();
 	// await TestCases.testEsbuild();
-	await testEsbuildLikeInTests();
+	// await testEsbuildLikeInTests();
 } catch (error) {
 	console.error('Error', error);
 }
