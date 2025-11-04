@@ -1,23 +1,5 @@
 let wasm;
 
-const cachedTextDecoder = (typeof TextDecoder !== 'undefined' ? new TextDecoder('utf-8', { ignoreBOM: true, fatal: true }) : { decode: () => { throw Error('TextDecoder not available') } } );
-
-if (typeof TextDecoder !== 'undefined') { cachedTextDecoder.decode(); };
-
-let cachedUint8ArrayMemory0 = null;
-
-function getUint8ArrayMemory0() {
-    if (cachedUint8ArrayMemory0 === null || cachedUint8ArrayMemory0.byteLength === 0) {
-        cachedUint8ArrayMemory0 = new Uint8Array(wasm.memory.buffer);
-    }
-    return cachedUint8ArrayMemory0;
-}
-
-function getStringFromWasm0(ptr, len) {
-    ptr = ptr >>> 0;
-    return cachedTextDecoder.decode(getUint8ArrayMemory0().subarray(ptr, ptr + len));
-}
-
 function debugString(val) {
     // primitive types
     const type = typeof val;
@@ -85,6 +67,15 @@ function debugString(val) {
 
 let WASM_VECTOR_LEN = 0;
 
+let cachedUint8ArrayMemory0 = null;
+
+function getUint8ArrayMemory0() {
+    if (cachedUint8ArrayMemory0 === null || cachedUint8ArrayMemory0.byteLength === 0) {
+        cachedUint8ArrayMemory0 = new Uint8Array(wasm.memory.buffer);
+    }
+    return cachedUint8ArrayMemory0;
+}
+
 const cachedTextEncoder = (typeof TextEncoder !== 'undefined' ? new TextEncoder('utf-8') : { encode: () => { throw Error('TextEncoder not available') } } );
 
 const encodeString = (typeof cachedTextEncoder.encodeInto === 'function'
@@ -147,6 +138,15 @@ function getDataViewMemory0() {
     }
     return cachedDataViewMemory0;
 }
+
+const cachedTextDecoder = (typeof TextDecoder !== 'undefined' ? new TextDecoder('utf-8', { ignoreBOM: true, fatal: true }) : { decode: () => { throw Error('TextDecoder not available') } } );
+
+if (typeof TextDecoder !== 'undefined') { cachedTextDecoder.decode(); };
+
+function getStringFromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return cachedTextDecoder.decode(getUint8ArrayMemory0().subarray(ptr, ptr + len));
+}
 /**
  * @param {string} input
  * @returns {any}
@@ -196,9 +196,6 @@ async function __wbg_load(module, imports) {
 function __wbg_get_imports() {
     const imports = {};
     imports.wbg = {};
-    imports.wbg.__wbg_log_758e5ca2a6dbe801 = function(arg0, arg1) {
-        console.log(getStringFromWasm0(arg0, arg1));
-    };
     imports.wbg.__wbg_new_405e22f390576ce2 = function() {
         const ret = new Object();
         return ret;
@@ -292,35 +289,7 @@ async function __wbg_init(module_or_path) {
     const imports = __wbg_get_imports();
 
     if (typeof module_or_path === 'string' || (typeof Request === 'function' && module_or_path instanceof Request) || (typeof URL === 'function' && module_or_path instanceof URL)) {
-        // Check if we're in Node.js environment
-        if (typeof process !== 'undefined' && process.versions && process.versions.node) {
-            // In Node.js, use fs to read the file
-            const fs = await import('fs');
-            const path = await import('path');
-            const url = await import('url');
-            
-            let filePath;
-            if (module_or_path instanceof URL) {
-                filePath = url.fileURLToPath(module_or_path);
-            } else if (typeof module_or_path === 'string') {
-                // If it's a relative path, resolve it relative to current module
-                if (!path.isAbsolute(module_or_path)) {
-                    const currentDir = path.dirname(url.fileURLToPath(import.meta.url));
-                    filePath = path.resolve(currentDir, module_or_path);
-                } else {
-                    filePath = module_or_path;
-                }
-            }
-            
-            if (filePath) {
-                module_or_path = fs.promises.readFile(filePath);
-            } else {
-                module_or_path = fetch(module_or_path);
-            }
-        } else {
-            // In browser environment, use fetch
-            module_or_path = fetch(module_or_path);
-        }
+        module_or_path = fetch(module_or_path);
     }
 
     __wbg_init_memory(imports);

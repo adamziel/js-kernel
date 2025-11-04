@@ -21,8 +21,6 @@ pub struct ParseResult {
 
 #[wasm_bindgen]
 pub fn parse_shell_code(input: &str) -> JsValue {
-    console_log!("Parsing input: {}", input);
-    
     let result = match parse_internal(input) {
         Ok(ast) => {
             let ast_json = serde_json::to_string_pretty(&ast)
@@ -52,5 +50,4 @@ fn parse_internal(input: &str) -> Result<flash::parser::Node, String> {
 
 #[wasm_bindgen(start)]
 pub fn main() {
-    console_log!("Flash WebAssembly parser initialized!");
 }

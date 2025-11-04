@@ -1,90 +1,166 @@
-# Flash WebAssembly Parser Demo
+# Flash WebAssembly Parser
 
-This demo compiles the Flash shell parser to WebAssembly, allowing you to parse shell code directly in the browser.
+WebAssembly build of the Flash shell parser. Parse shell/Bash code directly in the browser or Node.js.
 
 **[Flash on GitHub](https://github.com/raphamorim/flash)**
 
-## Features
+## Installation
 
-- **Live Parsing**: Input shell code on the left, see the parsed AST on the right
-- **Real-time Updates**: Parse code with Ctrl+Enter or the Parse button
-- **Example Code**: Click on examples to quickly test different shell constructs
-- **Error Handling**: Clear error messages for invalid syntax
+### Direct Usage
 
-## Building and Running
+Copy the files from this directory to your web project:
+- `flash_wasm_demo.js`
+- `flash_wasm_demo_bg.wasm`
+- `flash_wasm_demo.d.ts` (optional, for TypeScript)
 
-### Prerequisites
-
-- Rust toolchain
-- `wasm-pack` (will be installed automatically by Makefile)
-- `cargo-server` (will be installed automatically by Makefile)
-- Git LFS (for committing WebAssembly files)
-
-### Build and Serve
-
-From the project root directory:
+### NPM (if published)
 
 ```bash
-# Build and serve the demo
-make wasm-demo-serve
-
-# Or just build without serving
-make wasm-demo-build
-
-# Build and prepare files for git commit
-make wasm-demo-commit
-
-# Clean build artifacts
-make wasm-demo-clean
+npm install flash-wasm-demo
 ```
 
-The demo will be available at `http://localhost:8000`
+## Usage
 
-### Git LFS Setup
+### Browser (ES Modules)
 
-WebAssembly files (`.wasm`) are tracked using Git LFS to avoid bloating the repository:
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Flash Parser Demo</title>
+</head>
+<body>
+    <script type="module">
+        import init, { parse_shell_code } from './flash_wasm_demo.js';
 
-- `.wasm` files are automatically tracked by Git LFS
-- The `docs/pkg/` directory can be committed to the repository
-- Use `make wasm-demo-commit` to build and stage files for commit
+        async function run() {
+            // Initialize the WASM module
+            await init();
 
-### Manual Serving
+            // Parse shell code
+            const result = parse_shell_code('echo "Hello, World!" | grep Hello');
 
-If you prefer to serve manually after building:
+            console.log('Success:', result.success);
+            if (result.success) {
+                console.log('AST:', result.ast);
+            } else {
+                console.error('Error:', result.error);
+            }
+        }
 
-```bash
-# Build first
-make wasm-demo-build
+        run();
+    </script>
+</body>
+</html>
+```
 
-# Then serve with cargo-server
-cd docs
-cargo server --port 8000
+### TypeScript
 
-# Or use other methods
-python3 -m http.server 8000
-# or
-npx serve . -p 8000
+```typescript
+import init, { parse_shell_code } from './flash_wasm_demo';
+
+interface ParseResult {
+    success: boolean;
+    ast: string;
+    error?: string;
+}
+
+async function parseShell(code: string): Promise<ParseResult> {
+    await init();
+    return parse_shell_code(code);
+}
+
+// Usage
+const result = await parseShell('ls -la | grep .rs');
+if (result.success) {
+    console.log('Parsed AST:', result.ast);
+} else {
+    console.error('Parse error:', result.error);
+}
+```
+
+### Node.js
+
+```javascript
+const { parse_shell_code } = require('./flash_wasm_demo.js');
+
+// Parse shell code
+const result = parse_shell_code('echo $((2 + 2))');
+console.log(result);
+```
+
+## API
+
+### `parse_shell_code(input: string): ParseResult`
+
+Parses shell code and returns the Abstract Syntax Tree (AST) in JSON format.
+
+**Parameters:**
+- `input` - Shell code string to parse
+
+**Returns:** `ParseResult` object
+```typescript
+{
+    success: boolean;   // true if parsing succeeded
+    ast: string;        // JSON-formatted AST structure
+    error?: string;     // Error message if parsing failed
+}
+```
+
+**Example:**
+```javascript
+const result = parse_shell_code('if [ -f file.txt ]; then cat file.txt; fi');
+
+// Success case
+{
+    success: true,
+    ast: '{"type": "Script", ...}', // Full AST as JSON
+    error: undefined
+}
+
+// Error case
+{
+    success: false,
+    ast: "",
+    error: "Unexpected token at line 1, column 5"
+}
 ```
 
 ## Supported Shell Constructs
 
-The demo can parse various shell constructs including:
+The parser supports various shell/Bash constructs:
 
-- Simple commands: `ls -la`
-- Pipelines: `ls | grep test`
-- Redirections: `echo "hello" > file.txt`
-- Variable assignments: `VAR=value`
-- Command substitution: `echo $(date)`
-- Arithmetic expansion: `echo $((2 + 2))`
-- Conditional statements: `if [ condition ]; then ...; fi`
-- Loops: `for i in {1..10}; do ...; done`
-- Functions: `function name() { ...; }`
-- And more!
+- **Simple commands**: `ls -la`, `echo hello`
+- **Pipelines**: `cat file.txt | grep pattern | wc -l`
+- **Redirections**: `echo "text" > file.txt`, `cat < input.txt`
+- **Variables**: `VAR=value`, `echo $VAR`
+- **Command substitution**: `` echo `date` ``, `echo $(pwd)`
+- **Arithmetic expansion**: `echo $((2 + 2))`
+- **Conditionals**: `if [ -f file ]; then ...; fi`
+- **Loops**: `for i in {1..10}; do echo $i; done`, `while true; do ...; done`
+- **Functions**: `function name() { ...; }`, `name() { ...; }`
+- **Case statements**: `case $var in pattern) ... ;; esac`
+- **Logical operators**: `&&`, `||`, `!`
+- **Background jobs**: `command &`
+- **Subshells**: `(command1; command2)`
 
-## Architecture
+## File Information
 
-- **Rust Library**: The core Flash parser compiled to WebAssembly
-- **JavaScript Interface**: Wasm-bindgen provides the JS/WASM bridge
-- **Web Interface**: Clean two-panel layout for input and output
+- **JavaScript**: ~9.4KB
+- **WebAssembly**: ~140KB (optimized with serde support for JSON output)
+- **Target**: `web` (browser ES modules)
+- **Features**: Parser with JSON serialization (no interpreter/formatter)
 
-The WebAssembly module exposes a `parse_shell_code` function that takes shell code as input and returns a structured representation of the parsed AST.
+## Build Information
+
+Built from local Flash source at `playground-projects/shell-parser/flash`:
+- Compiled with `default-features = false` for minimal size
+- Includes serde support for JSON AST output
+- Optimized with wasm-opt
+
+To rebuild: see parent directory README.md
+
+## License
+
+GPL-3.0-or-later (inherits from Flash parser)

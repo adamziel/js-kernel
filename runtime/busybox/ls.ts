@@ -24,27 +24,29 @@ const createProgramSource = (): string => {
 				const target = targets[index];
 				try {
 					const stats = fs.statSync(target);
-					const isDir =
-						stats &&
-						typeof stats.isDirectory === 'function' &&
-						stats.isDirectory();
 
-					if (isDir) {
+					if (stats?.isDirectory()) {
 						const entries = fs.readdirSync(target) as unknown[];
 						if (targets.length > 1) {
 							writeStdout(`${target}:`);
 						}
 						const names = entries
-							.map((entry) => String(entry))
-							.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-						for (const name of names) {
-							writeStdout(name);
-						}
+							.map((entry) => {
+								const stats = fs.statSync(
+									`${target}/${entry}`
+								) as unknown;
+								return stats?.isDirectory()
+									? `${entry}/`
+									: String(entry);
+							})
+							.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+							.join(' ');
+						writeStdout(names);
 						if (targets.length > 1 && index < targets.length - 1) {
-							writeStdout('');
+							writeStdout('\n');
 						}
 					} else {
-						writeStdout(target);
+						writeStdout(target + '\n');
 					}
 				} catch (error) {
 					reportError(target, error);
