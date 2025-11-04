@@ -213,9 +213,9 @@ const normaliseStdio = (stdio) => {
 		}
 	}
 	const streams = {
-		stdin: config.stdin === 'pipe' ? createStream() : null,
-		stdout: config.stdout === 'pipe' ? createStream() : null,
-		stderr: config.stderr === 'pipe' ? createStream() : null,
+		stdin: config.stdin === 'pipe' ? createStream() : config.stdin === 'inherit' ? (globalThis.process && globalThis.process.stdin) || null : null,
+		stdout: config.stdout === 'pipe' ? createStream() : config.stdout === 'inherit' ? (globalThis.process && globalThis.process.stdout) || null : null,
+		stderr: config.stderr === 'pipe' ? createStream() : config.stderr === 'inherit' ? (globalThis.process && globalThis.process.stderr) || null : null,
 	};
 	return { streams, config };
 };

@@ -139,14 +139,16 @@ describe('MessagePort Streams - stdio Communication', () => {
 			writable.end();
 		});
 
-		it('emits close event when closed', (done) => {
+		it('emits close event when closed', async () => {
 			const writable = new MessagePortWritableStream(channel.port1);
 
-			writable.on('close', () => {
-				done();
-			});
+			await new Promise<void>((resolve) => {
+				writable.on('close', () => {
+					resolve();
+				});
 
-			writable.close();
+				writable.close();
+			});
 		});
 
 		it('can destroy stream', () => {
@@ -333,14 +335,16 @@ describe('MessagePort Streams - stdio Communication', () => {
 			channel.port2.postMessage({ type: 'end' });
 		});
 
-		it('calling close() emits close event', (done) => {
+		it('calling close() emits close event', async () => {
 			const readable = new MessagePortReadableStream(channel.port1);
 
-			readable.on('close', () => {
-				done();
-			});
+			await new Promise<void>((resolve) => {
+				readable.on('close', () => {
+					resolve();
+				});
 
-			readable.close();
+				readable.close();
+			});
 		});
 	});
 

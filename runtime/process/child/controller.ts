@@ -814,8 +814,9 @@ export function redirectConsoleToStdio(isDebug: boolean) {
 			.join(' ');
 
 	const writeStdout = (...args: unknown[]) => {
-		originalConsole.log(...args);
-		if (!isDebug) return;
+		if (isDebug) {
+			originalConsole.log(...args);
+		}
 		const value = joinArgs(args);
 		if (value.includes('[vite]')) {
 			return;
@@ -825,8 +826,9 @@ export function redirectConsoleToStdio(isDebug: boolean) {
 	};
 
 	const writeStderr = (...args: unknown[]) => {
-		originalConsole.error(...args);
-		if (!isDebug) return;
+		if (isDebug) {
+			originalConsole.error(...args);
+		}
 		const value = joinArgs(args);
 		if (value.includes('[vite]')) {
 			return;
