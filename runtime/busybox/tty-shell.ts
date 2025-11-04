@@ -779,14 +779,34 @@ const createProgramSource = (): string => {
 			);
 			if (controlMatch) {
 				const [, , modifier, final] = controlMatch;
-				if (final === 'D' && (modifier === '5' || modifier === '3')) {
+				const modifierValue = Number(modifier);
+				const hasModifier = Number.isFinite(modifierValue);
+				const hasCtrl =
+					hasModifier && ((modifierValue - 1) & 4) !== 0;
+				const hasAlt = hasModifier
+					? ((modifierValue - 1) & 2) !== 0 ||
+					  modifierValue === 9 ||
+					  modifierValue === 13 ||
+					  modifierValue === 17
+					: false;
+				if (final === 'D' && (hasCtrl || hasAlt)) {
 					moveWordLeft();
 					return;
 				}
-				if (final === 'C' && (modifier === '5' || modifier === '3')) {
+				if (final === 'C' && (hasCtrl || hasAlt)) {
 					moveWordRight();
 					return;
 				}
+			}
+
+			// Some terminals emit ESC b / ESC f for word navigation (Option+Arrow fallbacks).
+			if (sequence === '\u001bb') {
+				moveWordLeft();
+				return;
+			}
+			if (sequence === '\u001bf') {
+				moveWordRight();
+				return;
 			}
 		};
 
