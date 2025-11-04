@@ -412,43 +412,67 @@ describe.sequential('esbuild integration', () => {
 	});
 
 	const createRunnerSource = (entryType: 'virtual' | 'fs') => {
-		const virtualEntryBlock = String.raw`const wasmPath = '/esbuild/node_modules/esbuild-wasm/esbuild.wasm';
+	const virtualEntryBlock = String.raw`const wasmPath = '/esbuild/node_modules/esbuild-wasm/esbuild.wasm';
 	const wasmBytesCheck = fsSync.readFileSync(wasmPath, null);
 	console.error('[runner] wasm bytes length', wasmBytesCheck ? wasmBytesCheck.byteLength || wasmBytesCheck.length : 'null');
 	const entrySource = fsSync.readFileSync('/esbuild/src/index.js', 'utf8');
 
 	console.error('[runner] about to call esbuild.build()');
-	const result = await esbuild.build({
-		bundle: true,
-		format: 'esm',
-		write: false,
-		minifySyntax: true,
-		absWorkingDir: '/esbuild',
-		stdin: {
-			contents: entrySource,
-			resolveDir: '/esbuild/src',
-			sourcefile: 'virtual-entry.js',
-			loader: 'js',
-		},
-	});
-	console.error('[runner] esbuild.build() completed');`;
+	try {
+		const result = await esbuild.build({
+			bundle: true,
+			format: 'esm',
+			write: false,
+			minifySyntax: true,
+			absWorkingDir: '/esbuild',
+			stdin: {
+				contents: entrySource,
+				resolveDir: '/esbuild/src',
+				sourcefile: 'virtual-entry.js',
+				loader: 'js',
+			},
+		});
+		console.error('[runner] esbuild.build() completed');
+	} finally {
+		try {
+			await esbuild.stop();
+			console.error('[runner] esbuild.stop() completed');
+		} catch (stopError) {
+			console.error(
+				'[runner] esbuild.stop() failed',
+				stopError && stopError.message
+			);
+		}
+	}`;
 
-		const filesystemEntryBlock = String.raw`console.error('[runner] about to call esbuild.build() with fs entry');
+	const filesystemEntryBlock = String.raw`console.error('[runner] about to call esbuild.build() with fs entry');
 	const entrySource = fsSync.readFileSync('/esbuild/src/index.js', 'utf8');
-	const result = await esbuild.build({
-		bundle: true,
-		format: 'esm',
-		minifySyntax: true,
-		write: false,
-		absWorkingDir: '/esbuild/src',
-		stdin: {
-			contents: entrySource,
-			resolveDir: '/esbuild/src',
-			sourcefile: 'index.js',
-			loader: 'js',
-		},
-	});
-	console.error('[runner] esbuild.build() with fs entry completed');`;
+	try {
+		const result = await esbuild.build({
+			bundle: true,
+			format: 'esm',
+			minifySyntax: true,
+			write: false,
+			absWorkingDir: '/esbuild/src',
+			stdin: {
+				contents: entrySource,
+				resolveDir: '/esbuild/src',
+				sourcefile: 'index.js',
+				loader: 'js',
+			},
+		});
+		console.error('[runner] esbuild.build() with fs entry completed');
+	} finally {
+		try {
+			await esbuild.stop();
+			console.error('[runner] esbuild.stop() after fs entry completed');
+		} catch (stopError) {
+			console.error(
+				'[runner] esbuild.stop() after fs entry failed',
+				stopError && stopError.message
+			);
+		}
+	}`;
 		const buildBlock =
 			entryType === 'virtual' ? virtualEntryBlock : filesystemEntryBlock;
 
