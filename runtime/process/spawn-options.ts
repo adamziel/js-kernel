@@ -23,6 +23,7 @@ export interface NormalizedSpawnOptions {
 	ipcPort?: MessagePort
 	workerThreadId?: number
 	workerThreadName?: string
+	fsConnector?: 'auto' | 'shared' | 'wasmfs'
 }
 
 const cloneEnvRecord = (
@@ -144,6 +145,18 @@ export function normalizeSpawnOptions(
 			? workerThreadNameRaw
 			: undefined
 
+	const fsConnectorRaw = (value as { fsConnector?: unknown }).fsConnector
+	let fsConnector: 'auto' | 'shared' | 'wasmfs' | undefined
+	if (typeof fsConnectorRaw === 'string') {
+		if (
+			fsConnectorRaw === 'auto' ||
+			fsConnectorRaw === 'shared' ||
+			fsConnectorRaw === 'wasmfs'
+		) {
+			fsConnector = fsConnectorRaw
+		}
+	}
+
 	return {
 		argv,
 		env,
@@ -155,5 +168,6 @@ export function normalizeSpawnOptions(
 		ipcPort,
 		workerThreadId,
 		workerThreadName,
+		fsConnector,
 	}
 }

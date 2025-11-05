@@ -1,5 +1,10 @@
 import { Dirent, Stats } from './in-memory/nodes.ts'
 
+const S_IFMT = 0o170000
+const S_IFDIR = 0o040000
+const S_IFREG = 0o100000
+const S_IFLNK = 0o120000
+
 export type SerializedFsValue =
 	| { type: 'undefined' }
 	| { type: 'null' }
@@ -36,6 +41,16 @@ export interface SerializedFsResponse {
 	ok: boolean
 	value?: SerializedFsValue
 	error?: SerializedFsError
+}
+
+interface StatsLikeShape {
+	type?: string
+	mode: number
+	size: number
+	atimeMs: number
+	mtimeMs: number
+	ctimeMs: number
+	birthtimeMs: number
 }
 
 const textEncoder = new TextEncoder()
@@ -171,6 +186,28 @@ function serializeFsValue(
 		}
 	}
 
+	const isStatsLike = (entry: unknown): entry is StatsLikeShape => {
+		if (!entry || typeof entry !== 'object') {
+			return false
+		}
+		const candidate = entry as Record<string, unknown>
+		return (
+			typeof candidate.mode === 'number' &&
+			typeof candidate.size === 'number' &&
+			typeof candidate.atimeMs === 'number' &&
+			typeof candidate.mtimeMs === 'number' &&
+			typeof candidate.ctimeMs === 'number' &&
+			typeof candidate.birthtimeMs === 'number'
+		)
+	}
+
+	if (valueType === 'object' && isStatsLike(value)) {
+		return {
+			type: 'stats',
+			value: serializeStatsLike(value as StatsLikeShape),
+		}
+	}
+
 	if (valueType === 'object') {
 		if ((value as object).constructor !== Object) {
 			throw new TypeError(
@@ -205,6 +242,37 @@ const serializeStats = (stats: Stats): SerializedStatsShape => ({
 	ctimeMs: stats.ctimeMs,
 	birthtimeMs: stats.birthtimeMs,
 })
+
+function serializeStatsLike(
+	stats: StatsLikeShape
+): SerializedStatsShape {
+	return {
+		type: inferStatType(stats),
+		mode: stats.mode,
+		size: stats.size,
+		atimeMs: stats.atimeMs,
+		mtimeMs: stats.mtimeMs,
+		ctimeMs: stats.ctimeMs,
+		birthtimeMs: stats.birthtimeMs,
+	}
+}
+
+function inferStatType(stats: StatsLikeShape): string {
+	if (typeof stats.type === 'string' && stats.type.length > 0) {
+		return stats.type
+	}
+	const mode = stats.mode & S_IFMT
+	if (mode === S_IFDIR) {
+		return 'dir'
+	}
+	if (mode === S_IFLNK) {
+		return 'symlink'
+	}
+	if (mode === S_IFREG) {
+		return 'file'
+	}
+	return 'file'
+}
 
 export const deserializeFsResponse = (
 	response: SerializedFsResponse

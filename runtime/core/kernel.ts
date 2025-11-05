@@ -42,6 +42,9 @@ const wasmFsHostConnector: KernelFsClient = await createWasmFsKernelConnector();
 const wasmFsHostSync = wasmFsHostConnector.sync as Record<string, unknown>;
 const wasmFsHostAsync = wasmFsHostConnector.async as Record<string, unknown>;
 
+type FsConnectorPreference = 'auto' | 'shared' | 'wasmfs';
+type FsConnectorType = 'shared' | 'wasmfs';
+
 export type { StdioMode, SpawnStdioOptions } from '../process/spawn-options.ts';
 export type { SpawnSyncOutcome } from '../process/spawn-sync/client.ts';
 export type { KernelStdioChunk } from '../ipc/message-port.ts';
@@ -58,6 +61,7 @@ export interface SpawnOptions {
 	workerThreadName?: string;
 	timeout?: number;
 	input?: unknown;
+	fsConnector?: FsConnectorPreference;
 }
 
 export const enum ExitCode {
@@ -80,6 +84,7 @@ interface PreparedSpawnResources {
 	programPath: string;
 	programSource: string;
 	stdio: PreparedStdioResource[];
+	fsType: FsConnectorType;
 	control: {
 		kernelPort: MessagePort;
 		processPort: MessagePort;
@@ -106,6 +111,7 @@ interface KernelProcessRecord {
 	fsPort: MessagePort;
 	spawnSyncPort: MessagePort;
 	messagePort?: MessagePort | null;
+	fsType?: FsConnectorType;
 	threadId?: number;
 	threadName?: string;
 	children: Set<number>;
@@ -168,10 +174,18 @@ export class Kernel extends InMemoryFileSystem {
 	private readonly hostSpawnSyncClient: SpawnSyncClient | null;
 	private readonly hostSpawnSyncCleanup: (() => void) | null;
 	private readonly atomicsWaitAllowed: boolean;
+	private fsConnectorPreference: FsConnectorPreference = 'shared';
+	private wasmFsOverridesInstalled = false;
 
 	constructor() {
 		super();
-		this.installWasmFsOverrides();
+		this.atomicsWaitAllowed = this.detectAtomicsWaitAllowed();
+		const initialFsType = this.resolveFsConnectorType(
+			this.fsConnectorPreference
+		);
+		if (initialFsType === 'wasmfs') {
+			this.installWasmFsOverrides();
+		}
 
 		const hostControlChannel = new MessageChannel();
 		const hostFsChannel = new MessageChannel();
@@ -199,7 +213,6 @@ export class Kernel extends InMemoryFileSystem {
 		hostFsChannel.port1.start?.();
 		hostSpawnSyncChannel.port1.start?.();
 
-		this.atomicsWaitAllowed = this.detectAtomicsWaitAllowed();
 		if (this.atomicsWaitAllowed) {
 			this.hostSpawnSyncCleanup = this.installProcessSpawnSync(
 				this.hostRecord
@@ -215,6 +228,9 @@ export class Kernel extends InMemoryFileSystem {
 	}
 
 	private installWasmFsOverrides(): void {
+		if (this.wasmFsOverridesInstalled) {
+			return;
+		}
 		const syncTarget = wasmFsHostSync as Record<string, unknown>;
 		const asyncTarget = wasmFsHostAsync as Record<string, unknown>;
 
@@ -226,10 +242,7 @@ export class Kernel extends InMemoryFileSystem {
 				return undefined;
 			}
 			return (...args: unknown[]) =>
-				(fn as (...fnArgs: unknown[]) => unknown).apply(
-					context,
-					args
-				);
+				(fn as (...fnArgs: unknown[]) => unknown).apply(context, args);
 		};
 
 		for (const [name, value] of Object.entries(syncTarget)) {
@@ -279,6 +292,8 @@ export class Kernel extends InMemoryFileSystem {
 				writable: true,
 			});
 		}
+
+		this.wasmFsOverridesInstalled = true;
 	}
 
 	setEnv(key: string, value: string) {
@@ -287,6 +302,50 @@ export class Kernel extends InMemoryFileSystem {
 
 	getEnv(key: string) {
 		return this.env[key] || '';
+	}
+
+	private resolveFsConnectorType(
+		requested?: FsConnectorPreference
+	): FsConnectorType {
+		const preference = requested ?? this.fsConnectorPreference ?? 'auto';
+		const sharedAvailable =
+			this.atomicsWaitAllowed && typeof SharedArrayBuffer !== 'undefined';
+
+		if (preference === 'shared') {
+			if (!sharedAvailable) {
+				throw new Error(
+					'Shared filesystem connector requested, but SharedArrayBuffer is unavailable'
+				);
+			}
+			return 'shared';
+		}
+
+		if (preference === 'wasmfs') {
+			return 'wasmfs';
+		}
+
+		return sharedAvailable ? 'shared' : 'wasmfs';
+	}
+
+	setFsConnectorPreference(preference: FsConnectorPreference) {
+		if (
+			preference !== 'auto' &&
+			preference !== 'shared' &&
+			preference !== 'wasmfs'
+		) {
+			throw new Error(
+				`Invalid filesystem connector preference: ${preference}`
+			);
+		}
+		this.fsConnectorPreference = preference;
+		const resolved = this.resolveFsConnectorType(preference);
+		if (resolved === 'wasmfs') {
+			this.installWasmFsOverrides();
+		}
+	}
+
+	getFsConnectorPreference(): FsConnectorPreference {
+		return this.fsConnectorPreference;
 	}
 
 	private loadProgram(command: string, cwd: string) {
@@ -669,6 +728,10 @@ export class Kernel extends InMemoryFileSystem {
 		parentPid: number | null
 	): PreparedSpawnResources {
 		const pid = this.pidCounter++;
+		const requestedFsConnector = (
+			options as { fsConnector?: FsConnectorPreference }
+		).fsConnector;
+		const fsType = this.resolveFsConnectorType(requestedFsConnector);
 		const stdioModes: [StdioMode, StdioMode, StdioMode] = [
 			options.stdio?.stdin ?? 'pipe', // Default stdin to 'pipe' for IPC
 			options.stdio?.stdout ?? 'inherit',
@@ -713,6 +776,7 @@ export class Kernel extends InMemoryFileSystem {
 			programPath: program.executablePath,
 			programSource: program.programSource,
 			stdio,
+			fsType,
 			control: {
 				kernelPort: controlChannel.port1,
 				processPort: controlChannel.port2,
@@ -891,6 +955,7 @@ export class Kernel extends InMemoryFileSystem {
 			fsPort: resources.fs.kernelPort,
 			spawnSyncPort: resources.spawnSync.kernelPort,
 			messagePort: resources.message?.parentPort ?? null,
+			fsType: resources.fsType,
 			threadId,
 			threadName,
 			children: new Set<number>(),
@@ -956,6 +1021,7 @@ export class Kernel extends InMemoryFileSystem {
 				})),
 				programPath: resources.programPath,
 				programSource: resources.programSource,
+				fsType: resources.fsType,
 				controlPort: resources.control.processPort,
 				fsPort: resources.fs.processPort,
 				spawnSyncPort: resources.spawnSync.processPort,
@@ -1352,6 +1418,7 @@ export class Kernel extends InMemoryFileSystem {
 			hostType: 'process',
 			hostPid: parentRecord.pid,
 			exitCode: null,
+			fsType: resources.fsType,
 			controlCleanup: () => undefined,
 			fsCleanup: () => undefined,
 			spawnSyncCleanup: () => undefined,
@@ -1526,6 +1593,7 @@ export class Kernel extends InMemoryFileSystem {
 				})),
 				programPath: resources.programPath,
 				programSource: resources.programSource,
+				fsType: resources.fsType,
 				controlPort: resources.control.processPort,
 				fsPort: resources.fs.processPort,
 				spawnSyncPort: resources.spawnSync.processPort,
@@ -1710,7 +1778,12 @@ export class Kernel extends InMemoryFileSystem {
 
 		const options = normalizeSpawnOptions(rawOptions);
 		if (!options) {
-			this.sendSpawnFailure(parentRecord.controlPort, requestId);
+			this.sendSpawnFailure(
+				parentRecord.controlPort,
+				requestId,
+				ExitCode.ERROR,
+				'Invalid spawn options received from child process'
+			);
 			return;
 		}
 
@@ -1730,16 +1803,33 @@ export class Kernel extends InMemoryFileSystem {
 			this.sendSpawnFailure(
 				parentRecord.controlPort,
 				requestId,
-				ExitCode.NOT_FOUND
+				ExitCode.NOT_FOUND,
+				`Command not found: ${options.argv[0]}`
 			);
 			return;
 		}
 
-		const resources = this.prepareSpawnResources(
-			options,
-			program,
-			parentRecord.pid
-		);
+		let resources: PreparedSpawnResources;
+		try {
+			resources = this.prepareSpawnResources(
+				options,
+				program,
+				parentRecord.pid
+			);
+		} catch (error) {
+			const message =
+				error instanceof Error
+					? error.message
+					: String(error ?? 'Failed to prepare spawn resources');
+			console.error('[kernel] Failed to prepare spawn resources:', error);
+			this.sendSpawnFailure(
+				parentRecord.controlPort,
+				requestId,
+				ExitCode.ERROR,
+				message
+			);
+			return;
+		}
 
 		// Track stdin ports for relaying data from parent to child
 		let stdinHostPort: MessagePort | null = null;
@@ -1753,6 +1843,7 @@ export class Kernel extends InMemoryFileSystem {
 			fsPort: resources.fs.kernelPort,
 			spawnSyncPort: resources.spawnSync.kernelPort,
 			messagePort: null,
+			fsType: resources.fsType,
 			threadId: options.workerThreadId,
 			threadName: options.workerThreadName,
 			children: new Set<number>(),
@@ -1857,6 +1948,7 @@ export class Kernel extends InMemoryFileSystem {
 				pid: resources.pid,
 				programPath: resources.programPath,
 				programSource: resources.programSource,
+				fsType: resources.fsType,
 				threadId: options.workerThreadId ?? resources.pid,
 				threadName:
 					options.workerThreadName ??
@@ -1896,13 +1988,20 @@ export class Kernel extends InMemoryFileSystem {
 	private sendSpawnFailure(
 		controlPort: MessagePort,
 		requestId: number,
-		code: ExitCode = ExitCode.ERROR
+		code: ExitCode = ExitCode.ERROR,
+		message?: string
 	) {
 		try {
+			const errorPayload: { code: ExitCode; message?: string } = {
+				code,
+			};
+			if (typeof message === 'string' && message.length > 0) {
+				errorPayload.message = message;
+			}
 			controlPort.postMessage({
 				type: CONTROL_MESSAGE_SPAWN_RESULT,
 				requestId,
-				error: { code },
+				error: errorPayload,
 			});
 		} catch {
 			// Ignore failures caused by a closed port.

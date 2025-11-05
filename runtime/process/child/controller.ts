@@ -24,10 +24,45 @@ import {
 import { joinPaths } from '../../util/paths.ts';
 import type { KernelFsClient } from './fs-client.ts';
 import { createWasmFsKernelConnector } from './wasmfs-connector.ts';
+import { createKernelFsClient } from './fs-client.ts';
 import {
 	createSpawnSyncClient,
 	type SpawnSyncClient,
 } from '../spawn-sync/client.ts';
+
+type FsConnectorType = 'shared' | 'wasmfs';
+
+const createFsClient = async (
+	options: ChildProcessInitOptions,
+	stdio?: ChildStdioStreams
+): Promise<KernelFsClient> => {
+	const requested: FsConnectorType =
+		options.fsType === 'shared' || options.fsType === 'wasmfs'
+			? options.fsType
+			: 'shared';
+
+	if (requested === 'shared') {
+		if (typeof SharedArrayBuffer === 'undefined') {
+			throw new Error(
+				'Shared filesystem connector requested, but SharedArrayBuffer is unavailable'
+			);
+		} else if (options.fsPort) {
+			try {
+				return createKernelFsClient(options.fsPort, stdio);
+			} catch (error) {
+				throw new Error(
+					`Failed to initialize shared-buffer filesystem connector: ${error instanceof Error ? error.message : String(error)}`
+				);
+			}
+		} else {
+			throw new Error(
+				'Shared filesystem connector requested, but no fsPort was provided'
+			);
+		}
+	}
+
+	return createWasmFsKernelConnector(stdio);
+};
 
 // Error handling
 // Preserve the original console for easier debugging and error logging.
@@ -96,6 +131,7 @@ interface ChildProcessInitOptions {
 	messagePort: MessagePort | null;
 	threadId?: number;
 	threadName?: string;
+	fsType?: FsConnectorType;
 }
 
 interface ProcessControllerSpawnOptions {
@@ -113,6 +149,7 @@ interface ProcessControllerSpawnOptions {
 	ipcPort?: MessagePort;
 	workerThreadId?: number;
 	workerThreadName?: string;
+	fsConnector?: 'auto' | 'shared' | 'wasmfs';
 }
 
 interface SpawnPlanMessage {
@@ -134,6 +171,7 @@ interface SpawnPlanMessage {
 	};
 	threadId?: number;
 	threadName?: string;
+	fsType: FsConnectorType;
 }
 
 type ExitListener = (code: number) => void;
@@ -580,10 +618,15 @@ function handleControlResponse(event: MessageEvent) {
 		}
 		pendingSpawnRequests.delete(requestId);
 
-		if (payload.error && typeof payload.error.code === 'number') {
-			pending.reject(
-				new Error(`Spawn failed with exit code ${payload.error.code}`)
-			);
+		if (payload.error) {
+			const message =
+				typeof payload.error.message === 'string' &&
+				payload.error.message.length > 0
+					? payload.error.message
+					: typeof payload.error.code === 'number'
+					? `Spawn failed with exit code ${payload.error.code}`
+					: 'Spawn failed';
+			pending.reject(new Error(message));
 			return;
 		}
 
@@ -661,8 +704,7 @@ export async function initChildProcess(options: ChildProcessInitOptions) {
 	controlPort.start();
 
 	disposeFsClient();
-	// Use WASMFS connector for local filesystem operations without message passing
-	fsClient = await createWasmFsKernelConnector(stdioStreams);
+	fsClient = await createFsClient(clonedOptions, stdioStreams);
 	const processFs = createProcessControllerFs(
 		fsClient!,
 		() => childProcessState?.cwd ?? clonedOptions.cwd
@@ -957,23 +999,23 @@ const startProgram = async (options: ChildProcessInitOptions) => {
 			`const module = globalThis[${JSON.stringify(moduleKey)}];` +
 			programBody;
 
-			// // Write program body to OPFS for better debugging and source maps
-			// try {
-			// 	const opfsRoot = await navigator.storage.getDirectory();
-			// 	const programFileName = `${moduleKey}.js`;
-			// 	const fileHandle = await opfsRoot.getFileHandle(programFileName, {
-			// 		create: true,
-			// 	});
-			// 	const writable = await fileHandle.createWritable();
-			// 	await writable.write(programBody);
-			// 	await writable.close();
-			// } catch (opfsError) {
-			// 	// OPFS write failed, continue with data URL approach
-			// 	console.warn(
-			// 		'[controller] Failed to write program to OPFS:',
-			// 		opfsError
-			// 	);
-			// }
+		// // Write program body to OPFS for better debugging and source maps
+		// try {
+		// 	const opfsRoot = await navigator.storage.getDirectory();
+		// 	const programFileName = `${moduleKey}.js`;
+		// 	const fileHandle = await opfsRoot.getFileHandle(programFileName, {
+		// 		create: true,
+		// 	});
+		// 	const writable = await fileHandle.createWritable();
+		// 	await writable.write(programBody);
+		// 	await writable.close();
+		// } catch (opfsError) {
+		// 	// OPFS write failed, continue with data URL approach
+		// 	console.warn(
+		// 		'[controller] Failed to write program to OPFS:',
+		// 		opfsError
+		// 	);
+		// }
 		const dataUrl =
 			'data:text/javascript;charset=utf-8,' +
 			encodeURIComponent(programBody);
@@ -1324,6 +1366,7 @@ function createChildProcessHandle(
 			messagePort: plan.messagePort?.workerPort ?? null,
 			threadId,
 			threadName,
+			fsType: plan.fsType,
 		},
 	};
 
