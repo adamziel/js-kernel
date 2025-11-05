@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WASMFS OPFS Test</title>
+    <style>
+        body {
+            font-family: monospace;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        #output {
+            background: #f4f4f4;
+            padding: 15px;
+            border-radius: 5px;
+            white-space: pre-wrap;
+            max-height: 600px;
+            overflow-y: auto;
+        }
+        button {
+            margin: 5px;
+            padding: 10px 20px;
+            cursor: pointer;
+        }
+        .error {
+            color: red;
+        }
+        .success {
+            color: green;
+        }
+    </style>
+</head>
+<body>
+    <h1>WASMFS OPFS Test</h1>
+    <p>This page tests the WASMFS module with OPFS backend using SharedArrayBuffer.</p>
+
+    <div>
+        <button onclick="initFS()">Initialize FS</button>
+        <button onclick="runTest()">Run Test</button>
+        <button onclick="clearOutput()">Clear Output</button>
+    </div>
+
+    <h2>Output:</h2>
+    <div id="output"></div>
+
+    <script type="module">
+        let Module = null;
+        let initialized = false;
+
+        function log(msg, className = '') {
+            const output = document.getElementById('output');
+            const line = document.createElement('div');
+            line.textContent = msg;
+            if (className) line.className = className;
+            output.appendChild(line);
+            output.scrollTop = output.scrollHeight;
+        }
+
+        window.clearOutput = function() {
+            document.getElementById('output').innerHTML = '';
+        }
+
+        window.initFS = async function() {
+            if (initialized) {
+                log('Already initialized', 'error');
+                return;
+            }
+
+            try {
+                log('Loading WASMFS module...');
+
+                // Import the module
+                const createWasmFSModule = (await import('./dist/wasmfs-fs.js')).default;
+
+                log('Creating module instance...');
+                Module = await createWasmFSModule();
+
+                log('Module loaded successfully', 'success');
+
+                // Initialize the filesystem
+                log('Initializing OPFS backend...');
+                const result = Module._fs_init();
+
+                if (result === 0) {
+                    log('Filesystem initialized successfully!', 'success');
+                    initialized = true;
+                } else {
+                    log('Failed to initialize filesystem!', 'error');
+                }
+            } catch (err) {
+                log('Error: ' + err.message, 'error');
+                console.error(err);
+            }
+        }
+
+        window.runTest = function() {
+            if (!initialized) {
+                log('Please initialize filesystem first!', 'error');
+                return;
+            }
+
+            try {
+                log('Running filesystem test...');
+                const result = Module._fs_test();
+
+                if (result === 0) {
+                    log('Test completed successfully!', 'success');
+                } else {
+                    const errno = Module._fs_get_errno();
+                    log(`Test failed with errno: ${errno}`, 'error');
+                }
+            } catch (err) {
+                log('Error: ' + err.message, 'error');
+                console.error(err);
+            }
+        }
+
+        // Check for required features
+        log('Checking browser capabilities...');
+
+        if (typeof SharedArrayBuffer === 'undefined') {
+            log('WARNING: SharedArrayBuffer is not available!', 'error');
+            log('Make sure the page is served with proper COOP/COEP headers:', 'error');
+            log('  Cross-Origin-Embedder-Policy: require-corp', 'error');
+            log('  Cross-Origin-Opener-Policy: same-origin', 'error');
+        } else {
+            log('SharedArrayBuffer is available', 'success');
+        }
+
+        if (!('storage' in navigator && 'getDirectory' in navigator.storage)) {
+            log('WARNING: OPFS is not available in this browser!', 'error');
+        } else {
+            log('OPFS is available', 'success');
+        }
+    </script>
+</body>
+</html>
