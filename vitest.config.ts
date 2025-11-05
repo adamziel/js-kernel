@@ -16,11 +16,21 @@ export default defineConfig({
 		},
 		include: ['**/*.spec.ts', '../app/**/*.spec.ts'],
 		exclude: ['node_modules', 'dist'],
+		testTimeout: 30000, // Increase timeout for WASM loading
 	},
 	server: {
 		headers: {
 			'Cross-Origin-Opener-Policy': 'same-origin',
 			'Cross-Origin-Embedder-Policy': 'require-corp',
 		},
+		fs: {
+			allow: ['..'], // Allow serving files from parent directory
+		},
+	},
+	optimizeDeps: {
+		exclude: ['../wasmfs-module/dist/wasmfs-fs.js'],
+	},
+	worker: {
+		format: 'es',
 	},
 });
