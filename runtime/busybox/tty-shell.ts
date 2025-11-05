@@ -13,13 +13,7 @@ const createProgramSource = (): string => {
 		parseModuleUrl: string;
 	}): Promise<void> {
 		const [
-			{
-				errorToString,
-				exitSafely,
-				getArgv,
-				writeStderr,
-				writeStdout,
-			},
+			{ errorToString, exitSafely, getArgv, writeStderr, writeStdout },
 			{ joinPaths, normalizePath },
 			{ runShellScript },
 			{ parseShellCode },
@@ -537,12 +531,18 @@ const createProgramSource = (): string => {
 
 		const forwardStream = (
 			readable: {
-				on?: (event: string, listener: (...args: any[]) => void) => void;
+				on?: (
+					event: string,
+					listener: (...args: any[]) => void
+				) => void;
 				once?: (
 					event: string,
 					listener: (...args: any[]) => void
 				) => void;
-				off?: (event: string, listener: (...args: any[]) => void) => void;
+				off?: (
+					event: string,
+					listener: (...args: any[]) => void
+				) => void;
 			} | null,
 			writable: { write?: (chunk: unknown) => void } | null
 		): Promise<void> => {
@@ -553,6 +553,11 @@ const createProgramSource = (): string => {
 				return Promise.resolve();
 			}
 			return new Promise((resolve) => {
+				if (typeof readable.on !== 'function') {
+					resolve();
+					return;
+				}
+
 				const handleData = (chunk: unknown) => {
 					try {
 						writable.write?.(chunk);
@@ -560,28 +565,30 @@ const createProgramSource = (): string => {
 						// ignore write failures
 					}
 				};
+
+				let settled = false;
 				const cleanup = () => {
 					readable.off?.('data', handleData as any);
 					readable.off?.('end', handleEnd as any);
 					readable.off?.('close', handleClose as any);
 				};
-				const handleEnd = () => {
+				const finish = () => {
+					if (settled) {
+						return;
+					}
+					settled = true;
 					cleanup();
 					resolve();
+				};
+				const handleEnd = () => {
+					finish();
 				};
 				const handleClose = () => {
-					cleanup();
-					resolve();
+					finish();
 				};
 				readable.on?.('data', handleData as any);
-				(readable.once ?? readable.on)?.(
-					'end',
-					handleEnd as (...args: any[]) => void
-				);
-				(readable.once ?? readable.on)?.(
-					'close',
-					handleClose as (...args: any[]) => void
-				);
+				readable.on?.('end', handleEnd as any);
+				readable.on?.('close', handleClose as any);
 			});
 		};
 
@@ -781,8 +788,7 @@ const createProgramSource = (): string => {
 				const [, , modifier, final] = controlMatch;
 				const modifierValue = Number(modifier);
 				const hasModifier = Number.isFinite(modifierValue);
-				const hasCtrl =
-					hasModifier && ((modifierValue - 1) & 4) !== 0;
+				const hasCtrl = hasModifier && ((modifierValue - 1) & 4) !== 0;
 				const hasAlt = hasModifier
 					? ((modifierValue - 1) & 2) !== 0 ||
 					  modifierValue === 9 ||

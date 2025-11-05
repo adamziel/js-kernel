@@ -1,17 +1,25 @@
 declare const processController: any;
 
 const utilsModuleUrl = new URL('./lib/utils.ts', import.meta.url).href;
+const pathsModuleUrl = new URL('../util/paths.ts', import.meta.url).href;
 
 const createProgramSource = (): string => {
 	const program = async function main(urls: {
 		utilsModuleUrl: string;
+		pathsModuleUrl: string;
 	}): Promise<void> {
 		const { errorToString, exitSafely, getArgv, writeStdout, writeStderr } =
 			await import(/* @vite-ignore */ urls.utilsModuleUrl);
+		const { resolvePath } = await import(
+			/* @vite-ignore */ urls.pathsModuleUrl
+		);
 
 		try {
 			const argv = getArgv();
-			const targets = argv.length ? argv : ['.'];
+			const cwd = processController.cwd();
+			const targets = (argv.length ? argv : ['.']).map((path) => {
+				return resolvePath(path, cwd);
+			});
 			const fs = processController.fsSync;
 			let hadError = false;
 
@@ -62,6 +70,7 @@ const createProgramSource = (): string => {
 
 	return `(${program.toString()})(${JSON.stringify({
 		utilsModuleUrl,
+		pathsModuleUrl,
 	})});`;
 };
 

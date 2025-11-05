@@ -72,7 +72,7 @@ async function unzipKernelFile(
 	await zipReader.close();
 }
 
-export async function testEsbuildLikeInTests() {
+export async function prepareEsbuildLikeInTests() {
 	const response = await fetch(esBundlerZipUrl);
 	if (!response.ok) {
 		throw new Error('Failed to fetch es-bundler.zip');
@@ -120,7 +120,14 @@ export async function testEsbuildLikeInTests() {
 	if (kernel.existsSync('/tmp/esbuild-bundle-fs.txt')) {
 		kernel.unlinkSync('/tmp/esbuild-bundle-fs.txt');
 	}
+}
 
+export async function testEsbuildLikeInTests() {
+	await prepareEsbuildLikeInTests();
+
+	/*
+	cd /jsx/src; node /esbuild/bundle.js /jsx/src /tmp/esbuild-bundle-fs.txt
+	*/
 	const subprocess = kernel.spawn({
 		argv: [
 			'node',
@@ -183,6 +190,7 @@ export async function testEsbuildLikeInTests() {
 }
 
 globalThis.testEsbuildLikeInTests = testEsbuildLikeInTests;
+globalThis.prepareEsbuildLikeInTests = prepareEsbuildLikeInTests;
 
 type RunProgramOptions = {
 	requestId?: number | string;
@@ -1315,6 +1323,7 @@ class TestCases {
 try {
 	// await TestCases.testWpScriptsLocal();
 	// await TestCases.testEsbuild();
+	await prepareEsbuildLikeInTests();
 	// await testEsbuildLikeInTests();
 } catch (error) {
 	console.error('Error', error);
