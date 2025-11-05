@@ -39,20 +39,23 @@ const createProgramSource = (): string => {
 							writeStdout(`${target}:`);
 						}
 						const names = entries
-							.map((entry) => {
-								const stats = fs.statSync(
-									`${target}/${entry}`
-								) as unknown;
-								return stats?.isDirectory()
-									? `${entry}/`
-									: String(entry);
-							})
-							.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
-							.join(' ');
-						writeStdout(names);
+							.map((entry) => String(entry))
+							.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+						for (const name of names) {
+							writeStdout(name, { appendNewline: false });
+							if (
+								fs.statSync(`${target}/${name}`).isDirectory()
+							) {
+								writeStdout('/', { appendNewline: false });
+							}
+							if (names.length > 1 && index < names.length - 1) {
+								writeStdout(' ', { appendNewline: false });
+							}
+						}
 						if (targets.length > 1 && index < targets.length - 1) {
 							writeStdout('\n');
 						}
+						writeStdout('\n');
 					} else {
 						writeStdout(target + '\n');
 					}

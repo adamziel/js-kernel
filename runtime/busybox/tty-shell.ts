@@ -687,6 +687,9 @@ const createProgramSource = (): string => {
 				try {
 					await runCommandFromLine(line);
 				} finally {
+					// Ensure we're on a new line before rendering prompt
+					// This prevents render() from erasing output that doesn't end with \n
+					processController.stdout?.write('\n');
 					render();
 				}
 			})();
