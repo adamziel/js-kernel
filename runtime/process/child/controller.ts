@@ -22,7 +22,8 @@ import {
 	type StdioMode,
 } from '../spawn-options.ts';
 import { joinPaths } from '../../util/paths.ts';
-import { createKernelFsClient, type KernelFsClient } from './fs-client.ts';
+import type { KernelFsClient } from './fs-client.ts';
+import { createWasmFsKernelConnector } from './wasmfs-connector.ts';
 import {
 	createSpawnSyncClient,
 	type SpawnSyncClient,
@@ -637,7 +638,7 @@ function handleControlResponse(event: MessageEvent) {
 	}
 }
 
-export function initChildProcess(options: ChildProcessInitOptions) {
+export async function initChildProcess(options: ChildProcessInitOptions) {
 	const clonedOptions: ChildProcessInitOptions = {
 		...options,
 		argv: [...options.argv],
@@ -660,7 +661,8 @@ export function initChildProcess(options: ChildProcessInitOptions) {
 	controlPort.start();
 
 	disposeFsClient();
-	fsClient = createKernelFsClient(options.fsPort, stdioStreams);
+	// Use WASMFS connector for local filesystem operations without message passing
+	fsClient = await createWasmFsKernelConnector(stdioStreams);
 	const processFs = createProcessControllerFs(
 		fsClient!,
 		() => childProcessState?.cwd ?? clonedOptions.cwd
@@ -849,7 +851,7 @@ export function redirectConsoleToStdio(isDebug: boolean) {
 
 const KERNEL_INIT_MESSAGE = '__kernel_internal__/initChildProcess';
 
-const handleKernelInit = (event: MessageEvent) => {
+const handleKernelInit = async (event: MessageEvent) => {
 	if (bootstrapComplete) {
 		return;
 	}
@@ -862,7 +864,7 @@ const handleKernelInit = (event: MessageEvent) => {
 
 	const payload = event.data.payload as ChildProcessInitOptions;
 	// Log stdio descriptors received by worker (use both console.log and originalConsole)
-	initChildProcess(payload);
+	await initChildProcess(payload);
 	redirectConsoleToStdio(payload.debug);
 
 	// Log stdio configuration AFTER console is redirected so we can see it
@@ -955,23 +957,23 @@ const startProgram = async (options: ChildProcessInitOptions) => {
 			`const module = globalThis[${JSON.stringify(moduleKey)}];` +
 			programBody;
 
-		// Write program body to OPFS for better debugging and source maps
-		try {
-			const opfsRoot = await navigator.storage.getDirectory();
-			const programFileName = `${moduleKey}.js`;
-			const fileHandle = await opfsRoot.getFileHandle(programFileName, {
-				create: true,
-			});
-			const writable = await fileHandle.createWritable();
-			await writable.write(programBody);
-			await writable.close();
-		} catch (opfsError) {
-			// OPFS write failed, continue with data URL approach
-			console.warn(
-				'[controller] Failed to write program to OPFS:',
-				opfsError
-			);
-		}
+			// // Write program body to OPFS for better debugging and source maps
+			// try {
+			// 	const opfsRoot = await navigator.storage.getDirectory();
+			// 	const programFileName = `${moduleKey}.js`;
+			// 	const fileHandle = await opfsRoot.getFileHandle(programFileName, {
+			// 		create: true,
+			// 	});
+			// 	const writable = await fileHandle.createWritable();
+			// 	await writable.write(programBody);
+			// 	await writable.close();
+			// } catch (opfsError) {
+			// 	// OPFS write failed, continue with data URL approach
+			// 	console.warn(
+			// 		'[controller] Failed to write program to OPFS:',
+			// 		opfsError
+			// 	);
+			// }
 		const dataUrl =
 			'data:text/javascript;charset=utf-8,' +
 			encodeURIComponent(programBody);

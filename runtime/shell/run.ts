@@ -47,6 +47,11 @@ interface ProcessControllerLike {
 		writeFileSync(path: string, data: Uint8Array | string): void;
 		appendFileSync(path: string, data: Uint8Array | string): void;
 		existsSync(path: string): boolean;
+		readdirSync(path: string): string[];
+		statSync(path: string): {
+			isDirectory(): boolean;
+			isFile(): boolean;
+		};
 	};
 }
 
@@ -108,15 +113,226 @@ const pump = (
 		readable.once('close' as any, onClose as any);
 	});
 
+const hasGlobChar = (value: string): boolean => /[*?]/.test(value);
+
+const escapeRegex = (segment: string): string =>
+	segment.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+
+const segmentToRegex = (segment: string): RegExp => {
+	let pattern = '^';
+	for (let index = 0; index < segment.length; index += 1) {
+		const char = segment[index];
+		if (char === '*') {
+			pattern += '.*';
+		} else if (char === '?') {
+			pattern += '.';
+		} else {
+			pattern += escapeRegex(char);
+		}
+	}
+	pattern += '$';
+	return new RegExp(pattern);
+};
+
+const joinDisplayPath = (parts: string[], isAbsolute: boolean): string => {
+	if (isAbsolute) {
+		return `/${parts.join('/')}`.replace(/\/{2,}/g, '/');
+	}
+	return parts.join('/');
+};
+
+const expandGlobPattern = (
+	pc: ProcessControllerLike,
+	pattern: string,
+	cwd: string
+): string[] => {
+	if (!pattern) {
+		return [];
+	}
+
+	const isAbsolute = pattern.startsWith('/');
+	const baseDir = normalizePath(isAbsolute ? '/' : cwd || '/');
+
+	const rawSegments = pattern.split('/');
+	const segments =
+		rawSegments.length && rawSegments[0] === ''
+			? rawSegments.slice(1)
+			: rawSegments;
+	const requiresDirectory = pattern.endsWith('/');
+	const filteredSegments = segments.filter((segment) => segment.length > 0);
+
+	if (filteredSegments.length === 0) {
+		return [pattern];
+	}
+
+	const results: string[] = [];
+
+	const walk = (
+		currentAbs: string,
+		displayParts: string[],
+		index: number
+	) => {
+		if (index >= filteredSegments.length) {
+			const output = joinDisplayPath(displayParts, isAbsolute);
+			if (output.length > 0) {
+				results.push(output);
+			}
+			return;
+		}
+
+		const segment = filteredSegments[index];
+		const isLast = index === filteredSegments.length - 1;
+		const allowHidden = segment.startsWith('.');
+
+		if (!hasGlobChar(segment)) {
+			const nextAbs = normalizePath(
+				segment.startsWith('/')
+					? segment
+					: joinPaths(currentAbs || '/', segment)
+			);
+			let stats;
+			try {
+				stats = pc.fsSync.statSync(nextAbs);
+			} catch {
+				return;
+			}
+
+			if (isLast) {
+				if (!requiresDirectory || stats.isDirectory()) {
+					const nextDisplay = [...displayParts, segment].filter(
+						(part) => part.length > 0
+					);
+					let output = joinDisplayPath(nextDisplay, isAbsolute);
+					if (requiresDirectory && stats.isDirectory()) {
+						output = output.endsWith('/') ? output : `${output}/`;
+					}
+					if (output.length > 0) {
+						results.push(output);
+					}
+				}
+				return;
+			}
+
+			if (!stats.isDirectory()) {
+				return;
+			}
+
+			const nextDisplay = [...displayParts, segment].filter(
+				(part) => part.length > 0
+			);
+			walk(nextAbs, nextDisplay, index + 1);
+			return;
+		}
+
+		let entries: string[];
+		try {
+			entries = pc.fsSync.readdirSync(currentAbs || '/');
+		} catch {
+			return;
+		}
+
+		const matcher = segmentToRegex(segment);
+		const sortedEntries = [...entries].sort((a, b) =>
+			a.localeCompare(b)
+		);
+
+		for (const entry of sortedEntries) {
+			if (entry === '.' || entry === '..') {
+				continue;
+			}
+			if (!allowHidden && entry.startsWith('.')) {
+				continue;
+			}
+			if (!matcher.test(entry)) {
+				continue;
+			}
+			const nextAbs = normalizePath(
+				currentAbs === '/'
+					? `/${entry}`
+					: joinPaths(currentAbs || '/', entry)
+			);
+			let stats;
+			try {
+				stats = pc.fsSync.statSync(nextAbs);
+			} catch {
+				continue;
+			}
+
+			if (isLast) {
+				if (requiresDirectory && !stats.isDirectory()) {
+					continue;
+				}
+				const nextDisplay = [...displayParts, entry].filter(
+					(part) => part.length > 0
+				);
+				let output = joinDisplayPath(nextDisplay, isAbsolute);
+				if (requiresDirectory && stats.isDirectory()) {
+					output = output.endsWith('/') ? output : `${output}/`;
+				}
+				if (output.length > 0) {
+					results.push(output);
+				}
+				continue;
+			}
+
+			if (!stats.isDirectory()) {
+				continue;
+			}
+
+			const nextDisplay = [...displayParts, entry].filter(
+				(part) => part.length > 0
+			);
+			walk(nextAbs, nextDisplay, index + 1);
+		}
+	};
+
+	walk(baseDir, isAbsolute ? [] : [], 0);
+	return results.sort((a, b) => a.localeCompare(b));
+};
+
+const expandArgumentWithGlob = (
+	pc: ProcessControllerLike,
+	arg: string,
+	cwd: string
+): string[] => {
+	if (!hasGlobChar(arg)) {
+		return [arg];
+	}
+	const matches = expandGlobPattern(pc, arg, cwd);
+	return matches.length > 0 ? matches : [arg];
+};
+
+const expandArguments = (
+	pc: ProcessControllerLike,
+	args: string[],
+	cwd: string
+): string[] => {
+	const expanded: string[] = [];
+	for (const arg of args) {
+		if (typeof arg !== 'string') {
+			expanded.push(String(arg));
+			continue;
+		}
+		const parts = expandArgumentWithGlob(pc, arg, cwd);
+		expanded.push(...parts);
+	}
+	return expanded;
+};
+
 async function runCommand(
 	pc: ProcessControllerLike,
 	node: CommandNode | FunctionCallNode
 ): Promise<number> {
 	const isSimpleCommand = hasKind(node, 'Command');
 	const payload = isSimpleCommand ? node.Command : node.FunctionCall;
-	const argv = [payload.name, ...payload.args];
 	const env = pc.getAllEnv();
 	const cwd = pc.cwd();
+	const expandedArgs = expandArguments(
+		pc,
+		payload.args.map((arg) => String(arg)),
+		cwd
+	);
+	const argv = [payload.name, ...expandedArgs];
 
 	if (payload.name === 'cd' && typeof pc.chdir === 'function') {
 		const targetArg = payload.args[0];

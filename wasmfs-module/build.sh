@@ -32,11 +32,11 @@ emcc wasmfs-fs.c \
   -sEXPORT_ES6=1 \
   -sMODULARIZE=1 \
   -sEXPORT_NAME=createWasmFSModule \
-  -sEXPORTED_RUNTIME_METHODS='["FS","ERRNO_CODES","allocateUTF8","UTF8ToString","stringToUTF8","lengthBytesUTF8"]' \
+  -sEXPORTED_RUNTIME_METHODS='["FS","ERRNO_CODES","allocateUTF8","UTF8ToString","stringToUTF8","lengthBytesUTF8","HEAP8"]' \
   -sINITIAL_MEMORY=67108864 \
   -sSTACK_SIZE=5242880 \
   -sPTHREAD_POOL_SIZE=2 \
-  -sEXPORTED_FUNCTIONS='["_fs_init","_fs_open","_fs_close","_fs_read","_fs_write","_fs_lseek","_fs_fsync","_fs_fdatasync","_fs_fstat","_fs_stat","_fs_lstat","_fs_mkdir","_fs_rmdir","_fs_unlink","_fs_rename","_fs_chmod","_fs_fchmod","_fs_truncate","_fs_ftruncate","_fs_access","_fs_getcwd","_fs_chdir","_fs_symlink","_fs_readlink","_fs_get_errno","_fs_test","_malloc","_free"]' \
+  -sEXPORTED_FUNCTIONS='["_fs_init","_fs_open","_fs_close","_fs_read","_fs_write","_fs_lseek","_fs_fsync","_fs_fdatasync","_fs_fstat","_fs_stat","_fs_lstat","_fs_mkdir","_fs_rmdir","_fs_unlink","_fs_rename","_fs_chmod","_fs_fchmod","_fs_truncate","_fs_ftruncate","_fs_access","_fs_getcwd","_fs_chdir","_fs_symlink","_fs_readlink","_fs_opendir","_fs_readdir","_fs_closedir","_fs_get_errno","_fs_test","_malloc","_free"]' \
   -O2 \
   -g \
   -sASSERTIONS=1 \

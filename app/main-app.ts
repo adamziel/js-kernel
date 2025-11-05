@@ -10,36 +10,40 @@ import wasmExec from './tests/fixtures/esbuild-wasm/wasm_exec.js?raw';
 
 const kernel = new Kernel();
 globalThis.kernel = kernel;
-installBusybox(kernel);
-installCustomPrograms(kernel);
+try {
+	installBusybox(kernel);
+	installCustomPrograms(kernel);
 
-kernel.mkdirSync('/home/user/.npm/_cacache', { recursive: true });
-kernel.mkdirSync('/.npm', { recursive: true });
-kernel.mkdirSync('/bin', { recursive: true });
-kernel.mkdirSync('/tmp', { recursive: true });
-if (!kernel.existsSync('/bin/node')) {
-	kernel.writeFileSync('/bin/node', '', { mode: 0o755 });
+	kernel.mkdirSync('/home/user/.npm/_cacache', { recursive: true });
+	kernel.mkdirSync('/.npm', { recursive: true });
+	kernel.mkdirSync('/bin', { recursive: true });
+	kernel.mkdirSync('/tmp', { recursive: true });
+	if (!kernel.existsSync('/bin/node')) {
+		kernel.writeFileSync('/bin/node', '', { mode: 0o755 });
+	}
+	kernel.writeFileSync(
+		'/bin/package.json',
+		`{ "name": "my-package", "version": "1.0.0" }`,
+		{ mode: 0o755 }
+	);
+	kernel.mkdirSync('/node_modules/node-gyp/bin', { recursive: true });
+	kernel.writeFileSync('/node_modules/node-gyp/package.json', '{}', {
+		mode: 0o755,
+	});
+	kernel.writeFileSync('/node_modules/node-gyp/bin/node-gyp.js', '', {
+		mode: 0o755,
+	});
+
+	kernel.mkdirSync('/bin/node_modules/node-gyp/bin', { recursive: true });
+	kernel.writeFileSync('/bin/node_modules/node-gyp/package.json', '{}', {
+		mode: 0o755,
+	});
+	kernel.writeFileSync('/bin/node_modules/node-gyp/bin/node-gyp.js', '', {
+		mode: 0o755,
+	});
+} catch (error) {
+	console.error('Error', error);
 }
-kernel.writeFileSync(
-	'/bin/package.json',
-	`{ "name": "my-package", "version": "1.0.0" }`,
-	{ mode: 0o755 }
-);
-kernel.mkdirSync('/node_modules/node-gyp/bin', { recursive: true });
-kernel.writeFileSync('/node_modules/node-gyp/package.json', '{}', {
-	mode: 0o755,
-});
-kernel.writeFileSync('/node_modules/node-gyp/bin/node-gyp.js', '', {
-	mode: 0o755,
-});
-
-kernel.mkdirSync('/bin/node_modules/node-gyp/bin', { recursive: true });
-kernel.writeFileSync('/bin/node_modules/node-gyp/package.json', '{}', {
-	mode: 0o755,
-});
-kernel.writeFileSync('/bin/node_modules/node-gyp/bin/node-gyp.js', '', {
-	mode: 0o755,
-});
 
 // ------------------------------------------------------------
 
@@ -1323,7 +1327,7 @@ class TestCases {
 try {
 	// await TestCases.testWpScriptsLocal();
 	// await TestCases.testEsbuild();
-	await prepareEsbuildLikeInTests();
+	// await prepareEsbuildLikeInTests();
 	// await testEsbuildLikeInTests();
 } catch (error) {
 	console.error('Error', error);

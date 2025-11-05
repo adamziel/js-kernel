@@ -497,7 +497,7 @@ var runtimeInitialized = false;
 
 function updateMemoryViews() {
   var b = wasmMemory.buffer;
-  HEAP8 = new Int8Array(b);
+  Module['HEAP8'] = HEAP8 = new Int8Array(b);
   HEAP16 = new Int16Array(b);
   HEAPU8 = new Uint8Array(b);
   HEAPU16 = new Uint16Array(b);
@@ -3481,7 +3481,6 @@ missingLibrarySymbols.forEach(missingLibrarySymbol)
   'wasmExports',
   'HEAPF32',
   'HEAPF64',
-  'HEAP8',
   'HEAPU8',
   'HEAP16',
   'HEAPU16',
@@ -3668,12 +3667,16 @@ var _fs_getcwd = Module['_fs_getcwd'] = makeInvalidEarlyAccess('_fs_getcwd');
 var _fs_chdir = Module['_fs_chdir'] = makeInvalidEarlyAccess('_fs_chdir');
 var _fs_symlink = Module['_fs_symlink'] = makeInvalidEarlyAccess('_fs_symlink');
 var _fs_readlink = Module['_fs_readlink'] = makeInvalidEarlyAccess('_fs_readlink');
+var _fs_opendir = Module['_fs_opendir'] = makeInvalidEarlyAccess('_fs_opendir');
+var _fs_readdir = Module['_fs_readdir'] = makeInvalidEarlyAccess('_fs_readdir');
+var _fs_closedir = Module['_fs_closedir'] = makeInvalidEarlyAccess('_fs_closedir');
 var _fs_get_errno = Module['_fs_get_errno'] = makeInvalidEarlyAccess('_fs_get_errno');
 var _main = makeInvalidEarlyAccess('_main');
 var _fs_test = Module['_fs_test'] = makeInvalidEarlyAccess('_fs_test');
 var __emscripten_tls_init = makeInvalidEarlyAccess('__emscripten_tls_init');
 var _pthread_self = makeInvalidEarlyAccess('_pthread_self');
 var _emscripten_builtin_memalign = makeInvalidEarlyAccess('_emscripten_builtin_memalign');
+var _free = Module['_free'] = makeInvalidEarlyAccess('_free');
 var __emscripten_thread_init = makeInvalidEarlyAccess('__emscripten_thread_init');
 var __emscripten_thread_crashed = makeInvalidEarlyAccess('__emscripten_thread_crashed');
 var _fflush = makeInvalidEarlyAccess('_fflush');
@@ -3684,7 +3687,6 @@ var __emscripten_thread_free_data = makeInvalidEarlyAccess('__emscripten_thread_
 var __emscripten_thread_exit = makeInvalidEarlyAccess('__emscripten_thread_exit');
 var _malloc = Module['_malloc'] = makeInvalidEarlyAccess('_malloc');
 var __emscripten_check_mailbox = makeInvalidEarlyAccess('__emscripten_check_mailbox');
-var _free = Module['_free'] = makeInvalidEarlyAccess('_free');
 var _emscripten_stack_get_end = makeInvalidEarlyAccess('_emscripten_stack_get_end');
 var _emscripten_stack_get_base = makeInvalidEarlyAccess('_emscripten_stack_get_base');
 var _emscripten_stack_init = makeInvalidEarlyAccess('_emscripten_stack_init');
@@ -3759,12 +3761,16 @@ function assignWasmExports(wasmExports) {
   Module['_fs_chdir'] = _fs_chdir = createExportWrapper('fs_chdir', 1);
   Module['_fs_symlink'] = _fs_symlink = createExportWrapper('fs_symlink', 2);
   Module['_fs_readlink'] = _fs_readlink = createExportWrapper('fs_readlink', 3);
+  Module['_fs_opendir'] = _fs_opendir = createExportWrapper('fs_opendir', 1);
+  Module['_fs_readdir'] = _fs_readdir = createExportWrapper('fs_readdir', 1);
+  Module['_fs_closedir'] = _fs_closedir = createExportWrapper('fs_closedir', 1);
   Module['_fs_get_errno'] = _fs_get_errno = createExportWrapper('fs_get_errno', 0);
   _main = createExportWrapper('__main_argc_argv', 2);
   Module['_fs_test'] = _fs_test = createExportWrapper('fs_test', 0);
   __emscripten_tls_init = createExportWrapper('_emscripten_tls_init', 0);
   _pthread_self = createExportWrapper('pthread_self', 0);
   _emscripten_builtin_memalign = createExportWrapper('emscripten_builtin_memalign', 2);
+  Module['_free'] = _free = createExportWrapper('free', 1);
   __emscripten_thread_init = createExportWrapper('_emscripten_thread_init', 6);
   __emscripten_thread_crashed = createExportWrapper('_emscripten_thread_crashed', 0);
   _fflush = createExportWrapper('fflush', 1);
@@ -3775,7 +3781,6 @@ function assignWasmExports(wasmExports) {
   __emscripten_thread_exit = createExportWrapper('_emscripten_thread_exit', 1);
   Module['_malloc'] = _malloc = createExportWrapper('malloc', 1);
   __emscripten_check_mailbox = createExportWrapper('_emscripten_check_mailbox', 0);
-  Module['_free'] = _free = createExportWrapper('free', 1);
   _emscripten_stack_get_end = wasmExports['emscripten_stack_get_end'];
   _emscripten_stack_get_base = wasmExports['emscripten_stack_get_base'];
   _emscripten_stack_init = wasmExports['emscripten_stack_init'];

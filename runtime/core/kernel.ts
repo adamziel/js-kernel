@@ -33,6 +33,14 @@ import {
 	type SpawnSyncOutcome,
 } from '../process/spawn-sync/client.ts';
 import { serializeFsResponse, serializeFsError } from '../fs/serialization.ts';
+import {
+	createWasmFsKernelConnector,
+	type KernelFsClient,
+} from '../process/child/wasmfs-connector.ts';
+
+const wasmFsHostConnector: KernelFsClient = await createWasmFsKernelConnector();
+const wasmFsHostSync = wasmFsHostConnector.sync as Record<string, unknown>;
+const wasmFsHostAsync = wasmFsHostConnector.async as Record<string, unknown>;
 
 export type { StdioMode, SpawnStdioOptions } from '../process/spawn-options.ts';
 export type { SpawnSyncOutcome } from '../process/spawn-sync/client.ts';
@@ -163,6 +171,7 @@ export class Kernel extends InMemoryFileSystem {
 
 	constructor() {
 		super();
+		this.installWasmFsOverrides();
 
 		const hostControlChannel = new MessageChannel();
 		const hostFsChannel = new MessageChannel();
@@ -202,6 +211,73 @@ export class Kernel extends InMemoryFileSystem {
 			hostSpawnSyncChannel.port2.close();
 			this.hostSpawnSyncCleanup = null;
 			this.hostSpawnSyncClient = null;
+		}
+	}
+
+	private installWasmFsOverrides(): void {
+		const syncTarget = wasmFsHostSync as Record<string, unknown>;
+		const asyncTarget = wasmFsHostAsync as Record<string, unknown>;
+
+		const bindFunction = (
+			fn: unknown,
+			context: Record<string, unknown>
+		): ((...args: unknown[]) => unknown) | undefined => {
+			if (typeof fn !== 'function') {
+				return undefined;
+			}
+			return (...args: unknown[]) =>
+				(fn as (...fnArgs: unknown[]) => unknown).apply(
+					context,
+					args
+				);
+		};
+
+		for (const [name, value] of Object.entries(syncTarget)) {
+			const bound = bindFunction(value, syncTarget);
+			if (!bound) {
+				continue;
+			}
+			Object.defineProperty(this, name, {
+				value: bound,
+				configurable: true,
+				writable: true,
+			});
+		}
+
+		for (const [name, value] of Object.entries(asyncTarget)) {
+			if (name.endsWith('Sync')) {
+				continue;
+			}
+			const bound = bindFunction(value, asyncTarget);
+			if (!bound) {
+				continue;
+			}
+			Object.defineProperty(this, name, {
+				value: bound,
+				configurable: true,
+				writable: true,
+			});
+		}
+
+		Object.defineProperty(this, 'fsSync', {
+			value: syncTarget,
+			configurable: true,
+			writable: true,
+		});
+		Object.defineProperty(this, 'fs', {
+			value: asyncTarget,
+			configurable: true,
+			writable: true,
+		});
+
+		const promisesTarget = (asyncTarget as Record<string, unknown>)
+			.promises as Record<string, unknown> | undefined;
+		if (promisesTarget) {
+			Object.defineProperty(this, 'promises', {
+				value: promisesTarget,
+				configurable: true,
+				writable: true,
+			});
 		}
 	}
 

@@ -29,10 +29,10 @@ int fs_init(void) {
   }
   emscripten_console_log("Created OPFS backend");
 
-  // Mount OPFS at /opfs
+  // Mount OPFS at /opfs for all filesystem operations
   int err = wasmfs_create_directory("/opfs", 0777, opfs_backend);
   if (err != 0) {
-    emscripten_console_error("Failed to mount OPFS root directory");
+    emscripten_console_error("Failed to mount OPFS directory");
     return -1;
   }
   emscripten_console_log("Mounted OPFS at /opfs");
@@ -161,6 +161,22 @@ int fs_symlink(const char* target, const char* linkpath) {
 EMSCRIPTEN_KEEPALIVE
 ssize_t fs_readlink(const char* path, char* buf, size_t bufsiz) {
   return readlink(path, buf, bufsiz);
+}
+
+// Directory reading
+EMSCRIPTEN_KEEPALIVE
+void* fs_opendir(const char* path) {
+  return opendir(path);
+}
+
+EMSCRIPTEN_KEEPALIVE
+struct dirent* fs_readdir(void* dirp) {
+  return readdir((DIR*)dirp);
+}
+
+EMSCRIPTEN_KEEPALIVE
+int fs_closedir(void* dirp) {
+  return closedir((DIR*)dirp);
 }
 
 // Get errno (useful for error handling in JS)
