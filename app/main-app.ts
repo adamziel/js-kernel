@@ -9,8 +9,8 @@ import wasmExecNode from './tests/fixtures/esbuild-wasm/wasm_exec_node.js?raw';
 import wasmExec from './tests/fixtures/esbuild-wasm/wasm_exec.js?raw';
 
 const kernel = new Kernel();
-// kernel.setFsConnectorPreference('shared');
-kernel.setFsConnectorPreference('wasmfs');
+kernel.setFsConnectorPreference('shared');
+// kernel.setFsConnectorPreference('wasmfs');
 globalThis.kernel = kernel;
 try {
 	installBusybox(kernel);

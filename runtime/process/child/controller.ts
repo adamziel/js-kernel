@@ -21,7 +21,7 @@ import {
 	type NormalizedSpawnOptions,
 	type StdioMode,
 } from '../spawn-options.ts';
-import { joinPaths } from '../../util/paths.ts';
+import { joinPaths, normalizePath } from '../../util/paths.ts';
 import type { KernelFsClient } from './fs-client.ts';
 import { createWasmFsKernelConnector } from './wasmfs-connector.ts';
 import { createKernelFsClient } from './fs-client.ts';
@@ -51,7 +51,9 @@ const createFsClient = async (
 				return createKernelFsClient(options.fsPort, stdio);
 			} catch (error) {
 				throw new Error(
-					`Failed to initialize shared-buffer filesystem connector: ${error instanceof Error ? error.message : String(error)}`
+					`Failed to initialize shared-buffer filesystem connector: ${
+						error instanceof Error ? error.message : String(error)
+					}`
 				);
 			}
 		} else {
@@ -208,121 +210,616 @@ type ProcessControllerFs = KernelFsClient['async'] & {
 	sync: KernelFsClient['sync'];
 };
 
-const FS_METHOD_PATH_ARGUMENTS: Record<string, number[]> = {
-	access: [0],
-	appendFile: [0],
-	chmod: [0],
-	chown: [0],
-	copyFile: [0, 1],
-	link: [0, 1],
-	lstat: [0],
-	mkdir: [0],
-	mkdtemp: [0],
-	open: [0],
-	opendir: [0],
-	readFile: [0],
-	readdir: [0],
-	readlink: [0],
-	realpath: [0],
-	rename: [0, 1],
-	rm: [0],
-	rmdir: [0],
-	stat: [0],
-	symlink: [0, 1],
-	truncate: [0],
-	unlink: [0],
-	utimes: [0],
-	writeFile: [0],
-};
-
 const createProcessControllerFs = (
 	client: KernelFsClient,
 	getCwd: () => string
 ): ProcessControllerFs => {
-	const asyncApi = client.async as Record<string, unknown>;
-	const syncApi = client.sync as Record<string, unknown>;
+	const asyncApi = client.async as KernelFsClient['async'];
+	const syncApi = client.sync as KernelFsClient['sync'];
+
 	const isAbsolutePath = (path: string) =>
 		path.startsWith('/') || /^[a-zA-Z]+:/.test(path);
 
-	const getPathArgIndexes = (method: string): number[] | undefined => {
-		if (FS_METHOD_PATH_ARGUMENTS[method]) {
-			return FS_METHOD_PATH_ARGUMENTS[method];
+	const resolvePathArgument = (value: unknown): unknown => {
+		if (typeof value !== 'string' || value.length === 0) {
+			return value;
 		}
-		if (method.endsWith('Sync')) {
-			return FS_METHOD_PATH_ARGUMENTS[method.slice(0, -4)];
-		}
-		if (method.endsWith('Async')) {
-			return FS_METHOD_PATH_ARGUMENTS[method.slice(0, -5)];
-		}
-		return undefined;
+		const cwd = (() => {
+			const current = getCwd();
+			return current && current.length > 0 ? current : '/';
+		})();
+		return isAbsolutePath(value)
+			? normalizePath(value)
+			: normalizePath(joinPaths(cwd, value));
 	};
 
-	const withPathNormalization = (
-		method: string,
-		fn: (...args: unknown[]) => unknown,
-		invokeTarget: Record<string, unknown>
+	const normalizeSymlinkArguments = (
+		target: unknown,
+		linkPath: unknown
+	): [unknown, unknown] => {
+		return [resolvePathArgument(target), resolvePathArgument(linkPath)];
+	};
+
+	const asyncFs = Object.create(asyncApi) as KernelFsClient['async'];
+
+	asyncFs.access = (path: unknown, ...rest: unknown[]) => {
+		const fn = asyncApi.access;
+		if (typeof fn !== 'function') {
+			throw new TypeError('fs.access is not supported by this connector');
+		}
+		return fn.apply(asyncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	asyncFs.appendFile = (path: unknown, ...rest: unknown[]) => {
+		const fn = asyncApi.appendFile;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.appendFile is not supported by this connector'
+			);
+		}
+		return fn.apply(asyncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	asyncFs.chmod = (path: unknown, ...rest: unknown[]) => {
+		const fn = asyncApi.chmod;
+		if (typeof fn !== 'function') {
+			throw new TypeError('fs.chmod is not supported by this connector');
+		}
+		return fn.apply(asyncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	asyncFs.chown = (path: unknown, ...rest: unknown[]) => {
+		const fn = asyncApi.chown;
+		if (typeof fn !== 'function') {
+			throw new TypeError('fs.chown is not supported by this connector');
+		}
+		return fn.apply(asyncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	asyncFs.copyFile = (
+		source: unknown,
+		destination: unknown,
+		...rest: unknown[]
 	) => {
-		const indexes = getPathArgIndexes(method);
-		if (!Array.isArray(indexes) || indexes.length === 0) {
-			return (...args: unknown[]) =>
-				Reflect.apply(fn, invokeTarget, args);
+		const fn = asyncApi.copyFile;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.copyFile is not supported by this connector'
+			);
 		}
-		return (...args: unknown[]) => {
-			const adjustedArgs = [...args];
-			for (const index of indexes) {
-				if (index < adjustedArgs.length) {
-					const value = adjustedArgs[index];
-					if (typeof value === 'string' && value.length > 0) {
-						const cwd = getCwd();
-						const absolute = isAbsolutePath(value)
-							? value
-							: joinPaths(
-									cwd && cwd.length > 0 ? cwd : '/',
-									value
-							  );
-						adjustedArgs[index] = absolute;
-					}
-				}
-			}
-			return Reflect.apply(fn, invokeTarget, adjustedArgs);
-		};
+		return fn.apply(asyncApi, [
+			resolvePathArgument(source),
+			resolvePathArgument(destination),
+			...rest,
+		]);
 	};
 
-	return new Proxy(asyncApi, {
-		get(target, property, receiver) {
-			if (property === 'async') {
-				return receiver;
-			}
-			if (property === 'promises') {
-				return receiver;
-			}
-			if (property === 'sync') {
-				return client.sync;
-			}
-			if (property === 'then') {
-				return undefined;
-			}
-			if (typeof property === 'string') {
-				if (property.endsWith('Sync')) {
-					const syncValue = Reflect.get(syncApi, property, syncApi);
-					if (typeof syncValue === 'function') {
-						return withPathNormalization(
-							property,
-							syncValue,
-							syncApi
-						);
-					}
-					return syncValue;
-				}
-				const original = Reflect.get(target, property, receiver);
-				if (typeof original === 'function') {
-					return withPathNormalization(property, original, target);
-				}
-				return original;
-			}
-			return Reflect.get(target, property, receiver);
-		},
-	}) as ProcessControllerFs;
+	asyncFs.exists = (path: unknown, ...rest: unknown[]) => {
+		const fn = (asyncApi as Record<string, unknown>).exists;
+		if (typeof fn !== 'function') {
+			throw new TypeError('fs.exists is not supported by this connector');
+		}
+		return fn.apply(asyncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	asyncFs.link = (
+		existingPath: unknown,
+		newPath: unknown,
+		...rest: unknown[]
+	) => {
+		const fn = asyncApi.link;
+		if (typeof fn !== 'function') {
+			throw new TypeError('fs.link is not supported by this connector');
+		}
+		return fn.apply(asyncApi, [
+			normalizePath(existingPath as string),
+			normalizePath(newPath as string),
+			...rest,
+		]);
+	};
+
+	asyncFs.lstat = (path: unknown, ...rest: unknown[]) => {
+		const fn = asyncApi.lstat;
+		if (typeof fn !== 'function') {
+			throw new TypeError('fs.lstat is not supported by this connector');
+		}
+		return fn.apply(asyncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	asyncFs.mkdir = (path: unknown, ...rest: unknown[]) => {
+		const fn = asyncApi.mkdir;
+		if (typeof fn !== 'function') {
+			throw new TypeError('fs.mkdir is not supported by this connector');
+		}
+		return fn.apply(asyncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	asyncFs.mkdtemp = (path: unknown, ...rest: unknown[]) => {
+		const fn = asyncApi.mkdtemp;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.mkdtemp is not supported by this connector'
+			);
+		}
+		return fn.apply(asyncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	asyncFs.open = (path: unknown, ...rest: unknown[]) => {
+		const fn = asyncApi.open;
+		if (typeof fn !== 'function') {
+			throw new TypeError('fs.open is not supported by this connector');
+		}
+		return fn.apply(asyncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	asyncFs.opendir = (path: unknown, ...rest: unknown[]) => {
+		const fn = asyncApi.opendir;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.opendir is not supported by this connector'
+			);
+		}
+		return fn.apply(asyncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	asyncFs.readFile = (path: unknown, ...rest: unknown[]) => {
+		const fn = asyncApi.readFile;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.readFile is not supported by this connector'
+			);
+		}
+		return fn.apply(asyncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	asyncFs.readdir = (path: unknown, ...rest: unknown[]) => {
+		const fn = asyncApi.readdir;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.readdir is not supported by this connector'
+			);
+		}
+		return fn.apply(asyncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	asyncFs.readlink = (path: unknown, ...rest: unknown[]) => {
+		const fn = asyncApi.readlink;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.readlink is not supported by this connector'
+			);
+		}
+		return fn.apply(asyncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	asyncFs.realpath = (path: unknown, ...rest: unknown[]) => {
+		const fn = asyncApi.realpath;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.realpath is not supported by this connector'
+			);
+		}
+		return fn.apply(asyncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	asyncFs.rename = (
+		oldPath: unknown,
+		newPath: unknown,
+		...rest: unknown[]
+	) => {
+		const fn = asyncApi.rename;
+		if (typeof fn !== 'function') {
+			throw new TypeError('fs.rename is not supported by this connector');
+		}
+		return fn.apply(asyncApi, [
+			normalizePath(oldPath as string),
+			normalizePath(newPath as string),
+			...rest,
+		]);
+	};
+
+	asyncFs.rm = (path: unknown, ...rest: unknown[]) => {
+		const fn = asyncApi.rm;
+		if (typeof fn !== 'function') {
+			throw new TypeError('fs.rm is not supported by this connector');
+		}
+		return fn.apply(asyncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	asyncFs.rmdir = (path: unknown, ...rest: unknown[]) => {
+		const fn = asyncApi.rmdir;
+		if (typeof fn !== 'function') {
+			throw new TypeError('fs.rmdir is not supported by this connector');
+		}
+		return fn.apply(asyncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	asyncFs.stat = (path: unknown, ...rest: unknown[]) => {
+		const fn = asyncApi.stat;
+		if (typeof fn !== 'function') {
+			throw new TypeError('fs.stat is not supported by this connector');
+		}
+		return fn.apply(asyncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	asyncFs.symlink = (
+		target: unknown,
+		linkPath: unknown,
+		...rest: unknown[]
+	) => {
+		const fn = asyncApi.symlink;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.symlink is not supported by this connector'
+			);
+		}
+		const [normalizedTarget, normalizedLinkPath] =
+			normalizeSymlinkArguments(target, linkPath);
+		return fn.apply(asyncApi, [
+			normalizedTarget,
+			normalizedLinkPath,
+			...rest,
+		]);
+	};
+
+	asyncFs.truncate = (path: unknown, ...rest: unknown[]) => {
+		const fn = asyncApi.truncate;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.truncate is not supported by this connector'
+			);
+		}
+		return fn.apply(asyncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	asyncFs.unlink = (path: unknown, ...rest: unknown[]) => {
+		const fn = asyncApi.unlink;
+		if (typeof fn !== 'function') {
+			throw new TypeError('fs.unlink is not supported by this connector');
+		}
+		return fn.apply(asyncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	asyncFs.utimes = (path: unknown, ...rest: unknown[]) => {
+		const fn = asyncApi.utimes;
+		if (typeof fn !== 'function') {
+			throw new TypeError('fs.utimes is not supported by this connector');
+		}
+		return fn.apply(asyncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	asyncFs.watch = (pathOrOptions: unknown, ...rest: unknown[]) => {
+		const fn = (asyncApi as Record<string, unknown>).watch;
+		if (typeof fn !== 'function') {
+			throw new TypeError('fs.watch is not supported by this connector');
+		}
+		if (typeof pathOrOptions === 'string') {
+			const normalizedPath = resolvePathArgument(pathOrOptions);
+			return fn.apply(asyncApi, [normalizedPath, ...rest]);
+		}
+		return fn.apply(asyncApi, [pathOrOptions, ...rest]);
+	};
+
+	asyncFs.watchFile = (path: unknown, ...rest: unknown[]) => {
+		const fn = (asyncApi as Record<string, unknown>).watchFile;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.watchFile is not supported by this connector'
+			);
+		}
+		return fn.apply(asyncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	asyncFs.unwatchFile = (path: unknown, ...rest: unknown[]) => {
+		const fn = (asyncApi as Record<string, unknown>).unwatchFile;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.unwatchFile is not supported by this connector'
+			);
+		}
+		return fn.apply(asyncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	asyncFs.writeFile = (path: unknown, ...rest: unknown[]) => {
+		const fn = asyncApi.writeFile;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.writeFile is not supported by this connector'
+			);
+		}
+		return fn.apply(asyncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	const syncFs = Object.create(syncApi) as KernelFsClient['sync'];
+
+	syncFs.accessSync = (path: unknown, ...rest: unknown[]) => {
+		const fn = syncApi.accessSync;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.accessSync is not supported by this connector'
+			);
+		}
+		return fn.apply(syncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	syncFs.appendFileSync = (path: unknown, ...rest: unknown[]) => {
+		const fn = syncApi.appendFileSync;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.appendFileSync is not supported by this connector'
+			);
+		}
+		return fn.apply(syncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	syncFs.chmodSync = (path: unknown, ...rest: unknown[]) => {
+		const fn = syncApi.chmodSync;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.chmodSync is not supported by this connector'
+			);
+		}
+		return fn.apply(syncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	syncFs.chownSync = (path: unknown, ...rest: unknown[]) => {
+		const fn = syncApi.chownSync;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.chownSync is not supported by this connector'
+			);
+		}
+		return fn.apply(syncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	syncFs.copyFileSync = (
+		source: unknown,
+		destination: unknown,
+		...rest: unknown[]
+	) => {
+		const fn = syncApi.copyFileSync;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.copyFileSync is not supported by this connector'
+			);
+		}
+		return fn.apply(syncApi, [
+			normalizePath(source as string),
+			normalizePath(destination as string),
+			...rest,
+		]);
+	};
+
+	syncFs.existsSync = (path: unknown, ...rest: unknown[]) => {
+		const fn = syncApi.existsSync;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.existsSync is not supported by this connector'
+			);
+		}
+		return fn.apply(syncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	syncFs.linkSync = (
+		existingPath: unknown,
+		newPath: unknown,
+		...rest: unknown[]
+	) => {
+		const fn = syncApi.linkSync;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.linkSync is not supported by this connector'
+			);
+		}
+		return fn.apply(syncApi, [
+			normalizePath(existingPath as string),
+			normalizePath(newPath as string),
+			...rest,
+		]);
+	};
+
+	syncFs.lstatSync = (path: unknown, ...rest: unknown[]) => {
+		const fn = syncApi.lstatSync;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.lstatSync is not supported by this connector'
+			);
+		}
+		return fn.apply(syncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	syncFs.mkdirSync = (path: unknown, ...rest: unknown[]) => {
+		const fn = syncApi.mkdirSync;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.mkdirSync is not supported by this connector'
+			);
+		}
+		return fn.apply(syncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	syncFs.mkdtempSync = (path: unknown, ...rest: unknown[]) => {
+		const fn = syncApi.mkdtempSync;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.mkdtempSync is not supported by this connector'
+			);
+		}
+		return fn.apply(syncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	syncFs.openSync = (path: unknown, ...rest: unknown[]) => {
+		const fn = syncApi.openSync;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.openSync is not supported by this connector'
+			);
+		}
+		return fn.apply(syncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	syncFs.opendirSync = (path: unknown, ...rest: unknown[]) => {
+		const fn = syncApi.opendirSync;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.opendirSync is not supported by this connector'
+			);
+		}
+		return fn.apply(syncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	syncFs.readFileSync = (path: unknown, ...rest: unknown[]) => {
+		const fn = syncApi.readFileSync;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.readFileSync is not supported by this connector'
+			);
+		}
+		return fn.apply(syncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	syncFs.readdirSync = (path: unknown, ...rest: unknown[]) => {
+		const fn = syncApi.readdirSync;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.readdirSync is not supported by this connector'
+			);
+		}
+		return fn.apply(syncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	syncFs.readlinkSync = (path: unknown, ...rest: unknown[]) => {
+		const fn = syncApi.readlinkSync;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.readlinkSync is not supported by this connector'
+			);
+		}
+		return fn.apply(syncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	syncFs.realpathSync = (path: unknown, ...rest: unknown[]) => {
+		const fn = syncApi.realpathSync;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.realpathSync is not supported by this connector'
+			);
+		}
+		return fn.apply(syncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	syncFs.renameSync = (
+		oldPath: unknown,
+		newPath: unknown,
+		...rest: unknown[]
+	) => {
+		const fn = syncApi.renameSync;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.renameSync is not supported by this connector'
+			);
+		}
+		return fn.apply(syncApi, [
+			normalizePath(oldPath as string),
+			normalizePath(newPath as string),
+			...rest,
+		]);
+	};
+
+	syncFs.rmSync = (path: unknown, ...rest: unknown[]) => {
+		const fn = syncApi.rmSync;
+		if (typeof fn !== 'function') {
+			throw new TypeError('fs.rmSync is not supported by this connector');
+		}
+		return fn.apply(syncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	syncFs.rmdirSync = (path: unknown, ...rest: unknown[]) => {
+		const fn = syncApi.rmdirSync;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.rmdirSync is not supported by this connector'
+			);
+		}
+		return fn.apply(syncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	syncFs.statSync = (path: unknown, ...rest: unknown[]) => {
+		const fn = syncApi.statSync;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.statSync is not supported by this connector'
+			);
+		}
+		return fn.apply(syncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	syncFs.symlinkSync = (
+		target: unknown,
+		linkPath: unknown,
+		...rest: unknown[]
+	) => {
+		const fn = syncApi.symlinkSync;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.symlinkSync is not supported by this connector'
+			);
+		}
+		const [normalizedTarget, normalizedLinkPath] =
+			normalizeSymlinkArguments(target, linkPath);
+		return fn.apply(syncApi, [
+			normalizedTarget,
+			normalizedLinkPath,
+			...rest,
+		]);
+	};
+
+	syncFs.truncateSync = (path: unknown, ...rest: unknown[]) => {
+		const fn = syncApi.truncateSync;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.truncateSync is not supported by this connector'
+			);
+		}
+		return fn.apply(syncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	syncFs.unlinkSync = (path: unknown, ...rest: unknown[]) => {
+		const fn = syncApi.unlinkSync;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.unlinkSync is not supported by this connector'
+			);
+		}
+		return fn.apply(syncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	syncFs.utimesSync = (path: unknown, ...rest: unknown[]) => {
+		const fn = syncApi.utimesSync;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.utimesSync is not supported by this connector'
+			);
+		}
+		return fn.apply(syncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	syncFs.writeFileSync = (path: unknown, ...rest: unknown[]) => {
+		const fn = syncApi.writeFileSync;
+		if (typeof fn !== 'function') {
+			throw new TypeError(
+				'fs.writeFileSync is not supported by this connector'
+			);
+		}
+		return fn.apply(syncApi, [resolvePathArgument(path), ...rest]);
+	};
+
+	const processFs = asyncFs as ProcessControllerFs;
+	(processFs as Record<string, unknown>).async = asyncFs;
+	(processFs as Record<string, unknown>).promises = asyncFs;
+	(processFs as Record<string, unknown>).sync = syncFs;
+
+	return processFs;
 };
 
 interface ChildReadableEvents extends Record<string, unknown> {
@@ -782,7 +1279,7 @@ export async function initChildProcess(options: ChildProcessInitOptions) {
 			return clonedOptions.threadName ?? null;
 		},
 		fs: processFs,
-		fsSync: fsClient!.sync,
+		fsSync: processFs.sync,
 		notifyKernelStdin(
 			pid: number,
 			chunk: KernelStdioChunk | null | undefined,

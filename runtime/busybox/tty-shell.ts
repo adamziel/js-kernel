@@ -50,7 +50,7 @@ const createProgramSource = (): string => {
 		const decoder = new TextDecoder();
 		const fs = processController.fsSync;
 		const argv = getArgv();
-		const prompt = argv[0] ?? '$ ';
+		const promptSuffix = argv[0] ?? '$ ';
 
 		let buffer = '';
 		let cursor = 0;
@@ -67,6 +67,16 @@ const createProgramSource = (): string => {
 		let searchMatchPointer = 0;
 		let searchSnapshot: SearchSnapshot | null = null;
 
+		const getCurrentDirectory = () =>
+			typeof processController.cwd === 'function'
+				? processController.cwd()
+				: '/';
+
+		const getPrompt = () => {
+			const cwd = getCurrentDirectory();
+			return `${cwd}${promptSuffix}`;
+		};
+
 		const render = () => {
 			// Move to start of line, clear it
 			let output = '\r\x1b[K';
@@ -80,7 +90,7 @@ const createProgramSource = (): string => {
 				output += `(reverse-i-search)\`${searchQuery}': ${match}`;
 			} else {
 				// Normal mode: render prompt + buffer
-				output += prompt + buffer;
+				output += getPrompt() + buffer;
 
 				// Position cursor correctly
 				const distance = buffer.length - cursor;
@@ -291,11 +301,6 @@ const createProgramSource = (): string => {
 				prefix: word,
 			};
 		};
-
-		const getCurrentDirectory = () =>
-			typeof processController.cwd === 'function'
-				? processController.cwd()
-				: '/';
 
 		const longestCommonPrefix = (values: string[]) => {
 			if (!values.length) {
