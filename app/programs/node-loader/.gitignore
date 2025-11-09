@@ -1,4 +1,0 @@
-dist
-node_modules
-deploy.sh
-php-cors-proxy/.httpcache
