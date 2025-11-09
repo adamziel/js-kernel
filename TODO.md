@@ -1,27 +1,26 @@
--   Support shell scripts with bash-like syntax.
-    ✅ Integrate shell parser, e.g. https://github.com/raphamorim/flash.
-    -   Add a system() function that can be used to execute shell commands.
-    -   Support shebang in scripts in general.
--   Support interpreters
-    ✅ /bin/js
-    ✅ /bin/sh
-    ✅ /bin/php
--   Support more programs
-    ✅ /bin/node
-    ✅ /bin/npm
+-   ✅ Support shell scripts with bash-like syntax.
+    -   ✅ Integrate shell parser, e.g. https://github.com/raphamorim/flash.
+    -   ✅ Add a system() function that can be used to execute shell commands.
+    -   ✅ Support shebang in scripts in general.
+-   ✅ Support interpreters
+    -   ✅ /bin/js
+    -   ✅ /bin/sh
+    -   ✅ /bin/php
+-   ✅ Support more programs
+    -   ✅ /bin/node
+    -   ✅ /bin/npm
 -   Support ESM
-    - await import("globby")
-    - via either:
-      - a service worker that resolves dynamic imports
-      - a transpiler that converts imports to require() calls,
-      potentially supporting require.async() or so
+    -   await import("globby")
+    -   via either:
+        -   a service worker that resolves dynamic imports
+        -   a transpiler that converts imports to require() calls,
+            potentially supporting require.async() or so
 -   Support multiple filesystems
-    -   Fast SharedArrayBuffer filesystem
-    -   Centralized OPFS (goes through kernel worker)
-    -   Decentralized OPFS (handled by each child process)
+    -   Decentralized SharedArrayBuffer filesystem (handled by each child process)
+    -   ✅ Decentralized OPFS (handled by each child process)
 -   Streams
-    -   Actual fd 0 1 2 for stdio streams
-    -   Blocking read() for stdin
+    -   ✅ Actual fd 0 1 2 for stdio streams
+    -   ✅ Blocking read() for stdin
     -   TTY
 -   Shell program
     -   Interactive mode that gets stdio from xterm.js and
