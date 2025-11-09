@@ -142,9 +142,11 @@ export default defineConfig({
 			'@runtime': runtimeRoot,
 		},
 		extensions: ['.ts', '.js'],
+		dedupe: ['react', 'react-dom'],
 	},
 	assetsInclude: [/\.dat$/, /\.wasm$/],
 	optimizeDeps: {
+		include: ['react', 'react-dom', '@wordpress/components', '@wordpress/icons'],
 		esbuildOptions: {
 			loader: {
 				'.dat': 'file',

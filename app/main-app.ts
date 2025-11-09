@@ -320,6 +320,56 @@ self.addEventListener('message', (event) => {
 				requestId: event.data.requestId ?? null,
 			});
 		});
+	} else if (event.data.type === 'kernel-request') {
+		// Handle kernel filesystem requests from the UI
+		const { id, method, args } = event.data;
+		try {
+			let result: any;
+			switch (method) {
+				case 'readFileSync':
+					result = kernel.readFileSync(args[0], args[1]);
+					break;
+				case 'writeFileSync':
+					result = kernel.writeFileSync(args[0], args[1], args[2]);
+					break;
+				case 'readdirSync':
+					result = kernel.readdirSync(args[0], args[1]);
+					break;
+				case 'statSync':
+					const stat = kernel.statSync(args[0]);
+					result = { isDirectory: stat.isDirectory() };
+					break;
+				case 'existsSync':
+					result = kernel.existsSync(args[0]);
+					break;
+				case 'mkdirSync':
+					result = kernel.mkdirSync(args[0], args[1]);
+					break;
+				case 'unlinkSync':
+					result = kernel.unlinkSync(args[0]);
+					break;
+				case 'rmdirSync':
+					result = kernel.rmdirSync(args[0], args[1]);
+					break;
+				case 'renameSync':
+					result = kernel.renameSync(args[0], args[1]);
+					break;
+				default:
+					throw new Error(`Unknown kernel method: ${method}`);
+			}
+			self.postMessage({
+				type: 'kernel-response',
+				id,
+				result,
+			});
+		} catch (error) {
+			console.error('[main-app] Kernel filesystem error:', error);
+			self.postMessage({
+				type: 'kernel-response',
+				id,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
 	}
 });
 worker.stdout!.on('data', (data) => {
@@ -1329,7 +1379,7 @@ class TestCases {
 try {
 	// await TestCases.testWpScriptsLocal();
 	// await TestCases.testEsbuild();
-	// await prepareEsbuildLikeInTests();
+	await prepareEsbuildLikeInTests();
 	// await testEsbuildLikeInTests();
 } catch (error) {
 	console.error('Error', error);
