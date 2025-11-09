@@ -1,0 +1,7950 @@
+globalThis.primordials = {};
+globalThis.global = globalThis;
+import * as builtins from './builtins.js';
+
+import { createTokenizer } from './naive-tokenizer.js';
+const tokenize = createTokenizer();
+function isESMSyntax(code) {
+	// Fast pass to check if the code contains import or export statements.
+	if (!code.includes('import') && !code.includes('export')) {
+		return false;
+	}
+	const tokens = tokenize(code);
+	let sawImport = false;
+
+	for (const token of tokens) {
+		// If we saw 'import' in the previous token, check if this is '('
+		if (sawImport) {
+			sawImport = false;
+			if (token[0] === 'Punctuator' && token[3] === '(') {
+				// This is import() function call, not ESM syntax
+				continue;
+			}
+			// Previous import was not followed by '(', so it's an import statement
+			return true;
+		}
+
+		if (token[0] === 'IdentifierName' && token[3] === 'export') {
+			return true;
+		}
+		if (token[0] === 'IdentifierName' && token[3] === 'import') {
+			// Mark that we saw import, check next token
+			sawImport = true;
+		}
+	}
+
+	// If we ended with sawImport still true, it was an import statement
+	if (sawImport) {
+		return true;
+	}
+	return false;
+}
+
+// @TODO: Do not rely on `window` here. We're running a Node.js process after all.
+globalThis.window = globalThis.global = globalThis;
+globalThis.globalFs = processController.fsSync;
+globalThis.globalFsAsync = processController.fs;
+
+const fsPathTextDecoder =
+	typeof TextDecoder !== 'undefined' ? new TextDecoder() : null;
+
+const isPathBufferLike = (value) =>
+	typeof Buffer !== 'undefined' &&
+	typeof Buffer.isBuffer === 'function' &&
+	Buffer.isBuffer(value);
+
+const toFsPathString = (value) => {
+	if (typeof value === 'string') {
+		return value;
+	}
+	if (isPathBufferLike(value)) {
+		return value.toString('utf8');
+	}
+	if (value instanceof Uint8Array) {
+		return fsPathTextDecoder ? fsPathTextDecoder.decode(value) : value;
+	}
+	if (value && typeof value === 'object') {
+		if (typeof value.href === 'string') {
+			return value.href;
+		}
+		if (typeof value.toString === 'function') {
+			const stringValue = value.toString();
+			if (typeof stringValue === 'string') {
+				return stringValue;
+			}
+		}
+	}
+	return value;
+};
+
+const collapseAbsolutePath = (input) => {
+	const segments = input.split('/').filter(Boolean);
+	const resolved = [];
+	for (const segment of segments) {
+		if (segment === '.' || segment === '') {
+			continue;
+		}
+		if (segment === '..') {
+			if (resolved.length > 0) {
+				resolved.pop();
+			}
+			continue;
+		}
+		resolved.push(segment);
+	}
+	return resolved.length === 0 ? '/' : `/${resolved.join('/')}`;
+};
+
+const resolveFsPath = (value) => {
+	const pathValue = toFsPathString(value);
+	if (typeof pathValue !== 'string') {
+		return value;
+	}
+
+	let candidate = pathValue;
+	if (candidate.startsWith('file://')) {
+		try {
+			const url = new URL(candidate);
+			if (url.protocol === 'file:') {
+				candidate = decodeURIComponent(url.pathname || '/');
+			}
+		} catch {
+			// ignore and fall through to fallback handling
+		}
+	}
+
+	const cwd =
+		typeof process !== 'undefined' && typeof process.cwd === 'function'
+			? process.cwd() || '/'
+			: '/';
+
+	if (candidate === '' || candidate === '.') {
+		return collapseAbsolutePath(cwd);
+	}
+
+	if (candidate.startsWith('/')) {
+		return collapseAbsolutePath(candidate);
+	}
+
+	const base = cwd.endsWith('/') ? cwd : `${cwd}/`;
+	return collapseAbsolutePath(`${base}${candidate}`);
+};
+
+const shouldNormalizePathValue = (value) =>
+	typeof value === 'string' ||
+	isPathBufferLike(value) ||
+	value instanceof Uint8Array ||
+	(value && typeof value === 'object' && typeof value.href === 'string');
+
+const applyFsPathNormalization = (target, pathArgMap) => {
+	if (!target || typeof target !== 'object') {
+		return;
+	}
+	for (const [method, indexes] of Object.entries(pathArgMap)) {
+		const original = target[method];
+		if (typeof original !== 'function') {
+			continue;
+		}
+		if (original.__kernelPathWrapped) {
+			continue;
+		}
+		const wrapped = function (...args) {
+			const normalizedArgs =
+				indexes && indexes.length > 0
+					? args.map((arg, index) =>
+							indexes.includes(index) &&
+							shouldNormalizePathValue(arg)
+								? resolveFsPath(arg)
+								: arg
+					  )
+					: args;
+			if (
+				typeof console !== 'undefined' &&
+				console &&
+				(method === 'readdirSync' ||
+					method === 'statSync' ||
+					method === 'readFileSync' ||
+					method === 'readdir' ||
+					method === 'stat' ||
+					method === 'readFile')
+			) {
+				try {
+					const displayArg =
+						normalizedArgs.length > 0
+							? normalizedArgs[0]
+							: undefined;
+					// 					console.log(
+					// 						`[kernel-fs ${method}]`,
+					// 						displayArg,
+					// 						args[0] === displayArg ? '' : `(from ${args[0]})`
+					// 					);
+				} catch {
+					// ignore logging errors
+				}
+			}
+			const result = original.apply(this, normalizedArgs);
+			return result;
+		};
+		wrapped.__kernelPathWrapped = true;
+		target[method] = wrapped;
+	}
+};
+
+const fsSyncPathArgMap = {
+	accessSync: [0],
+	appendFileSync: [0],
+	chmodSync: [0],
+	chownSync: [0],
+	copyFileSync: [0, 1],
+	cpSync: [0, 1],
+	cpSyncCheckPaths: [0, 1],
+	cpSyncCopyDir: [0, 1],
+	cpSyncOverrideFile: [0, 1],
+	existsSync: [0],
+	linkSync: [0, 1],
+	lchmodSync: [0],
+	lchownSync: [0],
+	lstatSync: [0],
+	mkdirSync: [0],
+	mkdtempSync: [0],
+	openSync: [0],
+	opendirSync: [0],
+	readFileSync: [0],
+	readFileUtf8Sync: [0],
+	readdirSync: [0],
+	readdirBinding: [0],
+	readlinkSync: [0],
+	realpathSync: [0],
+	renameSync: [0, 1],
+	rmSync: [0],
+	rmdirSync: [0],
+	statSync: [0],
+	symlinkSync: [0, 1],
+	truncateSync: [0],
+	unlinkSync: [0],
+	utimesSync: [0],
+	writeFileSync: [0],
+	writeFileUtf8Sync: [0],
+};
+
+const fsAsyncPathArgMap = {
+	access: [0],
+	appendFile: [0],
+	chmod: [0],
+	chown: [0],
+	copyFile: [0, 1],
+	cp: [0, 1],
+	link: [0, 1],
+	lchmod: [0],
+	lchown: [0],
+	lstat: [0],
+	mkdir: [0],
+	mkdtemp: [0],
+	open: [0],
+	opendir: [0],
+	readFile: [0],
+	readdir: [0],
+	readdirBinding: [0],
+	readlink: [0],
+	realpath: [0],
+	rename: [0, 1],
+	rm: [0],
+	rmdir: [0],
+	stat: [0],
+	symlink: [0, 1],
+	truncate: [0],
+	unlink: [0],
+	utimes: [0],
+	writeFile: [0],
+};
+
+applyFsPathNormalization(globalThis.globalFs, fsSyncPathArgMap);
+applyFsPathNormalization(globalThis.globalFsAsync, fsAsyncPathArgMap);
+
+const UTF8_DECODER = new TextDecoder('utf-8');
+const READ_FILE_UTF8_CHUNK_SIZE = 64 * 1024;
+
+function _encodePathForFileURL(path) {
+	// Encode the path for use in a file:// URL
+	let encoded = '';
+
+	for (let i = 0; i < path.length; i++) {
+		const char = path[i];
+		const code = path.charCodeAt(i);
+
+		// Percent-encode characters that are not safe in file URLs
+		if (
+			char === '%' ||
+			char === '#' ||
+			char === '?' ||
+			char === '\n' ||
+			char === '\r' ||
+			char === '\t'
+		) {
+			encoded += encodeURIComponent(char);
+		} else if (code < 32 || code > 126) {
+			// Control characters and non-ASCII characters
+			encoded += encodeURIComponent(char);
+		} else {
+			encoded += char;
+		}
+	}
+
+	return encoded;
+}
+
+function readUtf8FromFileDescriptor(fd) {
+	const chunks = [];
+	while (true) {
+		const chunk = globalFs.readSync(fd, READ_FILE_UTF8_CHUNK_SIZE, null);
+		if (!chunk || chunk.byteLength === 0) {
+			break;
+		}
+		chunks.push(
+			chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk)
+		);
+		if (chunk.byteLength < READ_FILE_UTF8_CHUNK_SIZE) {
+			break;
+		}
+	}
+
+	if (chunks.length === 0) {
+		return '';
+	}
+
+	if (chunks.length === 1) {
+		return UTF8_DECODER.decode(chunks[0]);
+	}
+
+	const totalLength = chunks.reduce(
+		(sum, chunk) => sum + chunk.byteLength,
+		0
+	);
+	const merged = new Uint8Array(totalLength);
+	let offset = 0;
+	for (const chunk of chunks) {
+		merged.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return UTF8_DECODER.decode(merged);
+}
+
+// Global module registry for built modules to register their exports
+// This allows defineLazyProperties to access internal modules
+globalThis.__moduleRegistry = new Map();
+
+// Helper function to handle async operations with genuine async support
+// syncFn: Function to call for synchronous operations
+// asyncFn: Function that returns a Promise from genuine async operation (processController.fs)
+//          IMPORTANT: Must be a function to enable lazy evaluation - only called when async is needed
+// kUsePromisesOrReq: undefined (sync), FSReqCallback (callback), or kUsePromises symbol (promise)
+function handleAsyncOperation(syncFn, asyncFn, kUsePromisesOrReq) {
+	// Sync call - use synchronous implementation
+	// IMPORTANT: asyncFn is NOT called here, so no async operation starts
+	if (kUsePromisesOrReq === undefined) {
+		// console.error('Sync mode');
+		const result = syncFn();
+		// console.error('---> Sync mode returned');
+		return result;
+	}
+
+	// Callback mode - FSReqCallback with oncomplete
+	if (
+		kUsePromisesOrReq &&
+		typeof kUsePromisesOrReq === 'object' &&
+		'oncomplete' in kUsePromisesOrReq
+	) {
+		asyncFn().then(
+			(result) => {
+				kUsePromisesOrReq.oncomplete(null, result);
+			},
+			(err) => {
+				kUsePromisesOrReq.oncomplete(err);
+			}
+		);
+		return;
+	}
+
+	// Promise mode - return the genuine async promise
+	return asyncFn();
+}
+
+// Legacy function - kept for backwards compatibility but wraps sync in promise
+// @deprecated Use handleAsyncOperation for genuine async support
+function maybePromiseFromSync(syncFn, kUsePromisesOrReq) {
+	// Sync call
+	if (kUsePromisesOrReq === undefined) {
+		// console.log('maybePromiseFromSync sync');
+		const result = syncFn();
+		// console.log('---> maybePromiseFromSync sync returned');
+		return result;
+	}
+	const promise = new Promise((resolve, reject) => {
+		try {
+			resolve(syncFn());
+		} catch (err) {
+			reject(err);
+		}
+	});
+
+	// Callback mode
+	if (
+		kUsePromisesOrReq &&
+		typeof kUsePromisesOrReq === 'object' &&
+		'oncomplete' in kUsePromisesOrReq
+	) {
+		return promise.then(
+			(result) => {
+				kUsePromisesOrReq.oncomplete(null, result);
+			},
+			(err) => {
+				kUsePromisesOrReq.oncomplete(err);
+			}
+		);
+	}
+
+	// Promise mode
+	return promise;
+}
+
+// Implement V8 internal functions in JavaScript
+function getOwnNonIndexProperties(obj, filter) {
+	if (typeof obj !== 'object' || obj === null) {
+		return [];
+	}
+
+	const ALL_PROPERTIES = 0;
+	const ONLY_WRITABLE = 1;
+	const ONLY_ENUMERABLE = 2;
+	const ONLY_CONFIGURABLE = 4;
+	const SKIP_STRINGS = 8;
+	const SKIP_SYMBOLS = 16;
+
+	let keys = [];
+
+	// Get string keys
+	if (!(filter & SKIP_STRINGS)) {
+		keys = keys.concat(
+			Object.getOwnPropertyNames(obj).filter((k) => {
+				// Skip numeric indices
+				const num = Number(k);
+				if (Number.isInteger(num) && num >= 0 && String(num) === k) {
+					return false;
+				}
+				return true;
+			})
+		);
+	}
+
+	// Get symbol keys
+	if (!(filter & SKIP_SYMBOLS)) {
+		keys = keys.concat(Object.getOwnPropertySymbols(obj));
+	}
+
+	// Apply property filters
+	if (filter !== ALL_PROPERTIES) {
+		keys = keys.filter((key) => {
+			const desc = Object.getOwnPropertyDescriptor(obj, key);
+			if (!desc) return false;
+
+			if (filter & ONLY_WRITABLE && !desc.writable) return false;
+			if (filter & ONLY_ENUMERABLE && !desc.enumerable) return false;
+			if (filter & ONLY_CONFIGURABLE && !desc.configurable) return false;
+
+			return true;
+		});
+	}
+
+	return keys;
+}
+
+function getPromiseDetails(promise) {
+	// Return undefined if it's not a Promise
+	if (!(promise instanceof Promise)) {
+		return undefined;
+	}
+
+	// We can't directly access promise state in JavaScript,
+	// but we can use a trick with Promise.race
+	const kPending = 0;
+	const kFulfilled = 1;
+	const kRejected = 2;
+
+	// This is a best-effort polyfill since JavaScript doesn't expose promise internals
+	// For synchronous inspection, we'd need to track promises ourselves
+	// Return pending state as fallback
+	return [kPending];
+}
+
+function getProxyDetails(proxy, includeTarget = true) {
+	// Return undefined if it's not a proxy
+	// Unfortunately, JavaScript doesn't provide a way to detect if something is a Proxy
+	// or to extract its target and handler
+	// This is a limitation of the language
+	return undefined;
+}
+
+function previewEntries(obj) {
+	// Preview entries for Maps, Sets, typed arrays etc
+	if (obj instanceof Map) {
+		const entries = Array.from(obj.entries()).slice(0, 100);
+		return [entries, entries.length < obj.size];
+	}
+	if (obj instanceof Set) {
+		const entries = Array.from(obj.values()).slice(0, 100);
+		return [entries, entries.length < obj.size];
+	}
+	// For arrays and typed arrays
+	if (Array.isArray(obj) || ArrayBuffer.isView(obj)) {
+		const entries = Array.from(obj).slice(0, 100);
+		return [entries, entries.length < obj.length];
+	}
+	return undefined;
+}
+
+function internalGetConstructorName(obj) {
+	if (obj === null || obj === undefined) {
+		return '';
+	}
+	if (typeof obj !== 'object' && typeof obj !== 'function') {
+		return '';
+	}
+	// Get constructor name
+	if (obj.constructor && obj.constructor.name) {
+		return obj.constructor.name;
+	}
+	// Fallback to Object.prototype.toString
+	const str = Object.prototype.toString.call(obj);
+	const match = str.match(/^\[object (\w+)\]$/);
+	return match ? match[1] : 'Object';
+}
+
+function getExternalValue(external) {
+	// External values are V8-specific and represent C++ pointers
+	// We can't truly polyfill this in JavaScript
+	// Return 0n as a placeholder
+	return 0n;
+}
+
+function createDebugProxy(name, target) {
+	return new Proxy(target, {
+		get(obj, prop) {
+			const value = obj[prop];
+			// if (value === undefined) {
+			// 	console.log(
+			// 		`${name} binding: undefined property '${String(
+			// 			prop
+			// 		)}' accessed`
+			// 	);
+			// }
+			return value;
+		},
+	});
+}
+
+const blobHandleBrand = Symbol('blobHandleBrand');
+const blobHandleBlob = Symbol('blobHandleBlob');
+const blobObjectUrlPrefix = 'blob:nodedata:';
+const blobDataObjectStore = new Map();
+const blobTextEncoder =
+	typeof TextEncoder === 'function' ? new TextEncoder() : null;
+
+const ensureBlobSupport = () => {
+	if (typeof Blob !== 'function') {
+		throw new Error('Blob is not supported in this environment');
+	}
+};
+
+const isBlobHandle = (value) => value?.[blobHandleBrand] === true;
+
+const normalizeBlobPart = (source) => {
+	if (source == null) {
+		return new Uint8Array(0);
+	}
+	if (isBlobHandle(source)) {
+		return source[blobHandleBlob];
+	}
+	if (source instanceof Blob) {
+		return source;
+	}
+	if (source instanceof ArrayBuffer) {
+		return source;
+	}
+	if (ArrayBuffer.isView(source)) {
+		const { buffer, byteOffset, byteLength } = source;
+		return buffer.slice(byteOffset, byteOffset + byteLength);
+	}
+	if (typeof source === 'string') {
+		if (!blobTextEncoder) {
+			throw new Error('TextEncoder is not available to encode strings');
+		}
+		return blobTextEncoder.encode(source);
+	}
+	return new Uint8Array(source);
+};
+
+const chunkToArrayBuffer = (chunk) => {
+	if (chunk === undefined) {
+		return undefined;
+	}
+	if (chunk instanceof ArrayBuffer) {
+		return chunk;
+	}
+	if (ArrayBuffer.isView(chunk)) {
+		const { buffer, byteOffset, byteLength } = chunk;
+		return buffer.slice(byteOffset, byteOffset + byteLength);
+	}
+	if (chunk?.buffer instanceof ArrayBuffer) {
+		return chunk.buffer.slice(0);
+	}
+	return new Uint8Array(chunk).buffer;
+};
+
+class BrowserBlobReader {
+	constructor(blob) {
+		this.blob = blob;
+		this.reader =
+			typeof blob.stream === 'function'
+				? blob.stream().getReader()
+				: null;
+		this.arrayBufferPromise = null;
+		this.arrayBufferDelivered = false;
+		this.closed = false;
+	}
+
+	pull(callback) {
+		if (typeof callback !== 'function') {
+			throw new TypeError('callback must be a function');
+		}
+		if (this.closed) {
+			callback(0);
+			return 0;
+		}
+		if (this.reader) {
+			this.reader
+				.read()
+				.then(({ done, value }) => {
+					if (done) {
+						this.closed = true;
+						callback(0);
+						return;
+					}
+					callback(1, chunkToArrayBuffer(value));
+				})
+				.catch((error) => {
+					console.warn('Blob reader failed', error);
+					this.closed = true;
+					callback(-1);
+				});
+			return 1;
+		}
+		if (!this.arrayBufferPromise) {
+			this.arrayBufferPromise = this.blob.arrayBuffer();
+		}
+		this.arrayBufferPromise
+			.then((buffer) => {
+				if (this.closed) {
+					callback(0);
+					return;
+				}
+				if (!this.arrayBufferDelivered) {
+					this.arrayBufferDelivered = true;
+					callback(1, buffer);
+					return;
+				}
+				this.closed = true;
+				callback(0);
+			})
+			.catch((error) => {
+				console.warn('Blob reader failed', error);
+				this.closed = true;
+				callback(-1);
+			});
+		return 1;
+	}
+}
+
+class BrowserBlobHandle {
+	constructor(blob) {
+		this[blobHandleBrand] = true;
+		this[blobHandleBlob] = blob;
+	}
+
+	slice(start, end) {
+		return new BrowserBlobHandle(this[blobHandleBlob].slice(start, end));
+	}
+
+	getReader() {
+		return new BrowserBlobReader(this[blobHandleBlob]);
+	}
+}
+
+const makeBlobHandle = (sources) => {
+	ensureBlobSupport();
+	const parts = sources.map((part) => normalizeBlobPart(part));
+	const blob = new Blob(parts);
+	return new BrowserBlobHandle(blob);
+};
+
+const concatArrayBuffers = (buffers) => {
+	if (!Array.isArray(buffers)) {
+		throw new TypeError('buffers must be an array');
+	}
+	const views = [];
+	let total = 0;
+	for (const buffer of buffers) {
+		const normalized = chunkToArrayBuffer(buffer);
+		if (normalized === undefined) {
+			continue;
+		}
+		const view = new Uint8Array(normalized);
+		views.push(view);
+		total += view.byteLength;
+	}
+	const result = new Uint8Array(total);
+	let offset = 0;
+	for (const view of views) {
+		result.set(view, offset);
+		offset += view.byteLength;
+	}
+	return result.buffer;
+};
+
+const storeBlobDataObject = (id, handle, size, type) => {
+	if (typeof id !== 'string') {
+		throw new TypeError('Expected string id');
+	}
+	if (!isBlobHandle(handle)) {
+		throw new TypeError('Expected Blob handle');
+	}
+	blobDataObjectStore.set(id, {
+		handle,
+		length: typeof size === 'number' ? size : Number(size ?? 0),
+		type: `${type ?? ''}`,
+	});
+};
+
+const getBlobDataObject = (id) => {
+	const stored = blobDataObjectStore.get(id);
+	if (!stored) {
+		return undefined;
+	}
+	return [stored.handle, stored.length, stored.type];
+};
+
+const revokeBlobDataObject = (url) => {
+	const str = `${url}`;
+	let id;
+	try {
+		const parsed = new URL(str);
+		const parts = parsed.pathname.split(':', 2);
+		if (parts.length === 2 && parts[0] === 'nodedata') {
+			id = parts[1];
+		}
+	} catch {
+		if (str.startsWith(blobObjectUrlPrefix)) {
+			id = str.slice(blobObjectUrlPrefix.length);
+		}
+	}
+	if (id) {
+		blobDataObjectStore.delete(id);
+	}
+};
+
+// Fill a provided stats array at a specific offset
+// This is used by the native binding to populate the shared statValues arrays
+// offset is in fields (18 fields per Stats instance)
+function fillStatsArray(arr, stats, useBigint, offset = 0) {
+	// Convert to appropriate type
+	const toType = useBigint ? BigInt : Number;
+
+	// File type constants (from Node.js constants)
+	const S_IFREG = 32768; // Regular file
+	const S_IFDIR = 16384; // Directory
+	const S_IFLNK = 40960; // Symbolic link
+
+	// Combine file type bits with permission bits
+	let mode = stats.mode;
+	if (stats.type === 'file') {
+		mode = S_IFREG | stats.mode;
+	} else if (stats.type === 'dir') {
+		mode = S_IFDIR | stats.mode;
+	} else if (stats.type === 'symlink') {
+		mode = S_IFLNK | stats.mode;
+	}
+
+	// Fill array in the order expected by Node.js
+	// See FsStatsOffset in src/node_file.h
+	arr[offset + 0] = toType(0); // dev
+	arr[offset + 1] = toType(mode); // mode (with file type bits)
+	arr[offset + 2] = toType(1); // nlink
+	arr[offset + 3] = toType(0); // uid
+	arr[offset + 4] = toType(0); // gid
+	arr[offset + 5] = toType(0); // rdev
+	arr[offset + 6] = toType(4096); // blksize
+	arr[offset + 7] = toType(0); // ino
+	arr[offset + 8] = toType(stats.size); // size
+	arr[offset + 9] = toType(Math.ceil(stats.size / 512)); // blocks
+
+	// Time values - split into seconds and nanoseconds
+	arr[offset + 10] = toType(Math.floor(stats.atimeMs / 1000)); // atimeSec
+	arr[offset + 11] = toType((stats.atimeMs % 1000) * 1000000); // atimeNsec
+	arr[offset + 12] = toType(Math.floor(stats.mtimeMs / 1000)); // mtimeSec
+	arr[offset + 13] = toType((stats.mtimeMs % 1000) * 1000000); // mtimeNsec
+	arr[offset + 14] = toType(Math.floor(stats.ctimeMs / 1000)); // ctimeSec
+	arr[offset + 15] = toType((stats.ctimeMs % 1000) * 1000000); // ctimeNsec
+	arr[offset + 16] = toType(Math.floor(stats.birthtimeMs / 1000)); // birthtimeSec
+	arr[offset + 17] = toType((stats.birthtimeMs % 1000) * 1000000); // birthtimeNsec
+}
+class InternalFileHandle {
+	constructor(fd, fs) {
+		this.fd = fd;
+		this.fs = fs;
+	}
+
+	close() {
+		return new Promise((resolve, reject) => {
+			if (this.fd !== undefined) {
+				try {
+					this.fs.closeSync(this.fd);
+					this.fd = undefined;
+					resolve();
+				} catch (error) {
+					reject(error);
+				}
+			} else {
+				resolve();
+			}
+		});
+	}
+
+	read(offset, length, position) {
+		if (this.fd === undefined) {
+			throw createFsError('EBADF', 'EBADF: bad file descriptor, read');
+		}
+		return this.fs.readSync(this.fd, length, position);
+	}
+
+	write(buffer, offset, length, position) {
+		throw new Error('Not implemented');
+		if (this.fd === undefined) {
+			throw createFsError('EBADF', 'EBADF: bad file descriptor, write');
+		}
+		return this.fs.writeSync(this.fd, buffer, offset, length, position);
+	}
+
+	stat(bigint = false) {
+		if (this.fd === undefined) {
+			throw createFsError('EBADF', 'EBADF: bad file descriptor, fstat');
+		}
+		const openFile = this.fs.openFiles.get(this.fd);
+		if (!openFile) {
+			throw createFsError('EBADF', 'EBADF: bad file descriptor, fstat');
+		}
+		return new Stats(openFile.node);
+	}
+
+	truncate(len = 0) {
+		if (this.fd === undefined) {
+			throw createFsError(
+				'EBADF',
+				'EBADF: bad file descriptor, ftruncate'
+			);
+		}
+		return this.fs.ftruncateSync(this.fd, len);
+	}
+
+	ftruncate(len = 0) {
+		// Alias for truncate - both do the same thing
+		return this.truncate(len);
+	}
+
+	utimes(atime, mtime) {
+		if (this.fd === undefined) {
+			throw createFsError('EBADF', 'EBADF: bad file descriptor, futimes');
+		}
+		return this.fs.futimesSync(this.fd, atime, mtime);
+	}
+
+	chmod(mode) {
+		if (this.fd === undefined) {
+			throw createFsError('EBADF', 'EBADF: bad file descriptor, fchmod');
+		}
+		const openFile = this.fs.openFiles.get(this.fd);
+		if (!openFile) {
+			throw createFsError('EBADF', 'EBADF: bad file descriptor, fchmod');
+		}
+		openFile.node.mode = mode;
+	}
+
+	chown(uid, gid) {
+		if (this.fd === undefined) {
+			throw createFsError('EBADF', 'EBADF: bad file descriptor, fchown');
+		}
+		// No-op in browser environment, but don't throw
+	}
+
+	datasync() {
+		if (this.fd === undefined) {
+			throw createFsError(
+				'EBADF',
+				'EBADF: bad file descriptor, fdatasync'
+			);
+		}
+		// No-op in memory filesystem (always synced)
+	}
+
+	sync() {
+		if (this.fd === undefined) {
+			throw createFsError('EBADF', 'EBADF: bad file descriptor, fsync');
+		}
+		// No-op in memory filesystem (always synced)
+	}
+}
+function promiseFromSync(syncFn) {
+	return new Promise((resolve, reject) => {
+		try {
+			resolve(syncFn());
+		} catch (err) {
+			reject(err);
+		}
+	});
+}
+
+const BASE64_ALPHABET =
+	'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+const BASE64_LOOKUP = (() => {
+	const table = new Map();
+	for (let i = 0; i < BASE64_ALPHABET.length; i += 1) {
+		table.set(BASE64_ALPHABET[i], i);
+	}
+	return table;
+})();
+
+const TEXT_ENCODER_UTF8 =
+	typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
+const TEXT_DECODER_UTF8 =
+	typeof TextDecoder !== 'undefined' ? new TextDecoder('utf-8') : null;
+const TEXT_DECODER_UTF8_FATAL =
+	typeof TextDecoder !== 'undefined'
+		? new TextDecoder('utf-8', { fatal: true })
+		: null;
+const TEXT_DECODER_LATIN1 =
+	typeof TextDecoder !== 'undefined' ? new TextDecoder('latin1') : null;
+const TEXT_DECODER_UTF16LE =
+	typeof TextDecoder !== 'undefined' ? new TextDecoder('utf-16le') : null;
+
+const clampIndex = (index, length) => {
+	if (typeof index !== 'number') {
+		index = Number(index);
+	}
+	if (!Number.isFinite(index)) {
+		return 0;
+	}
+	if (index < 0) {
+		index = Math.max(length + Math.floor(index), 0);
+	} else {
+		index = Math.floor(index);
+		if (index > length) {
+			index = length;
+		}
+	}
+	return index;
+};
+
+const ensureUint8Array = (value) => {
+	if (value instanceof Uint8Array) {
+		return value;
+	}
+	if (
+		ArrayBuffer.isView(value) &&
+		typeof value?.BYTES_PER_ELEMENT === 'number'
+	) {
+		return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+	}
+	if (value instanceof ArrayBuffer) {
+		return new Uint8Array(value);
+	}
+	throw new TypeError('Expected Buffer or Uint8Array, got ' + typeof value);
+};
+
+const isBufferLike = (value) =>
+	value instanceof Uint8Array ||
+	(ArrayBuffer.isView(value) &&
+		typeof value?.BYTES_PER_ELEMENT === 'number') ||
+	value instanceof ArrayBuffer;
+
+const ensureBufferLike = (value) => {
+	if (value instanceof ArrayBuffer) {
+		return new Uint8Array(value);
+	}
+	return ensureUint8Array(value);
+};
+
+const resolveTargetWithArgs = (thisArg, argsLike) => {
+	const args = Array.prototype.slice.call(argsLike);
+	if (args.length > 0 && isBufferLike(args[0])) {
+		const buffer = ensureBufferLike(args.shift());
+		return { buffer, args };
+	}
+	if (isBufferLike(thisArg)) {
+		return { buffer: ensureBufferLike(thisArg), args };
+	}
+	throw new TypeError('Buffer instance expected');
+};
+
+const base64Clean = (input) =>
+	String(input ?? '')
+		.replace(/[^+/0-9A-Za-z\-_]/g, '')
+		.replace(/-/g, '+')
+		.replace(/_/g, '/');
+
+const base64Pad = (input) => {
+	let output = input;
+	const mod = output.length % 4;
+	if (mod === 2) output += '==';
+	else if (mod === 3) output += '=';
+	else if (mod !== 0 && mod === 1) output += '===';
+	return output;
+};
+
+const base64Encode = (bytes) => {
+	if (!bytes || bytes.length === 0) {
+		return '';
+	}
+	let output = '';
+	let i = 0;
+	const len = bytes.length;
+	while (i + 2 < len) {
+		const chunk = (bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2];
+		output +=
+			BASE64_ALPHABET[(chunk >> 18) & 0x3f] +
+			BASE64_ALPHABET[(chunk >> 12) & 0x3f] +
+			BASE64_ALPHABET[(chunk >> 6) & 0x3f] +
+			BASE64_ALPHABET[chunk & 0x3f];
+		i += 3;
+	}
+	const remaining = len - i;
+	if (remaining === 1) {
+		const chunk = bytes[i] << 16;
+		output +=
+			BASE64_ALPHABET[(chunk >> 18) & 0x3f] +
+			BASE64_ALPHABET[(chunk >> 12) & 0x3f] +
+			'==';
+	} else if (remaining === 2) {
+		const chunk = (bytes[i] << 16) | (bytes[i + 1] << 8);
+		output +=
+			BASE64_ALPHABET[(chunk >> 18) & 0x3f] +
+			BASE64_ALPHABET[(chunk >> 12) & 0x3f] +
+			BASE64_ALPHABET[(chunk >> 6) & 0x3f] +
+			'=';
+	}
+	return output;
+};
+
+const base64Decode = (input) => {
+	const clean = base64Pad(base64Clean(input));
+	const length = clean.length;
+	if (length === 0) {
+		return new Uint8Array(0);
+	}
+	let outputLength = (length >> 2) * 3;
+	if (clean[length - 1] === '=') outputLength -= 1;
+	if (clean[length - 2] === '=') outputLength -= 1;
+
+	const output = new Uint8Array(outputLength);
+	let outputIndex = 0;
+
+	for (let i = 0; i < length; i += 4) {
+		const sextet1 = BASE64_LOOKUP.get(clean[i]);
+		const sextet2 = BASE64_LOOKUP.get(clean[i + 1]);
+		const sextet3 = BASE64_LOOKUP.get(clean[i + 2]);
+		const sextet4 = BASE64_LOOKUP.get(clean[i + 3]);
+
+		const chunk =
+			((sextet1 ?? 0) << 18) |
+			((sextet2 ?? 0) << 12) |
+			(((sextet3 ?? 0) & 0x3f) << 6) |
+			((sextet4 ?? 0) & 0x3f);
+
+		if (outputIndex < outputLength) {
+			output[outputIndex++] = (chunk >> 16) & 0xff;
+		}
+		if (outputIndex < outputLength) {
+			output[outputIndex++] = (chunk >> 8) & 0xff;
+		}
+		if (outputIndex < outputLength) {
+			output[outputIndex++] = chunk & 0xff;
+		}
+	}
+
+	return output;
+};
+
+const base64ToBase64Url = (base64) =>
+	base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+
+const base64UrlToBase64 = (base64url) => {
+	let converted = base64url.replace(/-/g, '+').replace(/_/g, '/');
+	while (converted.length % 4 !== 0) {
+		converted += '=';
+	}
+	return converted;
+};
+
+const normalizeEncodingName = (encoding) => {
+	if (typeof encoding === 'number') {
+		const map = globalThis.internalModules?.util?.encodingsMap;
+		if (map && typeof map === 'object') {
+			for (const [name, value] of Object.entries(map)) {
+				if (value === encoding) {
+					return normalizeEncodingName(name);
+				}
+			}
+		}
+		return undefined;
+	}
+	if (encoding === undefined || encoding === null || encoding === '') {
+		return undefined;
+	}
+	const lower = String(encoding).toLowerCase();
+	switch (lower) {
+		case 'utf8':
+		case 'utf-8':
+			return 'utf8';
+		case 'ucs2':
+		case 'ucs-2':
+		case 'utf16le':
+		case 'utf-16le':
+			return 'utf16le';
+		case 'latin1':
+		case 'binary':
+			return 'latin1';
+		case 'ascii':
+			return 'ascii';
+		case 'base64':
+			return 'base64';
+		case 'base64url':
+			return 'base64url';
+		case 'hex':
+			return 'hex';
+		case 'buffer':
+			return 'buffer';
+		default:
+			return lower;
+	}
+};
+
+const ENCODING_VALUE_TO_NAME =
+	globalThis.internalModules?.util?.encodingsMap &&
+	typeof globalThis.internalModules.util.encodingsMap === 'object'
+		? new Map(
+				Object.entries(
+					globalThis.internalModules.util.encodingsMap
+				).map(([name, value]) => [value, name])
+		  )
+		: null;
+
+const resolveFsEncodingValue = (encoding) => {
+	if (encoding === undefined || encoding === null || encoding === '') {
+		return encoding;
+	}
+	if (
+		typeof encoding === 'number' &&
+		ENCODING_VALUE_TO_NAME &&
+		ENCODING_VALUE_TO_NAME.has(encoding)
+	) {
+		return normalizeEncodingName(ENCODING_VALUE_TO_NAME.get(encoding));
+	}
+	if (typeof encoding === 'string') {
+		return normalizeEncodingName(encoding) ?? encoding;
+	}
+	return encoding;
+};
+
+const resolveFsEncodingOptions = (options) => {
+	if (typeof options === 'string') {
+		return resolveFsEncodingValue(options);
+	}
+	if (options && typeof options === 'object') {
+		if (Object.prototype.hasOwnProperty.call(options, 'encoding')) {
+			const normalized = resolveFsEncodingValue(options.encoding);
+			if (normalized !== undefined && normalized !== options.encoding) {
+				return { ...options, encoding: normalized };
+			}
+		}
+		return options;
+	}
+	return options;
+};
+
+const ensureNodeBuffer = (value) => {
+	if (
+		value == null ||
+		typeof Buffer === 'undefined' ||
+		typeof Buffer.from !== 'function'
+	) {
+		return value;
+	}
+	if (Buffer.isBuffer && Buffer.isBuffer(value)) {
+		return value;
+	}
+	if (value instanceof Uint8Array) {
+		return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+	}
+	if (ArrayBuffer.isView(value)) {
+		return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+	}
+	if (value instanceof ArrayBuffer) {
+		return Buffer.from(value);
+	}
+	return value;
+};
+
+const shouldReturnBuffer = (options) => {
+	if (options === undefined || options === null) {
+		return true;
+	}
+	if (typeof options === 'string') {
+		return false;
+	}
+	if (typeof options === 'object') {
+		if (Object.prototype.hasOwnProperty.call(options, 'encoding')) {
+			const normalized = resolveFsEncodingValue(options.encoding);
+			return normalized === undefined || normalized === null;
+		}
+		return true;
+	}
+	return false;
+};
+
+const encodeStringToBytes = (string, encoding) => {
+	const format = normalizeEncodingName(encoding);
+	switch (format) {
+		case 'utf8':
+			if (!TEXT_ENCODER_UTF8) {
+				throw new Error('TextEncoder not available');
+			}
+			return TEXT_ENCODER_UTF8.encode(string);
+		case 'ascii': {
+			const result = new Uint8Array(string.length);
+			const len = Math.min(result.length, string.length);
+			for (let i = 0; i < len; i += 1) {
+				result[i] = string.charCodeAt(i) & 0x7f;
+			}
+			return result;
+		}
+		case 'latin1': {
+			const result = new Uint8Array(string.length);
+			const len = Math.min(result.length, string.length);
+			for (let i = 0; i < len; i += 1) {
+				result[i] = string.charCodeAt(i) & 0xff;
+			}
+			return result;
+		}
+		case 'utf16le': {
+			const result = new Uint8Array(string.length * 2);
+			for (let i = 0; i < string.length; i += 1) {
+				const code = string.charCodeAt(i);
+				const offset = i * 2;
+				result[offset] = code & 0xff;
+				result[offset + 1] = code >>> 8;
+			}
+			return result;
+		}
+		case 'hex': {
+			const normalized = string.replace(/[^0-9a-fA-F]/g, '');
+			const length = Math.floor(normalized.length / 2);
+			const result = new Uint8Array(length);
+			for (let i = 0; i < length; i += 1) {
+				const byte = parseInt(normalized.substr(i * 2, 2), 16);
+				if (Number.isNaN(byte)) {
+					return result.subarray(0, i);
+				}
+				result[i] = byte;
+			}
+			return result;
+		}
+		case 'base64': {
+			return base64Decode(string);
+		}
+		case 'base64url': {
+			return base64Decode(base64UrlToBase64(string));
+		}
+		default:
+			if (!TEXT_ENCODER_UTF8) {
+				throw new Error('TextEncoder not available');
+			}
+			return TEXT_ENCODER_UTF8.encode(string);
+	}
+};
+
+const decodeBytesToString = (bytes, encoding) => {
+	const format = normalizeEncodingName(encoding);
+	const view = ensureUint8Array(bytes);
+	switch (format) {
+		case 'utf8':
+			if (!TEXT_DECODER_UTF8) {
+				throw new Error('TextDecoder not available');
+			}
+			return TEXT_DECODER_UTF8.decode(view);
+		case 'ascii': {
+			let output = '';
+			for (let i = 0; i < view.length; i += 1) {
+				output += String.fromCharCode(view[i] & 0x7f);
+			}
+			return output;
+		}
+		case 'latin1': {
+			if (!TEXT_DECODER_LATIN1) {
+				let output = '';
+				for (let i = 0; i < view.length; i += 1) {
+					output += String.fromCharCode(view[i]);
+				}
+				return output;
+			}
+			return TEXT_DECODER_LATIN1.decode(view);
+		}
+		case 'utf16le': {
+			if (!TEXT_DECODER_UTF16LE) {
+				let output = '';
+				const evenLength = view.length - (view.length % 2);
+				for (let i = 0; i < evenLength; i += 2) {
+					output += String.fromCharCode(view[i] | (view[i + 1] << 8));
+				}
+				return output;
+			}
+			const evenLength = view.length - (view.length % 2);
+			return TEXT_DECODER_UTF16LE.decode(view.subarray(0, evenLength));
+		}
+		case 'hex': {
+			let output = '';
+			for (let i = 0; i < view.length; i += 1) {
+				const hex = view[i].toString(16).padStart(2, '0');
+				output += hex;
+			}
+			return output;
+		}
+		case 'base64':
+			return base64Encode(view);
+		case 'base64url':
+			return base64ToBase64Url(base64Encode(view));
+		default:
+			if (!TEXT_DECODER_UTF8) {
+				throw new Error('TextDecoder not available');
+			}
+			return TEXT_DECODER_UTF8.decode(view);
+	}
+};
+
+const normalizeCompareVal = (val, aLength, bLength) => {
+	if (val === 0) {
+		if (aLength > bLength) return 1;
+		if (aLength < bLength) return -1;
+		return 0;
+	}
+	return val > 0 ? 1 : -1;
+};
+
+const computeIndexOfOffset = (length, offset, needleLength, isForward) => {
+	const len = Number(length) >>> 0;
+	let off = Number(offset);
+	if (!Number.isFinite(off)) {
+		off = 0;
+	}
+	if (off < 0) {
+		if (off + len >= 0) {
+			return len + Math.floor(off);
+		}
+		return isForward || needleLength === 0 ? 0 : -1;
+	}
+	if (off + needleLength <= len) {
+		return Math.floor(off);
+	}
+	if (needleLength === 0) {
+		return len;
+	}
+	return isForward ? -1 : len - 1;
+};
+
+const createBufferBinding = () => {
+	const zeroFillToggle = new Uint32Array([1]);
+	let bufferPrototypeReference = null;
+
+	const asciiSlice = function (start = 0, end = this.length) {
+		const buf = ensureUint8Array(this);
+		const clampedStart = clampIndex(start, buf.length);
+		const clampedEnd = clampIndex(end, buf.length);
+		let output = '';
+		for (let i = clampedStart; i < clampedEnd; i += 1) {
+			output += String.fromCharCode(buf[i] & 0x7f);
+		}
+		return output;
+	};
+
+	const latin1Slice = function (start = 0, end = this.length) {
+		const buf = ensureUint8Array(this);
+		const clampedStart = clampIndex(start, buf.length);
+		const clampedEnd = clampIndex(end, buf.length);
+		if (TEXT_DECODER_LATIN1) {
+			return TEXT_DECODER_LATIN1.decode(
+				buf.subarray(clampedStart, clampedEnd)
+			);
+		}
+		let output = '';
+		for (let i = clampedStart; i < clampedEnd; i += 1) {
+			output += String.fromCharCode(buf[i]);
+		}
+		return output;
+	};
+
+	const utf8Slice = function (start = 0, end = this.length) {
+		const buf = ensureUint8Array(this);
+		const clampedStart = clampIndex(start, buf.length);
+		const clampedEnd = clampIndex(end, buf.length);
+		if (!TEXT_DECODER_UTF8) {
+			throw new Error('TextDecoder not available');
+		}
+		return TEXT_DECODER_UTF8.decode(buf.subarray(clampedStart, clampedEnd));
+	};
+
+	const base64Slice = function (start = 0, end = this.length) {
+		const buf = ensureUint8Array(this);
+		const clampedStart = clampIndex(start, buf.length);
+		const clampedEnd = clampIndex(end, buf.length);
+		return base64Encode(buf.subarray(clampedStart, clampedEnd));
+	};
+
+	const base64urlSlice = function (start = 0, end = this.length) {
+		return base64ToBase64Url(base64Slice.call(this, start, end));
+	};
+
+	const hexSlice = function (start = 0, end = this.length) {
+		const buf = ensureUint8Array(this);
+		const clampedStart = clampIndex(start, buf.length);
+		const clampedEnd = clampIndex(end, buf.length);
+		let output = '';
+		for (let i = clampedStart; i < clampedEnd; i += 1) {
+			output += buf[i].toString(16).padStart(2, '0');
+		}
+		return output;
+	};
+
+	const ucs2Slice = function (start = 0, end = this.length) {
+		const buf = ensureUint8Array(this);
+		let clampedStart = clampIndex(start, buf.length);
+		let clampedEnd = clampIndex(end, buf.length);
+		clampedStart -= clampedStart % 2;
+		clampedEnd -= clampedEnd % 2;
+		if (!TEXT_DECODER_UTF16LE) {
+			let output = '';
+			for (let i = clampedStart; i < clampedEnd; i += 2) {
+				output += String.fromCharCode(
+					buf[i] | ((buf[i + 1] ?? 0) << 8)
+				);
+			}
+			return output;
+		}
+		return TEXT_DECODER_UTF16LE.decode(
+			buf.subarray(clampedStart, clampedEnd)
+		);
+	};
+
+	const writeToBuffer = (target, bytes, offset, length) => {
+		const buf = ensureUint8Array(target);
+		const start = clampIndex(offset ?? 0, buf.length);
+		const remaining = buf.length - start;
+		const max =
+			length === undefined ? remaining : Math.min(length, remaining);
+		const view = ensureUint8Array(bytes);
+		const available = Math.min(max, view.length);
+		buf.set(view.subarray(0, available), start);
+		return available;
+	};
+
+	const asciiWriteStatic = function (target, string, offset = 0, length) {
+		const { buffer, args } = resolveTargetWithArgs(this, arguments);
+		const [value, offsetOrDefault = 0, lengthOrDefault] = args;
+		if (typeof value !== 'string') {
+			throw new TypeError('argument must be a string');
+		}
+		const buf = buffer;
+		const start = clampIndex(offsetOrDefault, buf.length);
+		const remaining = buf.length - start;
+		const limit =
+			lengthOrDefault === undefined
+				? remaining
+				: Math.min(lengthOrDefault, remaining);
+		const max = Math.min(limit, value.length);
+		for (let i = 0; i < max; i += 1) {
+			buf[start + i] = value.charCodeAt(i) & 0x7f;
+		}
+		return max;
+	};
+
+	const latin1WriteStatic = function (target, string, offset = 0, length) {
+		const { buffer, args } = resolveTargetWithArgs(this, arguments);
+		const [value, offsetOrDefault = 0, lengthOrDefault] = args;
+		if (typeof value !== 'string') {
+			throw new TypeError('argument must be a string');
+		}
+		const buf = buffer;
+		const start = clampIndex(offsetOrDefault, buf.length);
+		const remaining = buf.length - start;
+		const limit =
+			lengthOrDefault === undefined
+				? remaining
+				: Math.min(lengthOrDefault, remaining);
+		const max = Math.min(limit, value.length);
+		for (let i = 0; i < max; i += 1) {
+			buf[start + i] = value.charCodeAt(i) & 0xff;
+		}
+		return max;
+	};
+
+	const utf8WriteStatic = function (target, string, offset = 0, length) {
+		const { buffer, args } = resolveTargetWithArgs(this, arguments);
+		const [value, offsetOrDefault = 0, lengthOrDefault] = args;
+		if (typeof value !== 'string') {
+			throw new TypeError('argument must be a string');
+		}
+		const bytes = encodeStringToBytes(value, 'utf8');
+		return writeToBuffer(buffer, bytes, offsetOrDefault, lengthOrDefault);
+	};
+
+	const base64Write = function (target, string, offset = 0, length) {
+		const { buffer, args } = resolveTargetWithArgs(this, arguments);
+		const [value, offsetOrDefault = 0, lengthOrDefault] = args;
+		if (typeof value !== 'string') {
+			throw new TypeError('argument must be a string');
+		}
+		const cleaned = value.replace(/[\r\n\s]/g, '');
+		const bytes = base64Decode(cleaned);
+		return writeToBuffer(buffer, bytes, offsetOrDefault, lengthOrDefault);
+	};
+
+	const base64urlWrite = function (target, string, offset = 0, length) {
+		const { buffer, args } = resolveTargetWithArgs(this, arguments);
+		const [value, offsetOrDefault = 0, lengthOrDefault] = args;
+		if (typeof value !== 'string') {
+			throw new TypeError('argument must be a string');
+		}
+		const base64 = base64UrlToBase64(value.replace(/[\r\n\s]/g, ''));
+		const bytes = base64Decode(base64);
+		return writeToBuffer(buffer, bytes, offsetOrDefault, lengthOrDefault);
+	};
+
+	const hexWrite = function (target, string, offset = 0, length) {
+		const { buffer, args } = resolveTargetWithArgs(this, arguments);
+		const [value, offsetOrDefault = 0, lengthOrDefault] = args;
+		if (typeof value !== 'string') {
+			throw new TypeError('argument must be a string');
+		}
+		const buf = buffer;
+		const start = clampIndex(offsetOrDefault, buf.length);
+		const remaining = buf.length - start;
+		const limit =
+			lengthOrDefault === undefined
+				? remaining
+				: Math.min(lengthOrDefault, remaining);
+		const sanitized = value.replace(/[^0-9a-fA-F]/g, '');
+		const byteLength = Math.min(Math.floor(sanitized.length / 2), limit);
+		for (let i = 0; i < byteLength; i += 1) {
+			const value = parseInt(sanitized.slice(i * 2, i * 2 + 2), 16);
+			if (Number.isNaN(value)) {
+				return i;
+			}
+			buf[start + i] = value;
+		}
+		return byteLength;
+	};
+
+	const ucs2Write = function (target, string, offset = 0, length) {
+		const { buffer, args } = resolveTargetWithArgs(this, arguments);
+		const [value, offsetOrDefault = 0, lengthOrDefault] = args;
+		if (typeof value !== 'string') {
+			throw new TypeError('argument must be a string');
+		}
+		const buf = buffer;
+		const start = clampIndex(offsetOrDefault, buf.length);
+		const remaining = buf.length - start;
+		const limit =
+			lengthOrDefault === undefined
+				? remaining
+				: Math.min(lengthOrDefault, remaining);
+		const evenLimit = limit - (limit % 2);
+		const maxChars = Math.min(value.length, evenLimit / 2);
+		for (let i = 0; i < maxChars; i += 1) {
+			const code = value.charCodeAt(i);
+			const writeIndex = start + i * 2;
+			buf[writeIndex] = code & 0xff;
+			buf[writeIndex + 1] = code >>> 8;
+		}
+		return maxChars * 2;
+	};
+
+	const compare = (bufferA, bufferB) => {
+		const a = ensureUint8Array(bufferA);
+		const b = ensureUint8Array(bufferB);
+		const length = Math.min(a.length, b.length);
+		for (let i = 0; i < length; i += 1) {
+			if (a[i] !== b[i]) {
+				return a[i] < b[i] ? -1 : 1;
+			}
+		}
+		return a.length === b.length ? 0 : a.length < b.length ? -1 : 1;
+	};
+
+	const compareOffset = (
+		source,
+		target,
+		targetStart,
+		sourceStart,
+		targetEnd,
+		sourceEnd
+	) => {
+		const sourceArray = ensureUint8Array(source);
+		const targetArray = ensureUint8Array(target);
+		const srcStart = clampIndex(sourceStart ?? 0, sourceArray.length);
+		const tgtStart = clampIndex(targetStart ?? 0, targetArray.length);
+		const srcEnd = clampIndex(
+			sourceEnd ?? sourceArray.length,
+			sourceArray.length
+		);
+		const tgtEnd = clampIndex(
+			targetEnd ?? targetArray.length,
+			targetArray.length
+		);
+		const sliceA = sourceArray.subarray(srcStart, srcEnd);
+		const sliceB = targetArray.subarray(tgtStart, tgtEnd);
+		return compare(sliceA, sliceB);
+	};
+
+	const copy = (source, target, targetStart, sourceStart, nb) => {
+		const src = ensureUint8Array(source);
+		const tgt = ensureUint8Array(target);
+		const srcStart = clampIndex(sourceStart ?? 0, src.length);
+		const tgtStart = clampIndex(targetStart ?? 0, tgt.length);
+		const bytesToCopy =
+			nb === undefined ? src.length - srcStart : Math.max(nb, 0);
+		const available = Math.min(
+			bytesToCopy,
+			src.length - srcStart,
+			tgt.length - tgtStart
+		);
+		tgt.set(src.subarray(srcStart, srcStart + available), tgtStart);
+		return available;
+	};
+
+	const fill = (buffer, value, start, end, encoding) => {
+		const buf = ensureUint8Array(buffer);
+		const fillStart = clampIndex(start ?? 0, buf.length);
+		const fillEnd = clampIndex(end ?? buf.length, buf.length);
+		if (fillEnd <= fillStart) {
+			return buf;
+		}
+		if (typeof value === 'number') {
+			const byte = value & 0xff;
+			buf.fill(byte, fillStart, fillEnd);
+			return buf;
+		}
+		let bytes;
+		if (typeof value === 'string') {
+			bytes = encodeStringToBytes(value, encoding);
+		} else if (value instanceof Uint8Array || ArrayBuffer.isView(value)) {
+			bytes = ensureUint8Array(value);
+		} else if (value instanceof ArrayBuffer) {
+			bytes = new Uint8Array(value);
+		} else {
+			throw new TypeError('Unsupported fill value');
+		}
+		if (bytes.length === 0) {
+			throw new TypeError(
+				'The value "' + value + '" is invalid for argument "value"'
+			);
+		}
+		for (let i = fillStart; i < fillEnd; i += 1) {
+			buf[i] = bytes[(i - fillStart) % bytes.length];
+		}
+		return buf;
+	};
+
+	const isAscii = (buffer) => {
+		const buf = ensureUint8Array(buffer);
+		for (let i = 0; i < buf.length; i += 1) {
+			if (buf[i] > 0x7f) {
+				return false;
+			}
+		}
+		return true;
+	};
+
+	const isUtf8 = (buffer) => {
+		if (!TEXT_DECODER_UTF8_FATAL) {
+			return true;
+		}
+		try {
+			TEXT_DECODER_UTF8_FATAL.decode(ensureUint8Array(buffer));
+			return true;
+		} catch {
+			return false;
+		}
+	};
+
+	const searchArray = (haystack, needle, isForward, start) => {
+		if (needle.length === 0) {
+			return start;
+		}
+		const limit = haystack.length - needle.length;
+		if (isForward) {
+			for (let i = Math.max(start, 0); i <= limit; i += 1) {
+				let match = true;
+				for (let j = 0; j < needle.length; j += 1) {
+					if (haystack[i + j] !== needle[j]) {
+						match = false;
+						break;
+					}
+				}
+				if (match) {
+					return i;
+				}
+			}
+			return -1;
+		}
+		let i = Math.min(start, haystack.length - needle.length);
+		for (; i >= 0; i -= 1) {
+			let match = true;
+			for (let j = 0; j < needle.length; j += 1) {
+				if (haystack[i + j] !== needle[j]) {
+					match = false;
+					break;
+				}
+			}
+			if (match) {
+				return i;
+			}
+		}
+		return -1;
+	};
+
+	const indexOfNumber = (buffer, value, byteOffset, dir) => {
+		const buf = ensureUint8Array(buffer);
+		const needle = new Uint8Array([value & 0xff]);
+		const offset = computeIndexOfOffset(
+			buf.length,
+			byteOffset,
+			needle.length,
+			!!dir
+		);
+		if (offset === -1) {
+			return -1;
+		}
+		return searchArray(buf, needle, !!dir, offset);
+	};
+
+	const indexOfBuffer = (buffer, value, byteOffset, encodingValue, dir) => {
+		const buf = ensureUint8Array(buffer);
+		const needle = ensureUint8Array(value);
+		const offset = computeIndexOfOffset(
+			buf.length,
+			byteOffset,
+			needle.length,
+			!!dir
+		);
+		if (needle.length === 0) {
+			return offset;
+		}
+		if (offset === -1) {
+			return -1;
+		}
+		return searchArray(buf, needle, !!dir, offset);
+	};
+
+	const indexOfString = (buffer, string, byteOffset, encodingValue, dir) => {
+		const bytes = encodeStringToBytes(string, encodingValue);
+		return indexOfBuffer(buffer, bytes, byteOffset, encodingValue, dir);
+	};
+
+	const swap16 = (buffer) => {
+		const buf = ensureUint8Array(buffer);
+		if (buf.length % 2 !== 0) {
+			throw new RangeError('Buffer size must be a multiple of 16-bits');
+		}
+		for (let i = 0; i < buf.length; i += 2) {
+			const tmp = buf[i];
+			buf[i] = buf[i + 1];
+			buf[i + 1] = tmp;
+		}
+		return buf;
+	};
+
+	const swap32 = (buffer) => {
+		const buf = ensureUint8Array(buffer);
+		if (buf.length % 4 !== 0) {
+			throw new RangeError('Buffer size must be a multiple of 32-bits');
+		}
+		for (let i = 0; i < buf.length; i += 4) {
+			const b0 = buf[i];
+			const b1 = buf[i + 1];
+			const b2 = buf[i + 2];
+			const b3 = buf[i + 3];
+			buf[i] = b3;
+			buf[i + 1] = b2;
+			buf[i + 2] = b1;
+			buf[i + 3] = b0;
+		}
+		return buf;
+	};
+
+	const swap64 = (buffer) => {
+		const buf = ensureUint8Array(buffer);
+		if (buf.length % 8 !== 0) {
+			throw new RangeError('Buffer size must be a multiple of 64-bits');
+		}
+		for (let i = 0; i < buf.length; i += 8) {
+			const b0 = buf[i];
+			const b1 = buf[i + 1];
+			const b2 = buf[i + 2];
+			const b3 = buf[i + 3];
+			const b4 = buf[i + 4];
+			const b5 = buf[i + 5];
+			const b6 = buf[i + 6];
+			const b7 = buf[i + 7];
+			buf[i] = b7;
+			buf[i + 1] = b6;
+			buf[i + 2] = b5;
+			buf[i + 3] = b4;
+			buf[i + 4] = b3;
+			buf[i + 5] = b2;
+			buf[i + 6] = b1;
+			buf[i + 7] = b0;
+		}
+		return buf;
+	};
+
+	const byteLengthUtf8 = (string) => {
+		if (typeof string !== 'string') {
+			return ensureUint8Array(string).length;
+		}
+		return encodeStringToBytes(string, 'utf8').length;
+	};
+
+	const copyArrayBuffer = (
+		dest,
+		destOffset,
+		source,
+		sourceOffset,
+		bytesToCopy
+	) => {
+		const destArray = new Uint8Array(dest);
+		const sourceArray = new Uint8Array(source);
+		destArray.set(
+			sourceArray.subarray(sourceOffset, sourceOffset + bytesToCopy),
+			destOffset
+		);
+	};
+
+	const atobImpl = (input) => {
+		const bytes = base64Decode(input);
+		let output = '';
+		for (let i = 0; i < bytes.length; i += 1) {
+			output += String.fromCharCode(bytes[i]);
+		}
+		return output;
+	};
+
+	const btoaImpl = (input) => {
+		const bytes = new Uint8Array(input.length);
+		for (let i = 0; i < input.length; i += 1) {
+			const code = input.charCodeAt(i);
+			if (code > 0xff) {
+				throw new Error('InvalidCharacterError');
+			}
+			bytes[i] = code;
+		}
+		return base64Encode(bytes);
+	};
+
+	const getZeroFillToggle = () => zeroFillToggle;
+
+	const setBufferPrototype = (proto) => {
+		bufferPrototypeReference = proto;
+	};
+
+	return {
+		compare,
+		compareOffset,
+		copy,
+		fill,
+		isAscii,
+		isUtf8,
+		indexOfBuffer,
+		indexOfNumber,
+		indexOfString,
+		swap16,
+		swap32,
+		swap64,
+		kMaxLength: 0x7fffffff,
+		kStringMaxLength: 0x3fffffff,
+		atob: atobImpl,
+		btoa: btoaImpl,
+		asciiSlice,
+		base64Slice,
+		base64urlSlice,
+		latin1Slice,
+		hexSlice,
+		ucs2Slice,
+		utf8Slice,
+		asciiWriteStatic,
+		base64Write,
+		base64urlWrite,
+		latin1WriteStatic,
+		hexWrite,
+		ucs2Write,
+		utf8WriteStatic,
+		getZeroFillToggle,
+		copyArrayBuffer,
+		setBufferPrototype,
+		byteLengthUtf8,
+	};
+};
+const ASYNC_WRAP_CONSTANTS = Object.freeze({
+	kInit: 0,
+	kBefore: 1,
+	kAfter: 2,
+	kDestroy: 3,
+	kPromiseResolve: 4,
+	kTotals: 5,
+	kCheck: 6,
+	kStackLength: 7,
+	kUsesExecutionAsyncResource: 8,
+	kExecutionAsyncId: 0,
+	kTriggerAsyncId: 1,
+	kAsyncIdCounter: 2,
+	kDefaultTriggerAsyncId: 3,
+});
+
+const ASYNC_WRAP_PROVIDER_NAMES = [
+	'NONE',
+	'DIRHANDLE',
+	'DNSCHANNEL',
+	'ELDHISTOGRAM',
+	'FILEHANDLE',
+	'FILEHANDLECLOSEREQ',
+	'BLOBREADER',
+	'FSEVENTWRAP',
+	'FSREQCALLBACK',
+	'FSREQPROMISE',
+	'GETADDRINFOREQWRAP',
+	'GETNAMEINFOREQWRAP',
+	'HEAPSNAPSHOT',
+	'HTTP2SESSION',
+	'HTTP2STREAM',
+	'HTTP2PING',
+	'HTTP2SETTINGS',
+	'HTTPINCOMINGMESSAGE',
+	'HTTPCLIENTREQUEST',
+	'LOCKS',
+	'JSSTREAM',
+	'JSUDPWRAP',
+	'MESSAGEPORT',
+	'PIPECONNECTWRAP',
+	'PIPESERVERWRAP',
+	'PIPEWRAP',
+	'PROCESSWRAP',
+	'PROMISE',
+	'QUERYWRAP',
+	'QUIC_ENDPOINT',
+	'QUIC_LOGSTREAM',
+	'QUIC_PACKET',
+	'QUIC_SESSION',
+	'QUIC_STREAM',
+	'QUIC_UDP',
+	'SHUTDOWNWRAP',
+	'SIGNALWRAP',
+	'STATWATCHER',
+	'STREAMPIPE',
+	'TCPCONNECTWRAP',
+	'TCPSERVERWRAP',
+	'TCPWRAP',
+	'TTYWRAP',
+	'UDPSENDWRAP',
+	'UDPWRAP',
+	'SIGINTWATCHDOG',
+	'WORKER',
+	'WORKERCPUPROFILE',
+	'WORKERCPUUSAGE',
+	'WORKERHEAPPROFILE',
+	'WORKERHEAPSNAPSHOT',
+	'WORKERHEAPSTATISTICS',
+	'WRITEWRAP',
+	'ZLIB',
+	'CHECKPRIMEREQUEST',
+	'PBKDF2REQUEST',
+	'KEYPAIRGENREQUEST',
+	'KEYGENREQUEST',
+	'KEYEXPORTREQUEST',
+	'ARGON2REQUEST',
+	'CIPHERREQUEST',
+	'DERIVEBITSREQUEST',
+	'HASHREQUEST',
+	'RANDOMBYTESREQUEST',
+	'RANDOMPRIMEREQUEST',
+	'SCRYPTREQUEST',
+	'SIGNREQUEST',
+	'TLSWRAP',
+	'VERIFYREQUEST',
+];
+
+function createAsyncWrapBinding() {
+	const providers = {};
+	for (let i = 0; i < ASYNC_WRAP_PROVIDER_NAMES.length; i += 1) {
+		providers[ASYNC_WRAP_PROVIDER_NAMES[i]] = i;
+	}
+	const Providers = Object.freeze(providers);
+
+	const async_hook_fields = new Uint32Array(
+		ASYNC_WRAP_CONSTANTS.kUsesExecutionAsyncResource + 1
+	);
+	const async_id_fields = new Float64Array(
+		ASYNC_WRAP_CONSTANTS.kDefaultTriggerAsyncId + 1
+	);
+	async_id_fields[ASYNC_WRAP_CONSTANTS.kAsyncIdCounter] = 1;
+	let async_ids_stack = new Float64Array(128);
+	const execution_async_resources = [];
+
+	const destroyRegistry =
+		typeof FinalizationRegistry === 'function'
+			? new FinalizationRegistry(({ asyncId, destroyed }) => {
+					if (destroyed && typeof destroyed === 'object') {
+						destroyed.destroyed = true;
+					}
+					queueDestroy(asyncId);
+					destroyMetadataByAsyncId.delete(asyncId);
+			  })
+			: null;
+
+	const destroyMetadataByAsyncId = new Map();
+	const destroyQueue = [];
+	let destroyScheduled = false;
+
+	const scheduleDestroyDrain = () => {
+		if (destroyScheduled) {
+			return;
+		}
+		destroyScheduled = true;
+		const flush = () => {
+			destroyScheduled = false;
+			if (!destroyQueue.length) {
+				return;
+			}
+			const destroy = hookState.destroy;
+			while (destroyQueue.length) {
+				const asyncId = destroyQueue.shift();
+				if (typeof destroy === 'function') {
+					try {
+						destroy(asyncId);
+					} catch (error) {
+						if (
+							typeof process !== 'undefined' &&
+							typeof process._fatalException === 'function'
+						) {
+							process._fatalException(error);
+						} else {
+							console.error(error);
+						}
+					}
+				}
+			}
+		};
+		if (typeof queueMicrotask === 'function') {
+			queueMicrotask(flush);
+		} else {
+			Promise.resolve().then(flush);
+		}
+	};
+
+	const queueDestroy = (asyncId) => {
+		if (typeof asyncId !== 'number' || asyncId <= 0) {
+			return;
+		}
+		destroyQueue.push(asyncId);
+		scheduleDestroyDrain();
+	};
+
+	const resizeAsyncIdsStack = (minLength) => {
+		let length = async_ids_stack.length || 32;
+		while (length < minLength) {
+			length *= 2;
+		}
+		if (length === async_ids_stack.length) {
+			return;
+		}
+		const next = new Float64Array(length);
+		next.set(async_ids_stack);
+		async_ids_stack = next;
+		binding.async_ids_stack = next;
+	};
+
+	const hookState = {
+		init: null,
+		before: null,
+		after: null,
+		destroy: null,
+		promise_resolve: null,
+	};
+
+	let callbackTrampoline = null;
+	const promiseHooks = {
+		init: null,
+		before: null,
+		after: null,
+		resolve: null,
+	};
+
+	const binding = {
+		constants: ASYNC_WRAP_CONSTANTS,
+		Providers,
+		async_hook_fields,
+		async_id_fields,
+		execution_async_resources,
+		setupHooks(hooks) {
+			if (!hooks || typeof hooks !== 'object') {
+				return;
+			}
+			if (typeof hooks.init === 'function') hookState.init = hooks.init;
+			if (typeof hooks.before === 'function')
+				hookState.before = hooks.before;
+			if (typeof hooks.after === 'function')
+				hookState.after = hooks.after;
+			if (typeof hooks.destroy === 'function')
+				hookState.destroy = hooks.destroy;
+			if (typeof hooks.promise_resolve === 'function') {
+				hookState.promise_resolve = hooks.promise_resolve;
+			}
+		},
+		setCallbackTrampoline(fn) {
+			callbackTrampoline = typeof fn === 'function' ? fn : null;
+		},
+		pushAsyncContext(asyncId, triggerAsyncId) {
+			const stackLength =
+				async_hook_fields[ASYNC_WRAP_CONSTANTS.kStackLength];
+			const required = (stackLength + 1) * 2;
+			if (required > async_ids_stack.length) {
+				resizeAsyncIdsStack(required);
+			}
+			const offset = stackLength * 2;
+			async_ids_stack[offset] =
+				async_id_fields[ASYNC_WRAP_CONSTANTS.kExecutionAsyncId];
+			async_ids_stack[offset + 1] =
+				async_id_fields[ASYNC_WRAP_CONSTANTS.kTriggerAsyncId];
+			async_hook_fields[ASYNC_WRAP_CONSTANTS.kStackLength] =
+				stackLength + 1;
+			async_id_fields[ASYNC_WRAP_CONSTANTS.kExecutionAsyncId] = asyncId;
+			async_id_fields[ASYNC_WRAP_CONSTANTS.kTriggerAsyncId] =
+				triggerAsyncId;
+			return true;
+		},
+		popAsyncContext(asyncId) {
+			const stackLength =
+				async_hook_fields[ASYNC_WRAP_CONSTANTS.kStackLength];
+			if (stackLength === 0) {
+				return false;
+			}
+			if (
+				async_id_fields[ASYNC_WRAP_CONSTANTS.kExecutionAsyncId] !==
+					asyncId &&
+				async_hook_fields[ASYNC_WRAP_CONSTANTS.kTotals] > 0
+			) {
+				throw new Error('Mismatched asyncId in popAsyncContext');
+			}
+			const nextLength = stackLength - 1;
+			const offset = nextLength * 2;
+			async_id_fields[ASYNC_WRAP_CONSTANTS.kExecutionAsyncId] =
+				async_ids_stack[offset] ?? 0;
+			async_id_fields[ASYNC_WRAP_CONSTANTS.kTriggerAsyncId] =
+				async_ids_stack[offset + 1] ?? 0;
+			execution_async_resources.length = Math.max(0, nextLength);
+			async_hook_fields[ASYNC_WRAP_CONSTANTS.kStackLength] = nextLength;
+			return nextLength > 0;
+		},
+		executionAsyncResource(index) {
+			return execution_async_resources[index] ?? null;
+		},
+		clearAsyncIdStack() {
+			async_hook_fields[ASYNC_WRAP_CONSTANTS.kStackLength] = 0;
+			execution_async_resources.length = 0;
+			async_id_fields[ASYNC_WRAP_CONSTANTS.kExecutionAsyncId] = 0;
+			async_id_fields[ASYNC_WRAP_CONSTANTS.kTriggerAsyncId] = 0;
+		},
+		queueDestroyAsyncId(asyncId) {
+			if (destroyMetadataByAsyncId.has(asyncId)) {
+				const destroyed = destroyMetadataByAsyncId.get(asyncId);
+				if (destroyed && typeof destroyed === 'object') {
+					destroyed.destroyed = true;
+				}
+			}
+			queueDestroy(asyncId);
+		},
+		setPromiseHooks(init, before, after, resolve) {
+			promiseHooks.init = typeof init === 'function' ? init : null;
+			promiseHooks.before = typeof before === 'function' ? before : null;
+			promiseHooks.after = typeof after === 'function' ? after : null;
+			promiseHooks.resolve =
+				typeof resolve === 'function' ? resolve : null;
+		},
+		getPromiseHooks() {
+			return [
+				promiseHooks.init,
+				promiseHooks.before,
+				promiseHooks.after,
+				promiseHooks.resolve,
+			];
+		},
+		registerDestroyHook(resource, asyncId, destroyed) {
+			if (!resource || typeof resource !== 'object') {
+				return;
+			}
+			if (destroyed && typeof destroyed === 'object') {
+				destroyed.destroyed = false;
+			}
+			if (typeof asyncId === 'number' && asyncId > 0) {
+				destroyMetadataByAsyncId.set(asyncId, destroyed);
+			}
+			if (destroyRegistry) {
+				try {
+					destroyRegistry.register(
+						resource,
+						{ asyncId, destroyed },
+						resource
+					);
+					return;
+				} catch {
+					// Ignore registration errors, fallback below.
+				}
+			}
+			queueDestroy(asyncId);
+			if (destroyed && typeof destroyed === 'object') {
+				destroyed.destroyed = true;
+			}
+			destroyMetadataByAsyncId.delete(asyncId);
+		},
+	};
+
+	Object.defineProperty(binding, 'async_ids_stack', {
+		configurable: true,
+		enumerable: true,
+		get() {
+			return async_ids_stack;
+		},
+		set(value) {
+			async_ids_stack = value;
+		},
+	});
+
+	Object.defineProperty(binding, 'callbackTrampoline', {
+		get() {
+			return callbackTrampoline;
+		},
+	});
+
+	return binding;
+}
+
+function createAsyncContextFrameBinding() {
+	let current = undefined;
+	return {
+		getContinuationPreservedEmbedderData() {
+			return current;
+		},
+		setContinuationPreservedEmbedderData(value) {
+			current = value;
+		},
+	};
+}
+
+function createTaskQueueBinding() {
+	const promiseRejectEvents = Object.freeze({
+		kPromiseRejectWithNoHandler: 0,
+		kPromiseHandlerAddedAfterReject: 1,
+		kPromiseResolveAfterResolved: 2,
+		kPromiseRejectAfterResolved: 3,
+	});
+
+	const tickInfo = new Uint8Array(2);
+	const microtaskQueue = [];
+	let drainingMicrotasks = false;
+	let tickCallback = null;
+	let promiseRejectCallback = null;
+
+	const scheduleDrain = () => {
+		if (drainingMicrotasks) {
+			return;
+		}
+		drainingMicrotasks = true;
+		const flush = () => {
+			try {
+				while (microtaskQueue.length) {
+					const task = microtaskQueue.shift();
+					if (typeof task === 'function') {
+						try {
+							task();
+						} catch (error) {
+							if (
+								typeof process !== 'undefined' &&
+								typeof process._fatalException === 'function'
+							) {
+								process._fatalException(error);
+							} else {
+								console.error(error);
+							}
+						}
+					}
+				}
+			} finally {
+				drainingMicrotasks = false;
+			}
+		};
+		if (typeof queueMicrotask === 'function') {
+			queueMicrotask(flush);
+		} else {
+			Promise.resolve().then(flush);
+		}
+	};
+
+	const binding = {
+		promiseRejectEvents,
+		tickInfo,
+		enqueueMicrotask(fn) {
+			if (typeof fn !== 'function') {
+				throw new TypeError('enqueueMicrotask expects a function');
+			}
+			microtaskQueue.push(fn);
+			scheduleDrain();
+		},
+		runMicrotasks() {
+			if (!drainingMicrotasks) {
+				drainingMicrotasks = true;
+				try {
+					while (microtaskQueue.length) {
+						const task = microtaskQueue.shift();
+						if (typeof task === 'function') {
+							try {
+								task();
+							} catch (error) {
+								if (
+									typeof process !== 'undefined' &&
+									typeof process._fatalException ===
+										'function'
+								) {
+									process._fatalException(error);
+								} else {
+									console.error(error);
+								}
+							}
+						}
+					}
+				} finally {
+					drainingMicrotasks = false;
+				}
+			}
+		},
+		setTickCallback(fn) {
+			tickCallback = typeof fn === 'function' ? fn : null;
+		},
+		setPromiseRejectCallback(fn) {
+			promiseRejectCallback = typeof fn === 'function' ? fn : null;
+		},
+	};
+
+	Object.defineProperty(binding, 'getTickCallback', {
+		value: () => tickCallback,
+		enumerable: false,
+	});
+	Object.defineProperty(binding, 'getPromiseRejectCallback', {
+		value: () => promiseRejectCallback,
+		enumerable: false,
+	});
+
+	return binding;
+}
+globalThis.internalModules = {
+	builtins: {
+		...builtins,
+	},
+	util: createDebugProxy('util', {
+		privateSymbols: {
+			module_source_private_symbol: Symbol(
+				'module_source_private_symbol'
+			),
+			module_export_names_private_symbol: Symbol(
+				'module_export_names_private_symbol'
+			),
+			module_circular_visited_private_symbol: Symbol(
+				'module_circular_visited_private_symbol'
+			),
+			module_export_private_symbol: Symbol(
+				'module_export_private_symbol'
+			),
+			module_first_parent_private_symbol: Symbol(
+				'module_first_parent_private_symbol'
+			),
+			module_last_parent_private_symbol: Symbol(
+				'module_last_parent_private_symbol'
+			),
+			arrow_message_private_symbol: Symbol('node:arrowMessage'),
+			contextify_context_private_symbol: Symbol(
+				'node:contextify:context'
+			),
+			decorated_private_symbol: Symbol('node:decorated'),
+			transfer_mode_private_symbol: Symbol('node:transfer_mode'),
+			host_defined_option_symbol: Symbol(
+				'node:host_defined_option_symbol'
+			),
+			js_transferable_wrapper_private_symbol: Symbol(
+				'node:js_transferable_wrapper'
+			),
+			entry_point_module_private_symbol: Symbol(
+				'node:entry_point_module'
+			),
+			entry_point_promise_private_symbol: Symbol(
+				'node:entry_point_promise'
+			),
+			napi_type_tag: Symbol('node:napi:type_tag'),
+			napi_wrapper: Symbol('node:napi:wrapper'),
+			untransferable_object_private_symbol: Symbol(
+				'node:untransferableObject'
+			),
+			exit_info_private_symbol: Symbol('node:exit_info_private_symbol'),
+			promise_trace_id: Symbol('node:promise_trace_id'),
+			source_map_data_private_symbol: Symbol(
+				'node:source_map_data_private_symbol'
+			),
+			exiting_aliased_Uint32Array: Symbol('exiting_aliased_Uint32Array'),
+		},
+		defineLazyProperties: (target, id, keys, writable = true) => {
+			for (let i = 0; i < keys.length; i++) {
+				const key = keys[i];
+				let value;
+				let setterCalled = false;
+
+				// Create a getter that will lazy-load the module
+				const getter = new Function(
+					'id',
+					'key',
+					`
+					if (this.__lazyValue_${key}) {
+						return this.__lazyValue_${key};
+					}
+					
+					// Try to load from module registry
+					let mod = globalThis.__moduleRegistry.get('${id}');
+					
+					// Fallback to other locations
+					if (!mod) {
+						const moduleKey = '${id}'.replace('internal/', '').replace(/\\//g, '_');
+						mod = globalThis.internalModules[moduleKey] || globalThis.coreModules[moduleKey];
+					}
+					
+					if (mod && mod['${key}']) {
+						this.__lazyValue_${key} = mod['${key}'];
+						return this.__lazyValue_${key};
+					}
+					
+					return undefined;
+				`
+				);
+
+				Object.defineProperty(target, key, {
+					enumerable: true,
+					configurable: true,
+					get: getter,
+					set: writable
+						? function (val) {
+								this[`__lazyValue_${key}`] = val;
+						  }
+						: undefined,
+				});
+			}
+		},
+		constants: {
+			kPending: 0,
+			kFulfilled: 1,
+			kRejected: 2,
+			kExiting: 0,
+			kExitCode: 1,
+			kHasExitCode: 2,
+			ALL_PROPERTIES: 0,
+			ONLY_WRITABLE: 1,
+			ONLY_ENUMERABLE: 2,
+			ONLY_CONFIGURABLE: 4,
+			SKIP_STRINGS: 8,
+			SKIP_SYMBOLS: 16,
+			kDisallowCloneAndTransfer: 0,
+			kTransferable: 1,
+			kCloneable: 2,
+		},
+		propertyFilter: {
+			ALL_PROPERTIES: 0,
+			ONLY_WRITABLE: 1,
+			ONLY_ENUMERABLE: 2,
+			ONLY_CONFIGURABLE: 4,
+			SKIP_STRINGS: 8,
+			SKIP_SYMBOLS: 16,
+		},
+		getOwnNonIndexProperties,
+		getPromiseDetails,
+		getProxyDetails,
+		previewEntries,
+		getConstructorName: internalGetConstructorName,
+		getExternalValue,
+	}),
+	options: (function () {
+		const options = {
+			// '--experimental-detect-module': true,
+			// '--experimental-require-module': true,
+		};
+		return {
+			// CLI Flags here.
+			// By default, no flags are passed.
+			getCLIOptionsValues: () => {
+				return new Proxy(options, {
+					get: (target, prop) => {
+						if (!(prop in target)) {
+							target[prop] = '';
+						}
+						return target[prop];
+					},
+				});
+			},
+			getCLIOptionsInfo: () => {
+				return {
+					options: Object.keys(options),
+					aliases: [],
+				};
+			},
+			getOptionsAsFlags: () => {
+				return Object.keys(options);
+			},
+			getEmbedderOptions: () => {
+				return {};
+			},
+			getEnvOptionsInputType: () => {
+				return {};
+			},
+			getNamespaceOptionsInputType: () => {
+				return {};
+			},
+		};
+	})(),
+	config: {
+		get: () => ({}),
+	},
+	contextify: createDebugProxy('contextify', {
+		containsModuleSyntax(source, fileUrl, url) {
+			return isESMSyntax(source);
+		},
+		compileFunction() {
+			console.error('compileFunction not implemented');
+			throw new Error('compileFunction not implemented');
+		},
+		compileFunctionForCJSLoader: (
+			content,
+			filename,
+			is_sea_main,
+			shouldDetectModule
+		) => {
+			// if(content.includes('_import')) {
+			// 	console.log(filename);
+			// 	console.log({content});
+			// }
+			// Remove up to two shebang lines if present
+			if (content.startsWith('#!')) {
+				let shebangCount = 0;
+				const lines = content.split('\n');
+				while (
+					lines[0].startsWith('#!') &&
+					lines.length > 0 &&
+					shebangCount < 2
+				) {
+					lines.shift();
+					shebangCount++;
+				}
+				content = lines.join('\n');
+			}
+
+			let fn = '';
+			if (filename.endsWith('.json')) {
+				fn = () => JSON.parse(content);
+			} else {
+				// if (isESMSyntax(content)) {
+				// 	fn = () => eval(content);
+				// } else {
+				// Super naive replacement of import() to require(). It won't even
+				// return a promise.
+				content = globalThis.coreModules.module.Module.wrap(`
+						${content}
+					`);
+				fn = eval(content);
+				// }
+			}
+			// if (content.includes('brotliDecompressSync')) {
+			// 	window.stableConsole.log('BROTLI DECOMPRESS SYNC', content);
+			// }
+			return {
+				sourceMapURL: () => {},
+				sourceURL: '',
+				cachedDataRejected: false,
+				function: fn,
+			};
+		},
+		ContextifyContext: class ContextifyContext {
+			constructor() {
+				this.context = undefined;
+			}
+		},
+		ContextifyScript: class ContextifyScript {
+			constructor() {
+				this.context = undefined;
+			}
+		},
+	}),
+	modules: createDebugProxy('modules', {
+		compileCacheStatus: [],
+		cachedCodeTypes: {
+			kStrippedTypeScript: 2,
+			kTransformedTypeScript: 3,
+			kTransformedTypeScriptWithSourceMaps: 4,
+		},
+		readPackageJSON(jsonPath, isESM, base, specifier) {
+			try {
+				const parsed = JSON.parse(
+					globalFs.readFileSync(jsonPath, 'utf8')
+				);
+				const {
+					name = null,
+					main = null,
+					type = null,
+					imports: plainImports,
+				} = parsed;
+				let exportsMain = parsed.main;
+				if (exportsMain) {
+					if (!exportsMain.startsWith('./')) {
+						exportsMain = './' + exportsMain;
+					}
+					if (
+						!exportsMain.endsWith('.js') &&
+						!exportsMain.endsWith('.cjs') &&
+						!exportsMain.endsWith('.mjs')
+					) {
+						exportsMain += '.js';
+					}
+				}
+				return [
+					name,
+					main,
+					type,
+					plainImports ?? undefined,
+					exportsMain ?? undefined,
+					jsonPath,
+				];
+			} catch (error) {
+				console.warn(
+					`Failed to read package.json at ${jsonPath}:`,
+					error
+				);
+				return undefined;
+			}
+		},
+		getPackageScopeConfig(resolved) {
+			// Convert URL to file path
+			let filePath = resolved;
+			if (typeof resolved === 'string') {
+				if (resolved.startsWith('file://')) {
+					filePath = resolved.slice(7);
+				}
+			} else if (resolved && typeof resolved.href === 'string') {
+				filePath = resolved.href;
+				if (filePath.startsWith('file://')) {
+					filePath = filePath.slice(7);
+				}
+			}
+
+			console.log('[getPackageScopeConfig]', filePath);
+
+			// Start from the directory containing the file
+			let currentDir = globalThis.coreModules.path.dirname(filePath);
+
+			// Traverse up the directory tree to find package.json
+			while (currentDir !== '/' && currentDir !== '.') {
+				const packageJsonPath = globalThis.coreModules.path.join(
+					currentDir,
+					'package.json'
+				);
+
+				try {
+					// Check if package.json exists
+					if (globalFs.existsSync(packageJsonPath)) {
+						console.log(
+							'[getPackageScopeConfig] Found package.json at',
+							packageJsonPath
+						);
+
+						// Use readPackageJSON to get the serialized format
+						const result = this.readPackageJSON(packageJsonPath);
+
+						if (result) {
+							console.log(
+								'[getPackageScopeConfig] Returning package config:',
+								result
+							);
+							return result;
+						}
+					}
+				} catch (error) {
+					console.warn(
+						`[getPackageScopeConfig] Failed to read package.json at ${packageJsonPath}:`,
+						error.message
+					);
+				}
+
+				// Move up one directory
+				const parentDir =
+					globalThis.coreModules.path.dirname(currentDir);
+				if (parentDir === currentDir) {
+					// We've reached the root
+					break;
+				}
+				currentDir = parentDir;
+			}
+
+			console.log(
+				'[getPackageScopeConfig] No package.json found, returning path'
+			);
+			// Return the path where we would expect to find package.json
+			// This indicates "no package.json found"
+			return globalThis.coreModules.path.join(
+				globalThis.coreModules.path.dirname(filePath),
+				'package.json'
+			);
+		},
+
+		getPackageType(url) {
+			// Similar to getPackageScopeConfig but returns just the type
+			const config = this.getPackageScopeConfig(url);
+
+			if (Array.isArray(config)) {
+				// config is [name, main, type, plainImports, exportsMain, jsonPath]
+				const type = config[2]; // type field
+				return type || 'none';
+			}
+
+			// config is a string path, meaning no package.json found
+			return 'none';
+		},
+
+		getNearestParentPackageJSONType(mainPath) {
+			// Start from the directory containing mainPath
+			let currentDir = globalThis.coreModules.path.dirname(mainPath);
+
+			// Traverse up the directory tree
+			while (currentDir !== '/' && currentDir !== '.') {
+				const packageJsonPath = globalThis.coreModules.path.join(
+					currentDir,
+					'package.json'
+				);
+
+				try {
+					// Check if package.json exists
+					if (globalFs.existsSync(packageJsonPath)) {
+						const packageJson = JSON.parse(
+							globalFs.readFileSync(packageJsonPath, 'utf8')
+						);
+
+						// Return the type field, defaulting to 'commonjs'
+						return packageJson.type || 'commonjs';
+					}
+				} catch (error) {
+					// If we can't read the package.json, continue searching up
+					console.warn(
+						`Failed to read package.json at ${packageJsonPath}:`,
+						error.message
+					);
+				}
+
+				// Move up one directory
+				const parentDir =
+					globalThis.coreModules.path.dirname(currentDir);
+				if (parentDir === currentDir) {
+					// We've reached the root
+					break;
+				}
+				currentDir = parentDir;
+			}
+
+			// Default to 'commonjs' if no package.json found
+			return 'commonjs';
+		},
+	}),
+	fs: createDebugProxy(
+		'fs',
+		{
+			kUsePromises: Symbol('kUsePromises'),
+			StatWatcher: class StatWatcher {
+				constructor() {
+					this.persistent = false;
+					console.trace('StatWatcher constructor');
+				}
+			},
+			FileHandle: class FileHandle {
+				constructor() {
+					this.persistent = false;
+					console.trace('FileHandle constructor');
+				}
+			},
+			FSReqCallback: class FSReqCallback {
+				constructor() {
+					this.context = undefined;
+					this.oncomplete = () => {};
+				}
+
+				// Called when the async operation completes
+				// Node.js C++ code calls this with (err, result, ...)
+				// We simulate this pattern
+			},
+			// Stat arrays - shared buffers for performance
+			// These hold stat data and are reused across stat calls
+			// Buffer is 2x the field count to hold 2 Stats instances (for StatWatcher)
+			statValues: new Float64Array(18 * 2),
+			bigintStatValues: new BigInt64Array(18 * 2),
+			statFsValues: new Float64Array(7),
+			bigintStatFsValues: new BigInt64Array(7),
+			kFsStatsFieldsNumber: 18,
+			constants: {},
+			open(path, flags, mode, reqOrPromise) {
+				return handleAsyncOperation(
+					() => globalFs.openSync(path, flags, mode),
+					() => globalFsAsync.open(path, flags, mode),
+					reqOrPromise
+				);
+			},
+			openFileHandle(path, flags, mode, usePromises) {
+				if (
+					usePromises !== undefined &&
+					typeof usePromises !== 'symbol'
+				) {
+					// @TODO: Remove this if everything is stable. I just wasn't sure if
+					//        that fourth argument is ever used in a different way.
+					throw new Error(
+						'openFileHandle fourt argument should be undefined or symbol'
+					);
+				}
+				if (usePromises) {
+					return promiseFromSync(() =>
+						this.openFileHandleSync(path, flags, mode)
+					);
+				}
+				return this.openFileHandleSync(path, flags, mode);
+			},
+			openFileHandleSync(path, flags, mode) {
+				const FileHandle = globalThis.coreModules['fs'].FileHandle;
+				const fd = globalFs.openSync(path, flags, mode);
+				const internalHandle = new InternalFileHandle(fd, globalFs);
+				return new FileHandle(internalHandle);
+			},
+			// Used to speed up module loading.  Returns 0 if the path refers to
+			// a file, 1 when it's a directory or < 0 on error (usually -ENOENT.)
+			// The speedup comes from not creating thousands of Stat and Error objects.
+			// Do not expose this function through public API as it doesn't hold
+			// Permission Model checks.
+			// @see node_file.cc
+			internalModuleStat(receiver /* unknown */, path /* string */) {
+				const targetPath =
+					typeof path !== 'undefined' ? path : receiver;
+				const normalizedPath = shouldNormalizePathValue(targetPath)
+					? resolveFsPath(targetPath)
+					: targetPath;
+				// 				console.log(
+				// 					'[internalModuleStat] request',
+				// 					targetPath,
+				// 					'normalized to',
+				// 					normalizedPath
+				// 				);
+				let stats;
+				try {
+					stats = globalFs.statSync(normalizedPath);
+				} catch (e) {
+					return -1;
+				}
+				return stats?.isDirectory() ? 1 : stats?.isFile() ? 0 : -1;
+			},
+			exists(path) {
+				// 				console.log(
+				// 					'Regular exists – how is it different from existsSync?'
+				// 				);
+				return globalFs.existsSync(path);
+			},
+			existsSync(path) {
+				return globalFs.existsSync(path);
+			},
+			mkdir(path, options, recursive, kUsePromises) {
+				// Properly merge options and recursive parameter
+				let finalOptions = options;
+				if (typeof options === 'number') {
+					// If options is a number, it's the mode
+					finalOptions = { mode: options, recursive: recursive };
+				} else if (options && typeof options === 'object') {
+					// If options is an object, merge in the recursive parameter
+					finalOptions = { ...options, recursive: recursive };
+				} else if (recursive !== undefined) {
+					// If only recursive is provided
+					finalOptions = { recursive: recursive };
+				}
+
+				return handleAsyncOperation(
+					() => globalFs.mkdirSync(path, finalOptions),
+					() => globalFsAsync.mkdir(path, finalOptions),
+					kUsePromises
+				);
+			},
+			close(fd, reqOrPromise) {
+				return handleAsyncOperation(
+					() => globalFs.closeSync(fd),
+					() => globalFsAsync.close(fd),
+					reqOrPromise
+				);
+			},
+			read(fd, buffer, offset, length, position, reqOrPromise) {
+				const copyIntoTarget = (sourceBuffer) => {
+					try {
+						const bytesToCopy = Math.min(
+							sourceBuffer.length,
+							length
+						);
+						if (bytesToCopy > 0) {
+							let targetView;
+							if (
+								buffer instanceof Uint8Array ||
+								(typeof Buffer !== 'undefined' &&
+									Buffer.isBuffer?.(buffer))
+							) {
+								targetView = buffer;
+							} else if (
+								buffer &&
+								typeof buffer === 'object' &&
+								buffer.buffer instanceof ArrayBuffer
+							) {
+								const byteOffset =
+									buffer.byteOffset ?? buffer.offset ?? 0;
+								const viewLength =
+									buffer.byteLength ??
+									buffer.length ??
+									length;
+								targetView = new Uint8Array(
+									buffer.buffer,
+									byteOffset,
+									viewLength
+								);
+							} else {
+								throw new TypeError(
+									`Unsupported buffer type for read(): ${
+										buffer &&
+										buffer.constructor &&
+										buffer.constructor.name
+									}`
+								);
+							}
+							targetView.set(
+								sourceBuffer.subarray(0, bytesToCopy),
+								offset
+							);
+						}
+						try {
+							if (fd === 0) {
+								const controller = globalThis.processController;
+								const dumpPath =
+									'/tmp/esbuild-service-read.bin';
+								const exists =
+									controller?.fsSync?.existsSync?.(
+										dumpPath
+									) ?? false;
+								controller?.fsSync?.writeFileSync?.(
+									dumpPath,
+									sourceBuffer.subarray(0, bytesToCopy),
+									exists
+										? { flag: 'a', mode: 0o600 }
+										: { mode: 0o600 }
+								);
+							}
+						} catch {}
+						return bytesToCopy;
+					} catch (error) {
+						console.error(
+							'[fs-binding] read error',
+							error,
+							error?.message,
+							error?.stack
+						);
+						throw error;
+					}
+				};
+
+				const runSync = () =>
+					copyIntoTarget(globalFs.readSync(fd, length, position));
+				const runAsyncOnce = () =>
+					globalFsAsync
+						.read(fd, length, position)
+						.then((sourceBuffer) => copyIntoTarget(sourceBuffer));
+
+				const stdinStream =
+					fd === 0
+						? globalThis.processController?.stdin ?? null
+						: null;
+				const shouldWaitForMore = (bytesRead) =>
+					fd === 0 &&
+					bytesRead === 0 &&
+					stdinStream &&
+					typeof stdinStream.isEnded === 'function' &&
+					typeof stdinStream.isClosed === 'function' &&
+					!stdinStream.isEnded() &&
+					!stdinStream.isClosed();
+
+				const waitForAdditionalStdinData = () => {
+					if (!stdinStream || typeof stdinStream.on !== 'function') {
+						return new Promise((resolve) =>
+							setTimeout(() => resolve(false), 5)
+						);
+					}
+					return new Promise((resolve) => {
+						const cleanup = () => {
+							if (removeData) removeData();
+							if (removeReadable) removeReadable();
+							if (removeEnd) removeEnd();
+							clearTimeout(timer);
+						};
+						const removeData = stdinStream.on('data', () => {
+							cleanup();
+							resolve(true);
+						});
+						const removeReadable = stdinStream.on(
+							'readable',
+							() => {
+								if (
+									typeof stdinStream.readableLength ===
+										'number' &&
+									stdinStream.readableLength > 0
+								) {
+									cleanup();
+									resolve(true);
+								}
+							}
+						);
+						const removeEnd = stdinStream.on('end', () => {
+							cleanup();
+							resolve(false);
+						});
+						const timer = setTimeout(() => {
+							cleanup();
+							resolve(false);
+						}, 5);
+					});
+				};
+
+				const runAsyncWithRetry = async () => {
+					while (true) {
+						const bytesRead = await runAsyncOnce();
+						if (shouldWaitForMore(bytesRead)) {
+							const hasMore = await waitForAdditionalStdinData();
+							if (hasMore) {
+								continue;
+							}
+						}
+						return bytesRead;
+					}
+				};
+
+				if (reqOrPromise === undefined) {
+					// Synchronous invocation
+					return runSync();
+				}
+
+				const isCallbackRequest =
+					reqOrPromise &&
+					typeof reqOrPromise === 'object' &&
+					'oncomplete' in reqOrPromise;
+				const usePromises =
+					typeof reqOrPromise === 'symbol' && reqOrPromise !== null;
+
+				if (isCallbackRequest) {
+					runAsyncWithRetry().then(
+						(bytesRead) => {
+							reqOrPromise.oncomplete(null, bytesRead, buffer);
+						},
+						(err) => {
+							console.error(
+								'[fs-binding] read callback error',
+								err && err.message
+							);
+							reqOrPromise.oncomplete(err);
+						}
+					);
+					return;
+				}
+
+				const promise = runAsyncWithRetry().then((bytesRead) => {
+					return {
+						bytesRead,
+						buffer,
+					};
+				});
+
+				if (usePromises) {
+					return promise;
+				}
+
+				// Fallback: return promise result even if unexpected arg type.
+				return promise;
+			},
+			readdir(path, encoding, withFileTypes, kUsePromises) {
+				return handleAsyncOperation(
+					() =>
+						globalFs.readdirBinding(
+							path,
+							resolveFsEncodingValue(encoding),
+							withFileTypes
+						),
+					() =>
+						globalFsAsync.readdirBinding(
+							path,
+							resolveFsEncodingValue(encoding),
+							withFileTypes
+						),
+					kUsePromises
+				);
+			},
+			readFileUtf8(path, flags) {
+				// readFileUtf8 is a synchronous optimized path for reading UTF-8 files
+				// It takes a path (string, Buffer, or file descriptor) and flags (number)
+				// Returns the file contents as a UTF-8 string
+				const usingFileDescriptor = typeof path === 'number';
+				const normalizedFlags =
+					typeof flags === 'number' ? flags : undefined;
+
+				// Fast path: delegate to the kernel's readFileSync whenever we have a string/URL
+				// path and default read-only flags. The kernel already returns complete UTF-8 data.
+				if (
+					!usingFileDescriptor &&
+					(normalizedFlags === 0 || normalizedFlags === undefined)
+				) {
+					return globalFs.readFileSync(path, 'utf8');
+				}
+
+				let fd = path;
+				if (!usingFileDescriptor) {
+					fd = globalFs.openSync(path, normalizedFlags ?? 0);
+				}
+
+				try {
+					return readUtf8FromFileDescriptor(fd);
+				} finally {
+					if (!usingFileDescriptor && typeof fd === 'number') {
+						globalFs.closeSync(fd);
+					}
+				}
+			},
+			readFile(path, options, kUsePromises) {
+				const wantsBuffer = shouldReturnBuffer(options);
+				const resolvedOptions = resolveFsEncodingOptions(options);
+
+				const processReadResult = (raw) => {
+					const rawLength =
+						raw &&
+						(typeof raw === 'string'
+							? raw.length
+							: raw.byteLength ?? raw.length ?? 0);
+					const result = wantsBuffer ? ensureNodeBuffer(raw) : raw;
+					if (wantsBuffer) {
+						const bufLength =
+							result &&
+							(typeof result === 'string'
+								? result.length
+								: result.byteLength ?? result.length ?? 0);
+					}
+					return result;
+				};
+
+				return handleAsyncOperation(
+					() =>
+						processReadResult(
+							globalFs.readFileSync(path, resolvedOptions)
+						),
+					() =>
+						globalFsAsync
+							.readFile(path, resolvedOptions)
+							.then(processReadResult),
+					kUsePromises
+				);
+			},
+			writeFile(path, data, options, kUsePromises) {
+				return handleAsyncOperation(
+					() =>
+						globalFs.writeFileSync(
+							path,
+							data,
+							resolveFsEncodingOptions(options)
+						),
+					() =>
+						globalFsAsync.writeFile(
+							path,
+							data,
+							resolveFsEncodingOptions(options)
+						),
+					kUsePromises
+				);
+			},
+			rmSync(path, maxRetries, recursive, retryDelay) {
+				return globalFs.rmSync(path, maxRetries, recursive, retryDelay);
+			},
+			cpSyncCheckPaths(src, dest, dereference, recursive) {
+				return globalFs.cpSyncCheckPaths(
+					src,
+					dest,
+					dereference,
+					recursive
+				);
+			},
+			cpSync(src, dest, options) {
+				return globalFs.cpSync(src, dest, options);
+			},
+			cpSyncCopyDir(
+				src,
+				dest,
+				force,
+				dereference,
+				errorOnExist,
+				verbatimSymlinks,
+				preserveTimestamps
+			) {
+				// This is an optimization for cpSync when no filter is provided
+				// We can just call our cpSync implementation with the appropriate options
+				const options = {
+					force,
+					dereference,
+					errorOnExist,
+					verbatimSymlinks,
+					preserveTimestamps,
+					recursive: true,
+					filter: null,
+				};
+				return globalFs.cpSync(src, dest, options);
+			},
+			cpSyncOverrideFile(src, dest) {
+				// This is used to override a file during copy
+				// Just copy the file, overwriting if it exists
+				return globalFs.copyFileSync(src, dest, 0);
+			},
+			symlink(target, path, type, kUsePromises) {
+				return handleAsyncOperation(
+					() => globalFs.symlinkSync(target, path, type),
+					() => globalFsAsync.symlink(target, path, type),
+					kUsePromises
+				);
+			},
+			readBuffers(fd, buffers, position, kUsePromises) {
+				return handleAsyncOperation(
+					() => globalFs.readBuffers(fd, buffers, position),
+					() => globalFsAsync.readBuffers(fd, buffers, position),
+					kUsePromises
+				);
+			},
+			mkdtemp(prefix, encoding, kUsePromises) {
+				return handleAsyncOperation(
+					() =>
+						globalFs.mkdtemp(
+							prefix,
+							resolveFsEncodingValue(encoding)
+						),
+					() =>
+						globalFsAsync.mkdtemp(
+							prefix,
+							resolveFsEncodingValue(encoding)
+						),
+					kUsePromises
+				);
+			},
+			ftruncate(fd, len, kUsePromises) {
+				return handleAsyncOperation(
+					() => globalFs.ftruncateSync(fd, len),
+					() => globalFsAsync.ftruncate(fd, len),
+					kUsePromises
+				);
+			},
+			truncate(path, len, kUsePromises) {
+				return handleAsyncOperation(
+					() => globalFs.truncateSync(path, len),
+					() => globalFsAsync.truncate(path, len),
+					kUsePromises
+				);
+			},
+			rename(oldPath, newPath, kUsePromises) {
+				return handleAsyncOperation(
+					() => globalFs.renameSync(oldPath, newPath),
+					() => globalFsAsync.rename(oldPath, newPath),
+					kUsePromises
+				);
+			},
+			rm(path, kUsePromises) {
+				// console.log('rm', path, kUsePromises, arguments);
+				return handleAsyncOperation(
+					() => globalFs.rmSync(path),
+					() => globalFsAsync.rm(path),
+					kUsePromises
+				);
+			},
+			rmdir(path, kUsePromises) {
+				// console.log('rmdir', path, kUsePromises, arguments);
+				return handleAsyncOperation(
+					() => globalFs.rmdirSync(path),
+					() => globalFsAsync.rmdir(path),
+					kUsePromises
+				);
+			},
+			stat(path, useBigint, kUsePromises, throwIfNoEntry) {
+				// Native binding populates global statValues/bigintStatValues arrays
+				// throwIfNoEntry defaults to true for backwards compatibility
+				const processStat = (stats) => {
+					const targetArray = useBigint
+						? globalThis.internalModules.fs.bigintStatValues
+						: globalThis.internalModules.fs.statValues;
+					fillStatsArray(targetArray, stats, useBigint, 0);
+					return targetArray;
+				};
+
+				return handleAsyncOperation(
+					() => {
+						try {
+							const stats = globalFs.statSync(path);
+							return processStat(stats);
+						} catch (err) {
+							if (
+								throwIfNoEntry === false &&
+								err.code === 'ENOENT'
+							) {
+								return undefined;
+							}
+							throw err;
+						}
+					},
+					() => {
+						return globalFsAsync
+							.stat(path)
+							.then(processStat)
+							.catch((err) => {
+								if (
+									throwIfNoEntry === false &&
+									err.code === 'ENOENT'
+								) {
+									return undefined;
+								}
+								throw err;
+							});
+					},
+					kUsePromises
+				);
+			},
+			lstat(path, useBigint, kUsePromises, throwIfNoEntry) {
+				// Native binding populates global statValues/bigintStatValues arrays
+				const processStat = (stats) => {
+					const targetArray = useBigint
+						? globalThis.internalModules.fs.bigintStatValues
+						: globalThis.internalModules.fs.statValues;
+					fillStatsArray(targetArray, stats, useBigint, 0);
+					return targetArray;
+				};
+
+				return handleAsyncOperation(
+					() => {
+						try {
+							const stats = globalFs.lstatSync(path);
+							return processStat(stats);
+						} catch (err) {
+							if (
+								throwIfNoEntry === false &&
+								err.code === 'ENOENT'
+							) {
+								return undefined;
+							}
+							throw err;
+						}
+					},
+					() =>
+						globalFsAsync
+							.lstat(path)
+							.then(processStat)
+							.catch((err) => {
+								if (
+									throwIfNoEntry === false &&
+									err.code === 'ENOENT'
+								) {
+									return undefined;
+								}
+								throw err;
+							}),
+					kUsePromises
+				);
+			},
+			fstat(fd, useBigint, kUsePromises, throwIfNoEntry) {
+				// Native binding populates global statValues/bigintStatValues arrays
+				// throwIfNoEntry defaults to true for backwards compatibility
+				const processStat = (stats) => {
+					const targetArray = useBigint
+						? globalThis.internalModules.fs.bigintStatValues
+						: globalThis.internalModules.fs.statValues;
+					fillStatsArray(targetArray, stats, useBigint, 0);
+					return targetArray;
+				};
+
+				return handleAsyncOperation(
+					() => {
+						try {
+							const stats = globalFs.fstatSync(fd);
+							return processStat(stats);
+						} catch (err) {
+							if (
+								throwIfNoEntry === false &&
+								(err.code === 'ENOENT' || err.code === 'EBADF')
+							) {
+								return undefined;
+							}
+							throw err;
+						}
+					},
+					() =>
+						globalFsAsync
+							.fstat(fd)
+							.then(processStat)
+							.catch((err) => {
+								if (
+									throwIfNoEntry === false &&
+									(err.code === 'ENOENT' ||
+										err.code === 'EBADF')
+								) {
+									return undefined;
+								}
+								throw err;
+							}),
+					kUsePromises
+				);
+			},
+			fsSync(path) {
+				return globalFs.fsSync(path);
+			},
+			unlink(path, kUsePromises) {
+				return handleAsyncOperation(
+					() => globalFs.unlinkSync(path),
+					() => globalFsAsync.unlink(path),
+					kUsePromises
+				);
+			},
+
+			symlink(existingPath, newPath, type, kUsePromises) {
+				return handleAsyncOperation(
+					() => globalFs.symlinkSync(existingPath, newPath),
+					() => globalFsAsync.symlink(existingPath, newPath),
+					kUsePromises
+				);
+			},
+			writeBuffer(fd, buffer, offset, length, position, reqOrPromise) {
+				return handleAsyncOperation(
+					() =>
+						globalFs.writeBuffer(
+							fd,
+							buffer,
+							offset,
+							length,
+							position
+						),
+					() =>
+						globalFsAsync.writeBuffer(
+							fd,
+							buffer,
+							offset,
+							length,
+							position
+						),
+					reqOrPromise
+				);
+			},
+			writeString(fd, string, position, encoding, reqOrPromise) {
+				// Promise or sync pattern
+				return handleAsyncOperation(
+					() =>
+						globalFs.writeSync(
+							fd,
+							string,
+							position,
+							resolveFsEncodingValue(encoding)
+						),
+					() =>
+						globalFsAsync.write(
+							fd,
+							string,
+							position,
+							resolveFsEncodingValue(encoding)
+						),
+					reqOrPromise
+				);
+			},
+			writeBuffers(fd, buffers, position, kUsePromises) {
+				// Native binding for writing multiple buffers (writev)
+				return handleAsyncOperation(
+					() => globalFs.writeBuffersSync(fd, buffers, position),
+					() => globalFsAsync.writeBuffers(fd, buffers, position),
+					kUsePromises
+				);
+			},
+			writeFileUtf8(path, data, flags, mode, kUsePromises) {
+				return handleAsyncOperation(
+					() => globalFs.writeFileUtf8(path, data, flags, mode),
+					() => globalFsAsync.writeFileUtf8(path, data, flags, mode),
+					kUsePromises
+				);
+			},
+			access(path, mode, kUsePromises) {
+				// Check file access permissions
+				const checkAccess = () => {
+					const exists = globalFs.existsSync(path);
+					if (!exists) {
+						const error = new Error(
+							`ENOENT: no such file or directory, access '${path}'`
+						);
+						error.code = 'ENOENT';
+						throw error;
+					}
+					return undefined;
+				};
+
+				return handleAsyncOperation(
+					checkAccess,
+					() =>
+						globalFsAsync.exists(path).then((exists) => {
+							if (!exists) {
+								const error = new Error(
+									`ENOENT: no such file or directory, access '${path}'`
+								);
+								error.code = 'ENOENT';
+								throw error;
+							}
+							return undefined;
+						}),
+					kUsePromises
+				);
+			},
+			copyFile(src, dest, mode, kUsePromises) {
+				return handleAsyncOperation(
+					() => globalFs.copyFileSync(src, dest, mode),
+					() => globalFsAsync.copyFile(src, dest, mode),
+					kUsePromises
+				);
+			},
+			readlink(path, encoding, kUsePromises) {
+				return handleAsyncOperation(
+					() =>
+						globalFs.readlinkSync(
+							path,
+							resolveFsEncodingValue(encoding)
+						),
+					() =>
+						globalFsAsync.readlink(
+							path,
+							resolveFsEncodingValue(encoding)
+						),
+					kUsePromises
+				);
+			},
+			realpath(path, encoding, kUsePromises) {
+				// Return the absolute path if file exists, otherwise throw ENOENT
+				// Since we don't have symlinks, realpath just verifies the file exists
+				// and returns its path
+				const checkAndReturn = () => {
+					if (!globalFs.existsSync(path)) {
+						const error = new Error(
+							`ENOENT: no such file or directory, realpath '${path}'`
+						);
+						error.code = 'ENOENT';
+						throw error;
+					}
+					return path;
+				};
+
+				return handleAsyncOperation(
+					checkAndReturn,
+					() =>
+						globalFsAsync.exists(path).then((exists) => {
+							if (!exists) {
+								const error = new Error(
+									`ENOENT: no such file or directory, realpath '${path}'`
+								);
+								error.code = 'ENOENT';
+								throw error;
+							}
+							return path;
+						}),
+					kUsePromises
+				);
+			},
+			utimes(path, atime, mtime, kUsePromises) {
+				return handleAsyncOperation(
+					() => globalFs.utimesSync(path, atime, mtime),
+					() => globalFsAsync.utimes(path, atime, mtime),
+					kUsePromises
+				);
+			},
+			futimes(fd, atime, mtime, kUsePromises) {
+				return handleAsyncOperation(
+					() => globalFs.futimesSync(fd, atime, mtime),
+					() => globalFsAsync.futimes(fd, atime, mtime),
+					kUsePromises
+				);
+			},
+			lutimes(path, atime, mtime, kUsePromises) {
+				const updateTimes = () => {
+					// Update timestamps on symlink itself if symlink; otherwise behave like utimes
+					const { node } = globalFs.walk(path);
+					if (!node) {
+						const error = new Error(
+							`ENOENT: no such file or directory, lutimes '${path}'`
+						);
+						error.code = 'ENOENT';
+						throw error;
+					}
+					if (node.type !== 'symlink') {
+						// If not a symlink, match Node: apply to target file
+						return globalFs.utimesSync(path, atime, mtime);
+					}
+					// For symlink, store times on the link node
+					// Node.js binding receives UNIX timestamps in seconds, we store in milliseconds
+					node.atime =
+						typeof atime === 'number'
+							? atime * 1000
+							: atime.getTime();
+					node.mtime =
+						typeof mtime === 'number'
+							? mtime * 1000
+							: mtime.getTime();
+					node.ctime = Date.now();
+				};
+
+				// For async, we need to walk first then update
+				const asyncUpdate = () =>
+					globalFsAsync.stat(path).then((stats) => {
+						// This is simplified - ideally we'd have an async walk
+						// For now, fall back to sync for the walk part
+						return updateTimes();
+					});
+
+				return handleAsyncOperation(
+					updateTimes,
+					asyncUpdate,
+					kUsePromises
+				);
+			},
+			ftruncate(fd, len, kUsePromises) {
+				return handleAsyncOperation(
+					() => globalFs.ftruncateSync(fd, len),
+					() => globalFsAsync.ftruncate(fd, len),
+					kUsePromises
+				);
+			},
+			chmod(path, mode, kUsePromises) {
+				// File permissions are simplified in browser environment
+				return handleAsyncOperation(
+					() => undefined,
+					Promise.resolve(undefined),
+					kUsePromises
+				);
+			},
+			fchmod(fd, mode, kUsePromises) {
+				// File permissions are simplified in browser environment
+				return handleAsyncOperation(
+					() => undefined,
+					Promise.resolve(undefined),
+					kUsePromises
+				);
+			},
+			chown(path, uid, gid, kUsePromises) {
+				// File ownership is not supported in browser environment
+				return handleAsyncOperation(
+					() => undefined,
+					Promise.resolve(undefined),
+					kUsePromises
+				);
+			},
+			fchown(fd, uid, gid, kUsePromises) {
+				// File ownership is not supported in browser environment
+				return handleAsyncOperation(
+					() => undefined,
+					Promise.resolve(undefined),
+					kUsePromises
+				);
+			},
+			fsync(fd, kUsePromises) {
+				// Always synced in memory filesystem
+				return handleAsyncOperation(
+					() => undefined,
+					Promise.resolve(undefined),
+					kUsePromises
+				);
+			},
+			fdatasync(fd, kUsePromises) {
+				// Always synced in memory filesystem
+				return handleAsyncOperation(
+					() => undefined,
+					Promise.resolve(undefined),
+					kUsePromises
+				);
+			},
+			link(existingPath, newPath, kUsePromises) {
+				return handleAsyncOperation(
+					() => globalFs.linkSync(existingPath, newPath),
+					() => globalFsAsync.link(existingPath, newPath),
+					kUsePromises
+				);
+			},
+		},
+		'fs'
+	),
+	mksnapshot: {
+		setSerializeCallback() {},
+		setDeserializeCallback() {},
+		setDeserializeMainFunction() {},
+		isBuildingSnapshotBuffer: [],
+	},
+	'internal/errors': {
+		exitCodes: {},
+		fatalExceptionStackEnhancers: {
+			beforeInspector: () => {},
+			afterInspector: () => {},
+		},
+	},
+	errors: createDebugProxy(
+		'errors',
+		{
+			exitCodes: {},
+			codes: {
+				kGenericUserError: 1,
+			},
+			noSideEffectsToString() {},
+			triggerUncaughtException() {},
+			getErrorSourcePositions(error) {
+				// Minimal polyfill: provide defaults to satisfy error_source.js
+				return {
+					sourceLine: '',
+					scriptResourceName: 'eval',
+					lineNumber: 1,
+					startColumn: 0,
+				};
+			},
+		},
+		'errors'
+	),
+	string_decoder: createDebugProxy('string_decoder', {
+		kIncompleteCharactersStart: 0,
+		kIncompleteCharactersEnd: 4,
+		kMissingBytes: 4,
+		kBufferedBytes: 5,
+		kEncodingField: 6,
+		kNumFields: 7,
+		encodings: ['utf-8', 'ascii', 'base64', 'hex'],
+		kIncompleteCharactersStart: 0,
+		kIncompleteCharactersEnd: 4,
+		kMissingBytes: 4,
+		kBufferedBytes: 5,
+		kEncodingField: 6,
+		kNumFields: 7,
+		kSize: 2048,
+		decode: (encodingBuffer, buffer, options) => {
+			// encodingBuffer is a UInt8Array with 1 at the index of the encoding
+			const encodingIndex =
+				encodingBuffer[
+					globalThis.internalModules.string_decoder.kEncodingField
+				];
+			const encoding =
+				globalThis.internalModules.string_decoder.encodings[
+					encodingIndex
+				] ?? 'utf-8';
+			return buffer.toString(encoding, options);
+		},
+		flush: (buffer) => {
+			return buffer.toString();
+		},
+	}),
+	buffer: createBufferBinding(),
+	types: createDebugProxy('types', {
+		isRegExp(value) {
+			return Object.prototype.toString.call(value) === '[object RegExp]';
+		},
+		isDate(value) {
+			return Object.prototype.toString.call(value) === '[object Date]';
+		},
+		isNativeError(value) {
+			if (value === null || value === undefined) {
+				return false;
+			}
+			// Check if it's an instance of Error or one of the native error types
+			return (
+				value instanceof Error ||
+				value instanceof EvalError ||
+				value instanceof RangeError ||
+				value instanceof ReferenceError ||
+				value instanceof SyntaxError ||
+				value instanceof TypeError ||
+				value instanceof URIError ||
+				(typeof AggregateError !== 'undefined' &&
+					value instanceof AggregateError)
+			);
+		},
+		isPromise(value) {
+			return value instanceof Promise;
+		},
+		isProxy(value) {
+			// JavaScript doesn't provide a way to detect proxies reliably
+			// This is a limitation of the language
+			return false;
+		},
+		isMap(value) {
+			return Object.prototype.toString.call(value) === '[object Map]';
+		},
+		isSet(value) {
+			return Object.prototype.toString.call(value) === '[object Set]';
+		},
+		isMapIterator(value) {
+			return (
+				Object.prototype.toString.call(value) ===
+				'[object Map Iterator]'
+			);
+		},
+		isSetIterator(value) {
+			return (
+				Object.prototype.toString.call(value) ===
+				'[object Set Iterator]'
+			);
+		},
+		isWeakMap(value) {
+			return Object.prototype.toString.call(value) === '[object WeakMap]';
+		},
+		isWeakSet(value) {
+			return Object.prototype.toString.call(value) === '[object WeakSet]';
+		},
+		isArrayBuffer(value) {
+			return (
+				Object.prototype.toString.call(value) === '[object ArrayBuffer]'
+			);
+		},
+		isDataView(value) {
+			return (
+				Object.prototype.toString.call(value) === '[object DataView]'
+			);
+		},
+		isSharedArrayBuffer(value) {
+			return (
+				Object.prototype.toString.call(value) ===
+				'[object SharedArrayBuffer]'
+			);
+		},
+		isTypedArray(value) {
+			return ArrayBuffer.isView(value) && !(value instanceof DataView);
+		},
+		isUint8Array(value) {
+			return (
+				Object.prototype.toString.call(value) === '[object Uint8Array]'
+			);
+		},
+		isUint8ClampedArray(value) {
+			return (
+				Object.prototype.toString.call(value) ===
+				'[object Uint8ClampedArray]'
+			);
+		},
+		isUint16Array(value) {
+			return (
+				Object.prototype.toString.call(value) === '[object Uint16Array]'
+			);
+		},
+		isUint32Array(value) {
+			return (
+				Object.prototype.toString.call(value) === '[object Uint32Array]'
+			);
+		},
+		isInt8Array(value) {
+			return (
+				Object.prototype.toString.call(value) === '[object Int8Array]'
+			);
+		},
+		isInt16Array(value) {
+			return (
+				Object.prototype.toString.call(value) === '[object Int16Array]'
+			);
+		},
+		isInt32Array(value) {
+			return (
+				Object.prototype.toString.call(value) === '[object Int32Array]'
+			);
+		},
+		isFloat32Array(value) {
+			return (
+				Object.prototype.toString.call(value) ===
+				'[object Float32Array]'
+			);
+		},
+		isFloat64Array(value) {
+			return (
+				Object.prototype.toString.call(value) ===
+				'[object Float64Array]'
+			);
+		},
+		isBigInt64Array(value) {
+			return (
+				Object.prototype.toString.call(value) ===
+				'[object BigInt64Array]'
+			);
+		},
+		isBigUint64Array(value) {
+			return (
+				Object.prototype.toString.call(value) ===
+				'[object BigUint64Array]'
+			);
+		},
+		isGeneratorObject(value) {
+			return (
+				Object.prototype.toString.call(value) === '[object Generator]'
+			);
+		},
+		isGeneratorFunction(value) {
+			return (
+				Object.prototype.toString.call(value) ===
+				'[object GeneratorFunction]'
+			);
+		},
+		isAsyncFunction(value) {
+			return (
+				Object.prototype.toString.call(value) ===
+				'[object AsyncFunction]'
+			);
+		},
+		isArrayBufferView(value) {
+			return ArrayBuffer.isView(value);
+		},
+		isBoxedPrimitive(value) {
+			return (
+				value instanceof Boolean ||
+				value instanceof Number ||
+				value instanceof String ||
+				value instanceof Symbol ||
+				value instanceof BigInt
+			);
+		},
+		isAnyArrayBuffer(value) {
+			const tag = Object.prototype.toString.call(value);
+			return (
+				tag === '[object ArrayBuffer]' ||
+				tag === '[object SharedArrayBuffer]'
+			);
+		},
+		isArgumentsObject(value) {
+			return (
+				Object.prototype.toString.call(value) === '[object Arguments]'
+			);
+		},
+		isBooleanObject(value) {
+			return Object.prototype.toString.call(value) === '[object Boolean]';
+		},
+		isNumberObject(value) {
+			return Object.prototype.toString.call(value) === '[object Number]';
+		},
+		isStringObject(value) {
+			return Object.prototype.toString.call(value) === '[object String]';
+		},
+		isSymbolObject(value) {
+			return Object.prototype.toString.call(value) === '[object Symbol]';
+		},
+		isBigIntObject(value) {
+			return Object.prototype.toString.call(value) === '[object BigInt]';
+		},
+		isModuleNamespaceObject(value) {
+			return Object.prototype.toString.call(value) === '[object Module]';
+		},
+	}),
+	timers: createDebugProxy('timers', {
+		timeoutInfo: [],
+		immediateInfo: [],
+	}),
+	trace_events: {
+		getCategoryEnabledBuffer() {
+			return [9];
+		},
+		trace() {
+			// Do nothing
+		},
+	},
+	credentials: {
+		// ENV Variables
+		safeGetenv(key) {
+			return '';
+		},
+	},
+	performance: {
+		constants: {
+			NODE_PERFORMANCE_MILESTONE_NODE_START: 0,
+			NODE_PERFORMANCE_MILESTONE_V8_START: 1,
+			NODE_PERFORMANCE_MILESTONE_LOOP_START: 2,
+			NODE_PERFORMANCE_MILESTONE_LOOP_EXIT: 3,
+			NODE_PERFORMANCE_MILESTONE_BOOTSTRAP_COMPLETE: 4,
+			NODE_PERFORMANCE_MILESTONE_ENVIRONMENT: 5,
+		},
+		milestones: {
+			NODE_PERFORMANCE_MILESTONE_NODE_START: new Date().getTime(),
+			NODE_PERFORMANCE_MILESTONE_V8_START: new Date().getTime(),
+			NODE_PERFORMANCE_MILESTONE_LOOP_START: new Date().getTime(),
+			NODE_PERFORMANCE_MILESTONE_LOOP_EXIT: new Date().getTime(),
+			NODE_PERFORMANCE_MILESTONE_BOOTSTRAP_COMPLETE: new Date().getTime(),
+			NODE_PERFORMANCE_MILESTONE_ENVIRONMENT: new Date().getTime(),
+		},
+		setupObservers() {},
+		now() {
+			return new Date().getTime();
+		},
+	},
+	js_stream: createDebugProxy('js_stream', {
+		JSStream: class JSStream {
+			constructor() {
+				this.persistent = false;
+			}
+		},
+	}),
+	blob: createDebugProxy('blob', {
+		Blob: Blob,
+		createBlob(sources = []) {
+			if (!Array.isArray(sources)) {
+				throw new TypeError('sources must be an array');
+			}
+			return makeBlobHandle(sources);
+		},
+		createBlobFromFilePath() {
+			return undefined;
+		},
+		concat(buffers = []) {
+			return concatArrayBuffers(buffers);
+		},
+		getDataObject(id) {
+			return getBlobDataObject(`${id}`);
+		},
+		storeDataObject(id, handle, size, type) {
+			storeBlobDataObject(`${id}`, handle, size, type);
+		},
+		resolveObjectURL() {
+			throw new Error('Not implemented');
+		},
+		revokeObjectURL(url) {
+			revokeBlobDataObject(url);
+		},
+	}),
+	encoding_binding: createDebugProxy('encoding_binding', {
+		encodeIntoResults() {
+			throw new Error('Not implemented');
+		},
+		encodeInto() {
+			throw new Error('Not implemented');
+		},
+		encodeUtf8String() {
+			throw new Error('Not implemented');
+		},
+		decodeUTF8() {
+			throw new Error('Not implemented');
+		},
+		decodeLatin1() {
+			throw new Error('Not implemented');
+		},
+		toASCII() {
+			throw new Error('Not implemented');
+		},
+		toUnicode() {
+			throw new Error('Not implemented');
+		},
+	}),
+	process_methods: createDebugProxy('process_methods', {
+		hrtimeBuffer: {},
+	}),
+	url_pattern: createDebugProxy('url_pattern', {
+		URLPattern: class URLPattern {
+			constructor(pattern) {
+				this.pattern = pattern;
+			}
+			test(input) {
+				throw new Error('URLPattern.test not implemented');
+			}
+			exec(input) {
+				throw new Error('URLPattern.exec not implemented');
+			}
+		},
+	}),
+	url: createDebugProxy('url', {
+		urlComponents: new Uint32Array(9), // [protocol_end, username_end, host_start, host_end, port, pathname_start, search_start, hash_start, scheme_type]
+
+		parse(input, base, raiseException = true) {
+			try {
+				const url = new URL(input, base);
+				const href = url.href;
+
+				// Calculate component positions in the href string
+				const protocol_end = url.protocol.length;
+				let username_end = protocol_end + 2; // Skip '//'
+
+				if (url.username) {
+					username_end = href.indexOf(':', protocol_end + 2);
+					if (
+						username_end === -1 ||
+						username_end > href.indexOf('@')
+					) {
+						username_end = href.indexOf('@', protocol_end + 2);
+					}
+				}
+
+				let host_start = username_end;
+				if (url.username || url.password) {
+					host_start = href.indexOf('@', protocol_end + 2) + 1;
+				}
+
+				const host_end = host_start + url.hostname.length;
+				const port = url.port ? parseInt(url.port, 10) : 0;
+
+				// pathname_start is right after the host (and port if present)
+				const pathname_start = href.indexOf(url.pathname, host_end);
+
+				// search_start is where '?' appears (if search exists)
+				const search_start = url.search
+					? href.indexOf(url.search, pathname_start)
+					: 0;
+
+				// hash_start is where '#' appears (if hash exists)
+				const hash_start = url.hash
+					? href.indexOf(url.hash, search_start || pathname_start)
+					: 0;
+
+				// scheme_type: 0=HTTP, 1=NOT_SPECIAL, 2=HTTPS, 3=WS, 4=FTP, 5=WSS, 6=FILE
+				let scheme_type = 1; // NOT_SPECIAL by default
+				if (url.protocol === 'http:') scheme_type = 0;
+				else if (url.protocol === 'https:') scheme_type = 2;
+				else if (url.protocol === 'ws:') scheme_type = 3;
+				else if (url.protocol === 'ftp:') scheme_type = 4;
+				else if (url.protocol === 'wss:') scheme_type = 5;
+				else if (url.protocol === 'file:') scheme_type = 6;
+
+				// Update urlComponents array
+				this.urlComponents[0] = protocol_end;
+				this.urlComponents[1] = username_end;
+				this.urlComponents[2] = host_start;
+				this.urlComponents[3] = host_end;
+				this.urlComponents[4] = port;
+				this.urlComponents[5] = pathname_start;
+				this.urlComponents[6] = search_start;
+				this.urlComponents[7] = hash_start;
+				this.urlComponents[8] = scheme_type;
+
+				return href;
+			} catch (error) {
+				if (raiseException) {
+					throw error;
+				}
+				return null;
+			}
+		},
+
+		update(href, action, value) {
+			// Simple implementation: parse URL, update component, return new href
+			try {
+				const url = new URL(href);
+
+				// action values from internal/url.js updateActions
+				const kProtocol = 0,
+					kHost = 1,
+					kHostname = 2,
+					kPort = 3;
+				const kUsername = 4,
+					kPassword = 5,
+					kPathname = 6,
+					kSearch = 7,
+					kHash = 8,
+					kHref = 9;
+
+				switch (action) {
+					case kProtocol:
+						url.protocol = value;
+						break;
+					case kHost:
+						url.host = value;
+						break;
+					case kHostname:
+						url.hostname = value;
+						break;
+					case kPort:
+						url.port = value;
+						break;
+					case kUsername:
+						url.username = value;
+						break;
+					case kPassword:
+						url.password = value;
+						break;
+					case kPathname:
+						url.pathname = value;
+						break;
+					case kSearch:
+						url.search = value;
+						break;
+					case kHash:
+						url.hash = value;
+						break;
+					case kHref:
+						return this.parse(value, undefined, true);
+				}
+
+				// Re-parse to update components
+				return this.parse(url.href, undefined, true);
+			} catch {
+				return null;
+			}
+		},
+
+		canParse(string, base) {
+			try {
+				new URL(string, base);
+				return true;
+			} catch {
+				return false;
+			}
+		},
+		pathToFileURL(filepath) {
+			if (typeof filepath !== 'string') {
+				throw new TypeError('Path must be a string');
+			}
+
+			// Handle trailing slashes - add back trailing slash if original had one
+			let resolved = filepath;
+			const hadTrailingSlash = filepath.endsWith('/');
+
+			// Encode the path for file URL
+			const encodedPath = _encodePathForFileURL(resolved);
+
+			// Create and return the URL
+			return new URL(`file://${encodedPath}`);
+		},
+
+		fileURLToPath(input, options) {
+			const errorCodes = globalThis.internalModules?.errors?.codes ?? {};
+			const {
+				ERR_INVALID_ARG_TYPE,
+				ERR_INVALID_URL_SCHEME,
+				ERR_INVALID_FILE_URL_HOST,
+				ERR_INVALID_FILE_URL_PATH,
+			} = errorCodes;
+
+			const throwInvalidArgType = (value) => {
+				if (typeof ERR_INVALID_ARG_TYPE === 'function') {
+					throw new ERR_INVALID_ARG_TYPE(
+						'path',
+						['string', 'URL'],
+						value
+					);
+				}
+				const err = new TypeError(
+					'The "path" argument must be of type string or an instance of URL.'
+				);
+				err.code = 'ERR_INVALID_ARG_TYPE';
+				throw err;
+			};
+
+			const throwInvalidScheme = () => {
+				if (typeof ERR_INVALID_URL_SCHEME === 'function') {
+					throw new ERR_INVALID_URL_SCHEME('file');
+				}
+				const err = new TypeError('The URL must be of scheme file:');
+				err.code = 'ERR_INVALID_URL_SCHEME';
+				throw err;
+			};
+
+			const throwInvalidHost = (platform) => {
+				if (typeof ERR_INVALID_FILE_URL_HOST === 'function') {
+					throw new ERR_INVALID_FILE_URL_HOST(platform);
+				}
+				const err = new TypeError(
+					'File URL host must be empty on POSIX.'
+				);
+				err.code = 'ERR_INVALID_FILE_URL_HOST';
+				throw err;
+			};
+
+			const throwInvalidPath = (reason, urlObj) => {
+				if (typeof ERR_INVALID_FILE_URL_PATH === 'function') {
+					throw new ERR_INVALID_FILE_URL_PATH(reason, urlObj);
+				}
+				const err = new TypeError(`Invalid file URL path: ${reason}`);
+				err.code = 'ERR_INVALID_FILE_URL_PATH';
+				throw err;
+			};
+
+			let urlObj;
+			if (typeof input === 'string') {
+				urlObj = new URL(input);
+			} else if (input instanceof URL) {
+				urlObj = input;
+			} else {
+				throwInvalidArgType(input);
+			}
+
+			if (urlObj.protocol !== 'file:') {
+				throwInvalidScheme();
+			}
+
+			const windowsOption = options?.windows;
+			const isWindows =
+				windowsOption !== undefined
+					? windowsOption
+					: globalThis.process?.platform === 'win32';
+
+			const decodeHostname = (hostname) => {
+				const domainToUnicode =
+					globalThis.coreModules?.url?.domainToUnicode ??
+					globalThis.internalModules?.url?.domainToUnicode;
+				if (typeof domainToUnicode === 'function') {
+					try {
+						return domainToUnicode(hostname);
+					} catch {
+						// Fall back to the raw hostname if conversion fails.
+					}
+				}
+				return hostname;
+			};
+
+			const ensureNoEncodedSeparators = (pathname, sequences) => {
+				for (let i = 0; i < pathname.length; i++) {
+					if (pathname[i] !== '%' || i + 2 >= pathname.length)
+						continue;
+					const second = pathname[i + 1];
+					const third = pathname[i + 2].toLowerCase();
+					for (const seq of sequences) {
+						if (second === seq[0] && third === seq[1]) {
+							return false;
+						}
+					}
+				}
+				return true;
+			};
+
+			if (isWindows) {
+				const winPathFromURL = (urlInstance) => {
+					let pathname = urlInstance.pathname;
+					if (
+						!ensureNoEncodedSeparators(pathname, [
+							['2', 'f'],
+							['5', 'c'],
+						])
+					) {
+						throwInvalidPath(
+							'must not include encoded \\ or / characters',
+							urlInstance
+						);
+					}
+					pathname = pathname.replace(/\//g, '\\');
+					pathname = decodeURIComponent(pathname);
+					if (urlInstance.hostname) {
+						const host = decodeHostname(urlInstance.hostname);
+						return `\\\\${host}${pathname}`;
+					}
+					const letter = pathname.charCodeAt(1);
+					const sep = pathname[2];
+					if (
+						!letter ||
+						(letter | 0x20) < 97 ||
+						(letter | 0x20) > 122 ||
+						sep !== ':'
+					) {
+						throwInvalidPath('must be absolute', urlInstance);
+					}
+					return pathname.slice(1);
+				};
+
+				return winPathFromURL(urlObj);
+			}
+
+			const posixPathFromURL = (urlInstance) => {
+				if (urlInstance.hostname) {
+					const platform = globalThis.process?.platform ?? 'posix';
+					throwInvalidHost(platform);
+				}
+				const { pathname } = urlInstance;
+				if (!ensureNoEncodedSeparators(pathname, [['2', 'f']])) {
+					throwInvalidPath(
+						'must not include encoded / characters',
+						urlInstance
+					);
+				}
+				return decodeURIComponent(pathname);
+			};
+
+			return posixPathFromURL(urlObj);
+		},
+	}),
+	permission: createDebugProxy('permission', {}),
+	fs_dir: createDebugProxy(
+		'fs_dir',
+		(function () {
+			// Implement Dir class with async iterator support
+			class Dir {
+				constructor(handle, path, options) {
+					this.handle = handle;
+					this.path = path;
+					this.options = options || { encoding: 'utf8' };
+					this.closed = false;
+				}
+
+				read(encodingOrCallback, bufferSize, kUsePromises) {
+					// Full binding signature with kUsePromises or FSReqCallback
+					console.trace('read', {
+						encodingOrCallback,
+						bufferSize,
+						kUsePromises,
+					});
+					return maybePromiseFromSync(
+						() => this.readSync(encodingOrCallback, bufferSize),
+						kUsePromises
+					);
+				}
+
+				readSync(
+					encodingOrCallback = this.options.encoding,
+					bufferSize = 32
+				) {
+					if (this.closed) {
+						const err = new Error('Dir is closed');
+						err.code = 'ERR_DIR_CLOSED';
+						throw err;
+					}
+					const entry = this.handle.read(
+						encodingOrCallback,
+						bufferSize
+					);
+					if (entry === null) {
+						return null;
+					}
+					// entry is { name, type } from the handle
+					const { name, type } = entry;
+					// Return a Dirent-like object
+					return {
+						name,
+						isFile: () => type === 'file',
+						isDirectory: () => type === 'dir',
+						isBlockDevice: () => false,
+						isCharacterDevice: () => false,
+						isSymbolicLink: () => type === 'symlink',
+						isFIFO: () => false,
+						isSocket: () => false,
+					};
+				}
+
+				close(kUsePromises) {
+					return maybePromiseFromSync(
+						() => this.closeSync(),
+						kUsePromises
+					);
+				}
+
+				closeSync() {
+					if (this.closed) {
+						const err = new Error('Dir is already closed');
+						err.code = 'ERR_DIR_CLOSED';
+						throw err;
+					}
+					this.handle.close();
+					this.closed = true;
+				}
+
+				// Async iterator support
+				async *entries() {
+					try {
+						while (true) {
+							const entry = await this.read();
+							if (entry == null) {
+								break;
+							}
+							yield entry;
+						}
+					} finally {
+						await this.close();
+					}
+				}
+
+				// Make this async iterable
+				[Symbol.asyncIterator]() {
+					return this.entries();
+				}
+			}
+
+			return {
+				Dir,
+				opendirSync(path, options) {
+					const handle = globalFs.opendirSync(path);
+					return new Dir(handle, path, options);
+				},
+				opendir(path, encoding, kUsePromises) {
+					return maybePromiseFromSync(() => {
+						const handle = globalFs.opendirSync(path);
+						return new Dir(handle, path, { encoding });
+					}, kUsePromises);
+				},
+			};
+		})(),
+		'fs_dir'
+	),
+	cares_wrap: {
+		ChannelWrap: class ChannelWrap {
+			constructor() {
+				this.persistent = false;
+			}
+		},
+	},
+	stream_wrap: createDebugProxy('stream_wrap', {
+		StreamWrap: class StreamWrap {
+			constructor() {
+				this.persistent = false;
+			}
+		},
+		ShutdownWrap: class ShutdownWrap {
+			constructor() {
+				this.persistent = false;
+			}
+		},
+		WriteWrap: class WriteWrap {
+			constructor() {
+				this.persistent = false;
+			}
+		},
+		kReadBytesOrError: 0,
+		kArrayBufferOffset: 1,
+		kBytesWritten: 2,
+		kLastWriteWasAsync: 3,
+		streamBaseState: new Int32Array(4),
+	}),
+	pipe_wrap: createDebugProxy('pipe_wrap', {
+		Pipe: class Pipe {
+			constructor() {
+				this.persistent = false;
+			}
+		},
+		PipeConnectWrap: class PipeConnectWrap {
+			constructor() {
+				this.persistent = false;
+			}
+		},
+		constants: {
+			SOCKET: 0,
+			SERVER: 1,
+			IPC: 2,
+		},
+	}),
+	worker: createDebugProxy('worker', {
+		ownsProcessState: false,
+		isMainThread: false,
+		isInternalThread: false,
+		resourceLimits: {},
+		threadId: 0,
+		threadName: 'WorkerThread',
+		// filled in later in this file once we have
+		// access to the EventEmitter constructor
+		// Worker: ,
+		kMaxYoungGenerationSizeMb: 1024,
+		kMaxOldGenerationSizeMb: 1024,
+		kCodeRangeSizeMb: 1024,
+		kStackSizeMb: 1024,
+		kTotalResourceLimitCount: 1024,
+		getEnvMessagePort() {
+			throw new Error('Not implemented');
+		},
+	}),
+	locks: createDebugProxy('locks', {}),
+	worker_threads: createDebugProxy('worker_threads', {}),
+	tls_wrap: createDebugProxy('tls_wrap', {
+		TLSWrap: class TLSWrap {
+			constructor() {
+				this.persistent = false;
+			}
+		},
+	}),
+	http_parser: createDebugProxy('http_parser', {
+		HTTPParser: class HTTPParser {
+			constructor() {
+				this.persistent = false;
+			}
+		},
+		ConnectionsList: class ConnectionsList {
+			constructor() {
+				this.connections = [];
+			}
+		},
+		methods: [],
+		allMethods: [],
+	}),
+	tcp_wrap: createDebugProxy('tcp_wrap', {
+		TCP: class TCP {
+			constructor() {
+				this.persistent = false;
+			}
+		},
+		TCPConnectWrap: class TCPConnectWrap {
+			constructor() {
+				this.persistent = false;
+			}
+		},
+		constants: {
+			SOCKET: 0,
+			SERVER: 1,
+			UV_TCP_IPV6ONLY: 1,
+		},
+	}),
+	udp_wrap: {
+		constants: {
+			// @TODO: verify these
+			UV_UDP_IPV6ONLY: 1,
+			UV_UDP_REUSEPORT: 2,
+		},
+		UDP: class UDP {
+			constructor() {
+				this.persistent = false;
+			}
+		},
+	},
+	tty_wrap: {
+		isTTY() {
+			return false;
+		},
+		Tty: class Tty {
+			constructor() {
+				this.persistent = false;
+			}
+		},
+	},
+	fs_event_wrap: {
+		FSEvent: class FSEvent {
+			constructor() {
+				this.persistent = false;
+			}
+		},
+	},
+	uv: {},
+	os: createDebugProxy('os', {
+		EOL: '\n',
+		__esModule: true,
+		devNull: '/dev/null',
+		endianness: 'LE',
+		freemem: () => 8589934592,
+		getPriority: () => 0,
+		getHomeDirectory: () => '/home/user',
+		getHostname: () => 'localhost',
+		availableParallelism: () => 1,
+		getCPUs() {
+			return [
+				{
+					model: 'Virtual CPU',
+					speed: 2400,
+					times: {
+						user: 252020,
+					},
+				},
+			];
+		},
+		arch() {
+			return 'x64';
+		},
+		cpus() {
+			return [
+				{
+					model: 'Virtual CPU',
+					speed: 2400,
+					times: {
+						user: 252020,
+						nice: 0,
+						sys: 30340,
+						idle: 1070356870,
+						irq: 0,
+					},
+				},
+			];
+		},
+		hostname() {
+			return 'localhost';
+		},
+		machine() {
+			return 'x86_64';
+		},
+		networkInterfaces() {
+			return {
+				lo: [
+					{
+						address: '127.0.0.1',
+						netmask: '255.0.0.0',
+						family: 'IPv4',
+						mac: '00:00:00:00:00:00',
+						internal: true,
+						cidr: '127.0.0.1/8',
+					},
+				],
+			};
+		},
+		platform() {
+			return 'linux';
+		},
+		release() {
+			return '5.4.0';
+		},
+		setPriority(pidOrPriority, priority) {
+			// No-op in browser environment
+		},
+		tmpdir() {
+			return '/tmp';
+		},
+		totalmem() {
+			return 8589934592; // 8GB
+		},
+		type() {
+			return 'Linux';
+		},
+		uptime() {
+			return Math.floor(performance.now() / 1000);
+		},
+		version() {
+			return '#1 SMP Thu Oct 6 16:21:56 UTC 2022';
+		},
+		getOSInformation() {
+			return ['Linux', '5.4.0', '5.4.0'];
+		},
+		isBigEndian() {
+			return false;
+		},
+		getAvailableParallelism() {
+			return navigator.hardwareConcurrency || 10;
+		},
+		getFreeMem() {
+			// Estimate 2GB free memory (browser environments don't expose this)
+			return 2147483648;
+		},
+		getHostname() {
+			return 'localhost';
+		},
+		getOSVersion() {
+			return '#1 SMP Thu Oct 6 16:21:56 UTC 2022';
+		},
+		getOSType() {
+			return 'Linux';
+		},
+		getOSRelease() {
+			return '5.4.0';
+		},
+		getMachine() {
+			return 'x86_64';
+		},
+		getHomeDirectory() {
+			return '/home/user';
+		},
+		getTotalMem() {
+			return 8589934592; // 8GB
+		},
+		getUptime() {
+			return Math.floor(performance.now() / 1000);
+		},
+		homedir() {
+			return '/home/user';
+		},
+		getPriority(pid) {
+			return 0;
+		},
+		getInterfaceAddresses() {
+			return [];
+		},
+		getLoadAvg() {
+			return [0, 0, 0];
+		},
+		getOSVersion() {
+			return '5.4.0';
+		},
+		getOSType() {
+			return 'Linux';
+		},
+		getOSRelease() {
+			return '5.4.0';
+		},
+		getMachine() {
+			return 'x86_64';
+		},
+		getHomeDirectory() {
+			return '/home/user';
+		},
+		getTotalMem() {
+			return 8589934592; // 8GB
+		},
+		getUptime() {
+			return Math.floor(performance.now() / 1000);
+		},
+		getUserInfo(options) {
+			return {
+				uid: 1000,
+				gid: 1000,
+				username: 'user',
+				homedir: '/home/user',
+				shell: '/bin/bash',
+			};
+		},
+		setPriority(pidOrPriority, priority) {
+			// No-op in browser environment
+		},
+	}),
+	zlib: createDebugProxy('zlib', {
+		Zlib: class Zlib {
+			constructor() {
+				this.persistent = false;
+			}
+		},
+		crc32() {
+			console.trace('zlib crc32');
+			return 0;
+		},
+	}),
+	messaging: {
+		DOMException: class DOMException extends Error {
+			constructor(message, name) {
+				super(message, name);
+			}
+		},
+	},
+	async_wrap: createAsyncWrapBinding(),
+	async_context_frame: createAsyncContextFrameBinding(),
+	task_queue: createTaskQueueBinding(),
+	stream_pipe: new Proxy(
+		{
+			StreamPipe: class StreamPipe {
+				constructor() {
+					this.persistent = false;
+				}
+			},
+		},
+		{
+			get(target, prop) {
+				// console.log('stream get', prop);
+				return target[prop];
+			},
+		}
+	),
+	symbols: {
+		fs_use_promises: Symbol('fs_use_promises_symbol'),
+		async_id: Symbol('async_id_symbol'),
+		constructor_key: Symbol('constructor_key_symbol'),
+		handle_onclose: Symbol('handle_onclose'),
+		no_message: Symbol('no_message_symbol'),
+		messaging_deserialize: Symbol('messaging_deserialize_symbol'),
+		imported_cjs: Symbol('imported_cjs_symbol'),
+		messaging_transfer: Symbol('messaging_transfer_symbol'),
+		messaging_clone: Symbol('messaging_clone_symbol'),
+		messaging_transfer_list: Symbol('messaging_transfer_list_symbol'),
+		oninit: Symbol('oninit'),
+		owner: Symbol('owner_symbol'),
+		onpskexchange: Symbol('onpskexchange'),
+		resource: Symbol('resource_symbol'),
+		trigger_async_id: Symbol('trigger_async_id_symbol'),
+		source_text_module_default_hdo: Symbol(
+			'source_text_module_default_hdo'
+		),
+		vm_context_no_contextify: Symbol('vm_context_no_contextify'),
+		vm_dynamic_import_default_internal: Symbol(
+			'vm_dynamic_import_default_internal'
+		),
+		vm_dynamic_import_main_context_default: Symbol(
+			'vm_dynamic_import_main_context_default'
+		),
+		vm_dynamic_import_missing_flag: Symbol(
+			'vm_dynamic_import_missing_flag'
+		),
+		vm_dynamic_import_no_callback: Symbol('vm_dynamic_import_no_callback'),
+	},
+	// http2: createDebugProxy('http2', {
+	http2: {
+		setCallbackFunctions() {},
+		constants: {
+			HTTP2_HEADER_STATUS: ':status',
+			HTTP2_HEADER_METHOD: ':method',
+			HTTP2_HEADER_AUTHORITY: ':authority',
+			HTTP2_HEADER_SCHEME: ':scheme',
+			HTTP2_HEADER_PATH: ':path',
+			HTTP2_HEADER_PROTOCOL: ':protocol',
+			HTTP2_HEADER_DATE: 'date',
+			HTTP2_HEADER_ACCEPT_CHARSET: 'accept-charset',
+			HTTP2_HEADER_ACCEPT_ENCODING: 'accept-encoding',
+			HTTP2_HEADER_ACCEPT_LANGUAGE: 'accept-language',
+			HTTP2_HEADER_ACCEPT_RANGES: 'accept-ranges',
+			HTTP2_HEADER_ACCEPT: 'accept',
+			HTTP2_HEADER_ACCESS_CONTROL_ALLOW_CREDENTIALS:
+				'access-control-allow-credentials',
+			HTTP2_HEADER_ACCESS_CONTROL_ALLOW_HEADERS:
+				'access-control-allow-headers',
+			HTTP2_HEADER_ACCESS_CONTROL_ALLOW_METHODS:
+				'access-control-allow-methods',
+			HTTP2_HEADER_ACCESS_CONTROL_ALLOW_ORIGIN:
+				'access-control-allow-origin',
+			HTTP2_HEADER_ACCESS_CONTROL_EXPOSE_HEADERS:
+				'access-control-expose-headers',
+			HTTP2_HEADER_ACCESS_CONTROL_MAX_AGE: 'access-control-max-age',
+			HTTP2_HEADER_ACCESS_CONTROL_REQUEST_HEADERS:
+				'access-control-request-headers',
+			HTTP2_HEADER_ACCESS_CONTROL_REQUEST_METHOD:
+				'access-control-request-method',
+			HTTP2_HEADER_AGE: 'age',
+			HTTP2_HEADER_ALLOW: 'allow',
+			HTTP2_HEADER_AUTHORIZATION: 'authorization',
+			HTTP2_HEADER_CACHE_CONTROL: 'cache-control',
+			HTTP2_HEADER_CONTENT_DISPOSITION: 'content-disposition',
+			HTTP2_HEADER_CONTENT_ENCODING: 'content-encoding',
+			HTTP2_HEADER_CONTENT_LANGUAGE: 'content-language',
+			HTTP2_HEADER_CONTENT_LENGTH: 'content-length',
+			HTTP2_HEADER_CONTENT_LOCATION: 'content-location',
+			HTTP2_HEADER_CONTENT_RANGE: 'content-range',
+			HTTP2_HEADER_CONTENT_TYPE: 'content-type',
+			HTTP2_HEADER_COOKIE: 'cookie',
+			HTTP2_HEADER_CONNECTION: 'connection',
+			HTTP2_HEADER_DNT: 'dnt',
+			HTTP2_HEADER_ETAG: 'etag',
+			HTTP2_HEADER_EXPECT: 'expect',
+			HTTP2_HEADER_EXPIRES: 'expires',
+			HTTP2_HEADER_FORWARDED: 'forwarded',
+			HTTP2_HEADER_FROM: 'from',
+			HTTP2_HEADER_HOST: 'host',
+			HTTP2_HEADER_IF_MATCH: 'if-match',
+			HTTP2_HEADER_IF_MODIFIED_SINCE: 'if-modified-since',
+			HTTP2_HEADER_IF_NONE_MATCH: 'if-none-match',
+			HTTP2_HEADER_IF_RANGE: 'if-range',
+			HTTP2_HEADER_IF_UNMODIFIED_SINCE: 'if-unmodified-since',
+			HTTP2_HEADER_LAST_MODIFIED: 'last-modified',
+			HTTP2_HEADER_LINK: 'link',
+			HTTP2_HEADER_LOCATION: 'location',
+			HTTP2_HEADER_MAX_FORWARDS: 'max-forwards',
+			HTTP2_HEADER_PREFER: 'prefer',
+			HTTP2_HEADER_PROXY_AUTHENTICATE: 'proxy-authenticate',
+			HTTP2_HEADER_PROXY_AUTHORIZATION: 'proxy-authorization',
+			HTTP2_HEADER_PROXY_CONNECTION: 'proxy-connection',
+			HTTP2_HEADER_RANGE: 'range',
+			HTTP2_HEADER_REFERER: 'referer',
+			HTTP2_HEADER_REFRESH: 'refresh',
+			HTTP2_HEADER_RETRY_AFTER: 'retry-after',
+			HTTP2_HEADER_SERVER: 'server',
+			HTTP2_HEADER_SET_COOKIE: 'set-cookie',
+			HTTP2_HEADER_STRICT_TRANSPORT_SECURITY: 'strict-transport-security',
+			HTTP2_HEADER_TRAILER: 'trailer',
+			HTTP2_HEADER_TRANSFER_ENCODING: 'transfer-encoding',
+			HTTP2_HEADER_TK: 'tk',
+			HTTP2_HEADER_UPGRADE_INSECURE_REQUESTS: 'upgrade-insecure-requests',
+			HTTP2_HEADER_USER_AGENT: 'user-agent',
+			HTTP2_HEADER_VARY: 'vary',
+			HTTP2_HEADER_VIA: 'via',
+			HTTP2_HEADER_WARNING: 'warning',
+			HTTP2_HEADER_WWW_AUTHENTICATE: 'www-authenticate',
+			HTTP2_HEADER_X_CONTENT_TYPE_OPTIONS: 'x-content-type-options',
+			HTTP2_HEADER_X_FRAME_OPTIONS: 'x-frame-options',
+			HTTP2_HEADER_KEEP_ALIVE: 'keep-alive',
+			HTTP2_HEADER_CONTENT_MD5: 'content-md5',
+			HTTP2_HEADER_TE: 'te',
+			HTTP2_HEADER_UPGRADE: 'upgrade',
+			HTTP2_HEADER_HTTP2_SETTINGS: 'http2-settings',
+			HTTP2_HEADER_X_XSS_PROTECTION: 'x-xss-protection',
+			HTTP2_HEADER_ALT_SVC: 'alt-svc',
+			HTTP2_HEADER_CONTENT_SECURITY_POLICY: 'content-security-policy',
+			HTTP2_HEADER_EARLY_DATA: 'early-data',
+			HTTP2_HEADER_EXPECT_CT: 'expect-ct',
+			HTTP2_HEADER_ORIGIN: 'origin',
+			HTTP2_HEADER_PURPOSE: 'purpose',
+			HTTP2_HEADER_TIMING_ALLOW_ORIGIN: 'timing-allow-origin',
+			HTTP2_HEADER_X_FORWARDED_FOR: 'x-forwarded-for',
+			HTTP2_HEADER_PRIORITY: 'priority',
+		},
+	},
+	constants: {
+		os: {
+			UV_UDP_REUSEADDR: 4,
+			dlopen: {
+				RTLD_LAZY: 1,
+				RTLD_NOW: 2,
+				RTLD_GLOBAL: 8,
+				RTLD_LOCAL: 4,
+			},
+			errno: {
+				E2BIG: 7,
+				EACCES: 13,
+				EADDRINUSE: 48,
+				EADDRNOTAVAIL: 49,
+				EAFNOSUPPORT: 47,
+				EAGAIN: 35,
+				EALREADY: 37,
+				EBADF: 9,
+				EBADMSG: 94,
+				EBUSY: 16,
+				ECANCELED: 89,
+				ECHILD: 10,
+				ECONNABORTED: 53,
+				ECONNREFUSED: 61,
+				ECONNRESET: 54,
+				EDEADLK: 11,
+				EDESTADDRREQ: 39,
+				EDOM: 33,
+				EDQUOT: 69,
+				EEXIST: 17,
+				EFAULT: 14,
+				EFBIG: 27,
+				EHOSTUNREACH: 65,
+				EIDRM: 90,
+				EILSEQ: 92,
+				EINPROGRESS: 36,
+				EINTR: 4,
+				EINVAL: 22,
+				EIO: 5,
+				EISCONN: 56,
+				EISDIR: 21,
+				ELOOP: 62,
+				EMFILE: 24,
+				EMLINK: 31,
+				EMSGSIZE: 40,
+				EMULTIHOP: 95,
+				ENAMETOOLONG: 63,
+				ENETDOWN: 50,
+				ENETRESET: 52,
+				ENETUNREACH: 51,
+				ENFILE: 23,
+				ENOBUFS: 55,
+				ENODATA: 96,
+				ENODEV: 19,
+				ENOENT: 2,
+				ENOEXEC: 8,
+				ENOLCK: 77,
+				ENOLINK: 97,
+				ENOMEM: 12,
+				ENOMSG: 91,
+				ENOPROTOOPT: 42,
+				ENOSPC: 28,
+				ENOSR: 98,
+				ENOSTR: 99,
+				ENOSYS: 78,
+				ENOTCONN: 57,
+				ENOTDIR: 20,
+				ENOTEMPTY: 66,
+				ENOTSOCK: 38,
+				ENOTSUP: 45,
+				ENOTTY: 25,
+				ENXIO: 6,
+				EOPNOTSUPP: 102,
+				EOVERFLOW: 84,
+				EPERM: 1,
+				EPIPE: 32,
+				EPROTO: 100,
+				EPROTONOSUPPORT: 43,
+				EPROTOTYPE: 41,
+				ERANGE: 34,
+				EROFS: 30,
+				ESPIPE: 29,
+				ESRCH: 3,
+				ESTALE: 70,
+				ETIME: 101,
+				ETIMEDOUT: 60,
+				ETXTBSY: 26,
+				EWOULDBLOCK: 35,
+				EXDEV: 18,
+			},
+			signals: {
+				SIGHUP: 1,
+				SIGINT: 2,
+				SIGQUIT: 3,
+				SIGILL: 4,
+				SIGTRAP: 5,
+				SIGABRT: 6,
+				SIGIOT: 6,
+				SIGBUS: 10,
+				SIGFPE: 8,
+				SIGKILL: 9,
+				SIGUSR1: 30,
+				SIGSEGV: 11,
+				SIGUSR2: 31,
+				SIGPIPE: 13,
+				SIGALRM: 14,
+				SIGTERM: 15,
+				SIGCHLD: 20,
+				SIGCONT: 19,
+				SIGSTOP: 17,
+				SIGTSTP: 18,
+				SIGTTIN: 21,
+				SIGTTOU: 22,
+				SIGURG: 16,
+				SIGXCPU: 24,
+				SIGXFSZ: 25,
+				SIGVTALRM: 26,
+				SIGPROF: 27,
+				SIGWINCH: 28,
+				SIGIO: 23,
+				SIGINFO: 29,
+				SIGSYS: 12,
+			},
+			priority: {
+				PRIORITY_LOW: 19,
+				PRIORITY_BELOW_NORMAL: 10,
+				PRIORITY_NORMAL: 0,
+				PRIORITY_ABOVE_NORMAL: -7,
+				PRIORITY_HIGH: -14,
+				PRIORITY_HIGHEST: -20,
+			},
+		},
+		sqlite: {
+			SQLITE_CHANGESET_OMIT: 0,
+			SQLITE_CHANGESET_REPLACE: 1,
+			SQLITE_CHANGESET_ABORT: 2,
+		},
+		http: {
+			HPE_OK: 0,
+			HPE_INTERNAL: 1,
+			HPE_STRICT: 2,
+			HPE_CR_EXPECTED: 25,
+			HPE_LF_EXPECTED: 3,
+			HPE_UNEXPECTED_CONTENT_LENGTH: 4,
+			HPE_UNEXPECTED_SPACE: 30,
+			HPE_CLOSED_CONNECTION: 5,
+			HPE_INVALID_METHOD: 6,
+			HPE_INVALID_URL: 7,
+			HPE_INVALID_CONSTANT: 8,
+			HPE_INVALID_VERSION: 9,
+			HPE_INVALID_HEADER_TOKEN: 10,
+			HPE_INVALID_CONTENT_LENGTH: 11,
+			HPE_INVALID_CHUNK_SIZE: 12,
+			HPE_INVALID_STATUS: 13,
+			HPE_INVALID_EOF_STATE: 14,
+			HPE_INVALID_TRANSFER_ENCODING: 15,
+			HPE_CB_MESSAGE_BEGIN: 16,
+			HPE_CB_HEADERS_COMPLETE: 17,
+			HPE_CB_MESSAGE_COMPLETE: 18,
+			HPE_CB_CHUNK_HEADER: 19,
+			HPE_CB_CHUNK_COMPLETE: 20,
+			HPE_PAUSED: 21,
+			HPE_PAUSED_UPGRADE: 22,
+			HPE_PAUSED_H2_UPGRADE: 23,
+			HPE_USER: 24,
+			HPE_CB_URL_COMPLETE: 26,
+			HPE_CB_STATUS_COMPLETE: 27,
+			HPE_CB_METHOD_COMPLETE: 32,
+			HPE_CB_VERSION_COMPLETE: 33,
+			HPE_CB_HEADER_FIELD_COMPLETE: 28,
+			HPE_CB_HEADER_VALUE_COMPLETE: 29,
+			HPE_CB_CHUNK_EXTENSION_NAME_COMPLETE: 34,
+			HPE_CB_CHUNK_EXTENSION_VALUE_COMPLETE: 35,
+			HPE_CB_RESET: 31,
+			HPE_CB_PROTOCOL_COMPLETE: 38,
+			F_CONNECTION_KEEP_ALIVE: 0x1,
+			F_CONNECTION_CLOSE: 0x2,
+			F_CONNECTION_UPGRADE: 0x4,
+			F_CHUNKED: 0x8,
+			F_UPGRADE: 0x10,
+			F_CONTENT_LENGTH: 0x20,
+			F_SKIPBODY: 0x40,
+			F_TRAILING: 0x80,
+			F_TRANSFER_ENCODING: 0x200,
+			LENIENT_HEADERS: 0x1,
+			LENIENT_CHUNKED_LENGTH: 0x2,
+			LENIENT_KEEP_ALIVE: 0x4,
+			LENIENT_TRANSFER_ENCODING: 0x8,
+			LENIENT_VERSION: 0x10,
+			LENIENT_DATA_AFTER_CLOSE: 0x20,
+			LENIENT_OPTIONAL_LF_AFTER_CR: 0x40,
+			LENIENT_OPTIONAL_CRLF_AFTER_CHUNK: 0x80,
+			LENIENT_OPTIONAL_CR_BEFORE_LF: 0x100,
+			LENIENT_SPACES_AFTER_CHUNK_SIZE: 0x200,
+			HTTP_BOTH: 0,
+			HTTP_REQUEST: 1,
+			HTTP_RESPONSE: 2,
+			HTTP_FINISH_SAFE: 0,
+			HTTP_FINISH_SAFE_WITH_CB: 1,
+			HTTP_FINISH_UNSAFE: 2,
+			HTTP_DELETE: 0,
+			HTTP_GET: 1,
+			HTTP_HEAD: 2,
+			HTTP_POST: 3,
+			HTTP_PUT: 4,
+			HTTP_CONNECT: 5,
+			HTTP_OPTIONS: 6,
+			HTTP_TRACE: 7,
+			HTTP_COPY: 8,
+			HTTP_LOCK: 9,
+			HTTP_MKCOL: 10,
+			HTTP_MOVE: 11,
+			HTTP_PROPFIND: 12,
+			HTTP_PROPPATCH: 13,
+			HTTP_SEARCH: 14,
+			HTTP_UNLOCK: 15,
+			HTTP_BIND: 16,
+			HTTP_REBIND: 17,
+			HTTP_UNBIND: 18,
+			HTTP_ACL: 19,
+			HTTP_REPORT: 20,
+			HTTP_MKACTIVITY: 21,
+			HTTP_CHECKOUT: 22,
+			HTTP_MERGE: 23,
+			HTTP_MSEARCH: 24,
+			HTTP_NOTIFY: 25,
+			HTTP_SUBSCRIBE: 26,
+			HTTP_UNSUBSCRIBE: 27,
+			HTTP_PATCH: 28,
+			HTTP_PURGE: 29,
+			HTTP_MKCALENDAR: 30,
+			HTTP_LINK: 31,
+			HTTP_UNLINK: 32,
+			HTTP_SOURCE: 33,
+			HTTP_PRI: 34,
+			HTTP_DESCRIBE: 35,
+			HTTP_ANNOUNCE: 36,
+			HTTP_SETUP: 37,
+			HTTP_PLAY: 38,
+			HTTP_PAUSE: 39,
+			HTTP_TEARDOWN: 40,
+			HTTP_GET_PARAMETER: 41,
+			HTTP_SET_PARAMETER: 42,
+			HTTP_REDIRECT: 43,
+			HTTP_RECORD: 44,
+			HTTP_FLUSH: 45,
+			HTTP_QUERY: 46,
+			HTTP_STATUS_CONTINUE: 100,
+			HTTP_STATUS_SWITCHING_PROTOCOLS: 101,
+			HTTP_STATUS_PROCESSING: 102,
+			HTTP_STATUS_EARLY_HINTS: 103,
+			HTTP_STATUS_RESPONSE_IS_STALE: 110,
+			HTTP_STATUS_REVALIDATION_FAILED: 111,
+			HTTP_STATUS_DISCONNECTED_OPERATION: 112,
+			HTTP_STATUS_HEURISTIC_EXPIRATION: 113,
+			HTTP_STATUS_MISCELLANEOUS_WARNING: 199,
+			HTTP_STATUS_OK: 200,
+			HTTP_STATUS_CREATED: 201,
+			HTTP_STATUS_ACCEPTED: 202,
+			HTTP_STATUS_NON_AUTHORITATIVE_INFORMATION: 203,
+			HTTP_STATUS_NO_CONTENT: 204,
+			HTTP_STATUS_RESET_CONTENT: 205,
+			HTTP_STATUS_PARTIAL_CONTENT: 206,
+			HTTP_STATUS_MULTI_STATUS: 207,
+			HTTP_STATUS_ALREADY_REPORTED: 208,
+			HTTP_STATUS_TRANSFORMATION_APPLIED: 214,
+			HTTP_STATUS_IM_USED: 226,
+			HTTP_STATUS_MISCELLANEOUS_PERSISTENT_WARNING: 299,
+			HTTP_STATUS_MULTIPLE_CHOICES: 300,
+			HTTP_STATUS_MOVED_PERMANENTLY: 301,
+			HTTP_STATUS_FOUND: 302,
+			HTTP_STATUS_SEE_OTHER: 303,
+			HTTP_STATUS_NOT_MODIFIED: 304,
+			HTTP_STATUS_USE_PROXY: 305,
+			HTTP_STATUS_SWITCH_PROXY: 306,
+			HTTP_STATUS_TEMPORARY_REDIRECT: 307,
+			HTTP_STATUS_PERMANENT_REDIRECT: 308,
+			HTTP_STATUS_BAD_REQUEST: 400,
+			HTTP_STATUS_UNAUTHORIZED: 401,
+			HTTP_STATUS_PAYMENT_REQUIRED: 402,
+			HTTP_STATUS_FORBIDDEN: 403,
+			HTTP_STATUS_NOT_FOUND: 404,
+			HTTP_STATUS_METHOD_NOT_ALLOWED: 405,
+			HTTP_STATUS_NOT_ACCEPTABLE: 406,
+			HTTP_STATUS_PROXY_AUTHENTICATION_REQUIRED: 407,
+			HTTP_STATUS_REQUEST_TIMEOUT: 408,
+			HTTP_STATUS_CONFLICT: 409,
+			HTTP_STATUS_GONE: 410,
+			HTTP_STATUS_LENGTH_REQUIRED: 411,
+			HTTP_STATUS_PRECONDITION_FAILED: 412,
+			HTTP_STATUS_PAYLOAD_TOO_LARGE: 413,
+			HTTP_STATUS_URI_TOO_LONG: 414,
+			HTTP_STATUS_UNSUPPORTED_MEDIA_TYPE: 415,
+			HTTP_STATUS_RANGE_NOT_SATISFIABLE: 416,
+			HTTP_STATUS_EXPECTATION_FAILED: 417,
+			HTTP_STATUS_IM_A_TEAPOT: 418,
+			HTTP_STATUS_PAGE_EXPIRED: 419,
+			HTTP_STATUS_ENHANCE_YOUR_CALM: 420,
+			HTTP_STATUS_MISDIRECTED_REQUEST: 421,
+			HTTP_STATUS_UNPROCESSABLE_ENTITY: 422,
+			HTTP_STATUS_LOCKED: 423,
+			HTTP_STATUS_FAILED_DEPENDENCY: 424,
+			HTTP_STATUS_TOO_EARLY: 425,
+			HTTP_STATUS_UPGRADE_REQUIRED: 426,
+			HTTP_STATUS_PRECONDITION_REQUIRED: 428,
+			HTTP_STATUS_TOO_MANY_REQUESTS: 429,
+			HTTP_STATUS_REQUEST_HEADER_FIELDS_TOO_LARGE_UNOFFICIAL: 430,
+			HTTP_STATUS_REQUEST_HEADER_FIELDS_TOO_LARGE: 431,
+			HTTP_STATUS_LOGIN_TIMEOUT: 440,
+			HTTP_STATUS_NO_RESPONSE: 444,
+			HTTP_STATUS_RETRY_WITH: 449,
+			HTTP_STATUS_BLOCKED_BY_PARENTAL_CONTROL: 450,
+			HTTP_STATUS_UNAVAILABLE_FOR_LEGAL_REASONS: 451,
+			HTTP_STATUS_CLIENT_CLOSED_LOAD_BALANCED_REQUEST: 460,
+			HTTP_STATUS_INVALID_X_FORWARDED_FOR: 463,
+			HTTP_STATUS_REQUEST_HEADER_TOO_LARGE: 494,
+			HTTP_STATUS_SSL_CERTIFICATE_ERROR: 495,
+			HTTP_STATUS_SSL_CERTIFICATE_REQUIRED: 496,
+			HTTP_STATUS_HTTP_REQUEST_SENT_TO_HTTPS_PORT: 497,
+			HTTP_STATUS_INVALID_TOKEN: 498,
+			HTTP_STATUS_CLIENT_CLOSED_REQUEST: 499,
+			HTTP_STATUS_INTERNAL_SERVER_ERROR: 500,
+			HTTP_STATUS_NOT_IMPLEMENTED: 501,
+			HTTP_STATUS_BAD_GATEWAY: 502,
+			HTTP_STATUS_SERVICE_UNAVAILABLE: 503,
+			HTTP_STATUS_GATEWAY_TIMEOUT: 504,
+			HTTP_STATUS_HTTP_VERSION_NOT_SUPPORTED: 505,
+			HTTP_STATUS_VARIANT_ALSO_NEGOTIATES: 506,
+			HTTP_STATUS_INSUFFICIENT_STORAGE: 507,
+			HTTP_STATUS_LOOP_DETECTED: 508,
+			HTTP_STATUS_BANDWIDTH_LIMIT_EXCEEDED: 509,
+			HTTP_STATUS_NOT_EXTENDED: 510,
+			HTTP_STATUS_NETWORK_AUTHENTICATION_REQUIRED: 511,
+			HTTP_STATUS_WEB_SERVER_UNKNOWN_ERROR: 520,
+			HTTP_STATUS_WEB_SERVER_IS_DOWN: 521,
+			HTTP_STATUS_CONNECTION_TIMEOUT: 522,
+			HTTP_STATUS_ORIGIN_IS_UNREACHABLE: 523,
+			HTTP_STATUS_TIMEOUT_OCCURED: 524,
+			HTTP_STATUS_SSL_HANDSHAKE_FAILED: 525,
+			HTTP_STATUS_INVALID_SSL_CERTIFICATE: 526,
+			HTTP_STATUS_RAILGUN_ERROR: 527,
+			HTTP_STATUS_SITE_IS_OVERLOADED: 529,
+			HTTP_STATUS_SITE_IS_FROZEN: 530,
+			HTTP_STATUS_IDENTITY_PROVIDER_AUTHENTICATION_ERROR: 561,
+			HTTP_STATUS_NETWORK_READ_TIMEOUT: 598,
+			HTTP_STATUS_NETWORK_CONNECT_TIMEOUT: 599,
+		},
+		fs: {
+			UV_FS_SYMLINK_DIR: 1,
+			UV_FS_SYMLINK_JUNCTION: 2,
+			O_RDONLY: 0,
+			O_WRONLY: 1,
+			O_RDWR: 2,
+			UV_DIRENT_UNKNOWN: 0,
+			UV_DIRENT_FILE: 1,
+			UV_DIRENT_DIR: 2,
+			UV_DIRENT_LINK: 3,
+			UV_DIRENT_FIFO: 4,
+			UV_DIRENT_SOCKET: 5,
+			UV_DIRENT_CHAR: 6,
+			UV_DIRENT_BLOCK: 7,
+			S_IFMT: 61440,
+			S_IFREG: 32768,
+			S_IFDIR: 16384,
+			S_IFCHR: 8192,
+			S_IFBLK: 24576,
+			S_IFIFO: 4096,
+			S_IFLNK: 40960,
+			S_IFSOCK: 49152,
+			O_CREAT: 512,
+			O_EXCL: 2048,
+			UV_FS_O_FILEMAP: 0,
+			O_NOCTTY: 131072,
+			O_TRUNC: 1024,
+			O_APPEND: 8,
+			O_DIRECTORY: 1048576,
+			O_NOFOLLOW: 256,
+			O_SYNC: 128,
+			O_DSYNC: 4194304,
+			O_SYMLINK: 2097152,
+			O_NONBLOCK: 4,
+			S_IRWXU: 448,
+			S_IRUSR: 256,
+			S_IWUSR: 128,
+			S_IXUSR: 64,
+			S_IRWXG: 56,
+			S_IRGRP: 32,
+			S_IWGRP: 16,
+			S_IXGRP: 8,
+			S_IRWXO: 7,
+			S_IROTH: 4,
+			S_IWOTH: 2,
+			S_IXOTH: 1,
+			F_OK: 0,
+			R_OK: 4,
+			W_OK: 2,
+			X_OK: 1,
+			UV_FS_COPYFILE_EXCL: 1,
+			COPYFILE_EXCL: 1,
+			UV_FS_COPYFILE_FICLONE: 2,
+			COPYFILE_FICLONE: 2,
+			UV_FS_COPYFILE_FICLONE_FORCE: 4,
+			COPYFILE_FICLONE_FORCE: 4,
+		},
+		crypto: {
+			OPENSSL_VERSION_NUMBER: 269488319,
+			SSL_OP_ALL: 2147485780,
+			SSL_OP_ALLOW_NO_DHE_KEX: 1024,
+			SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION: 262144,
+			SSL_OP_CIPHER_SERVER_PREFERENCE: 4194304,
+			SSL_OP_CISCO_ANYCONNECT: 32768,
+			SSL_OP_COOKIE_EXCHANGE: 8192,
+			SSL_OP_CRYPTOPRO_TLSEXT_BUG: 2147483648,
+			SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS: 2048,
+			SSL_OP_LEGACY_SERVER_CONNECT: 4,
+			SSL_OP_NO_COMPRESSION: 131072,
+			SSL_OP_NO_ENCRYPT_THEN_MAC: 524288,
+			SSL_OP_NO_QUERY_MTU: 4096,
+			SSL_OP_NO_RENEGOTIATION: 1073741824,
+			SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION: 65536,
+			SSL_OP_NO_SSLv2: 0,
+			SSL_OP_NO_SSLv3: 33554432,
+			SSL_OP_NO_TICKET: 16384,
+			SSL_OP_NO_TLSv1: 67108864,
+			SSL_OP_NO_TLSv1_1: 268435456,
+			SSL_OP_NO_TLSv1_2: 134217728,
+			SSL_OP_NO_TLSv1_3: 536870912,
+			SSL_OP_PRIORITIZE_CHACHA: 2097152,
+			SSL_OP_TLS_ROLLBACK_BUG: 8388608,
+			ENGINE_METHOD_RSA: 1,
+			ENGINE_METHOD_DSA: 2,
+			ENGINE_METHOD_DH: 4,
+			ENGINE_METHOD_RAND: 8,
+			ENGINE_METHOD_EC: 2048,
+			ENGINE_METHOD_CIPHERS: 64,
+			ENGINE_METHOD_DIGESTS: 128,
+			ENGINE_METHOD_PKEY_METHS: 512,
+			ENGINE_METHOD_PKEY_ASN1_METHS: 1024,
+			ENGINE_METHOD_ALL: 65535,
+			ENGINE_METHOD_NONE: 0,
+			DH_CHECK_P_NOT_SAFE_PRIME: 2,
+			DH_CHECK_P_NOT_PRIME: 1,
+			DH_UNABLE_TO_CHECK_GENERATOR: 4,
+			DH_NOT_SUITABLE_GENERATOR: 8,
+			RSA_PKCS1_PADDING: 1,
+			RSA_SSLV23_PADDING: 2,
+			RSA_NO_PADDING: 3,
+			RSA_PKCS1_OAEP_PADDING: 4,
+			RSA_X931_PADDING: 5,
+			RSA_PKCS1_PSS_PADDING: 6,
+			RSA_PSS_SALTLEN_DIGEST: -1,
+			RSA_PSS_SALTLEN_MAX_SIGN: -2,
+			RSA_PSS_SALTLEN_AUTO: -2,
+			defaultCoreCipherList:
+				'TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA384:DHE-RSA-AES256-SHA384:ECDHE-RSA-AES256-SHA256:DHE-RSA-AES256-SHA256:HIGH:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5:!PSK:!SRP:!CAMELLIA',
+			TLS1_VERSION: 769,
+			TLS1_1_VERSION: 770,
+			TLS1_2_VERSION: 771,
+			TLS1_3_VERSION: 772,
+			POINT_CONVERSION_COMPRESSED: 2,
+			POINT_CONVERSION_UNCOMPRESSED: 4,
+			POINT_CONVERSION_HYBRID: 6,
+		},
+		zlib: {
+			Z_NO_FLUSH: 0,
+			Z_PARTIAL_FLUSH: 1,
+			Z_SYNC_FLUSH: 2,
+			Z_FULL_FLUSH: 3,
+			Z_FINISH: 4,
+			Z_BLOCK: 5,
+			Z_OK: 0,
+			Z_STREAM_END: 1,
+			Z_NEED_DICT: 2,
+			Z_ERRNO: -1,
+			Z_STREAM_ERROR: -2,
+			Z_DATA_ERROR: -3,
+			Z_MEM_ERROR: -4,
+			Z_BUF_ERROR: -5,
+			Z_VERSION_ERROR: -6,
+			Z_NO_COMPRESSION: 0,
+			Z_BEST_SPEED: 1,
+			Z_BEST_COMPRESSION: 9,
+			Z_DEFAULT_COMPRESSION: -1,
+			Z_FILTERED: 1,
+			Z_HUFFMAN_ONLY: 2,
+			Z_RLE: 3,
+			Z_FIXED: 4,
+			Z_DEFAULT_STRATEGY: 0,
+			ZLIB_VERNUM: 4784,
+			DEFLATE: 1,
+			INFLATE: 2,
+			GZIP: 3,
+			GUNZIP: 4,
+			DEFLATERAW: 5,
+			INFLATERAW: 6,
+			UNZIP: 7,
+			BROTLI_DECODE: 8,
+			BROTLI_ENCODE: 9,
+			ZSTD_COMPRESS: 10,
+			ZSTD_DECOMPRESS: 11,
+			ZSTD_e_continue: 0,
+			ZSTD_e_flush: 1,
+			ZSTD_e_end: 2,
+			Z_MIN_WINDOWBITS: 8,
+			Z_MAX_WINDOWBITS: 15,
+			Z_DEFAULT_WINDOWBITS: 15,
+			Z_MIN_CHUNK: 64,
+			Z_MAX_CHUNK: 2147483647,
+			Z_DEFAULT_CHUNK: 16384,
+			Z_MIN_MEMLEVEL: 1,
+			Z_MAX_MEMLEVEL: 9,
+			Z_DEFAULT_MEMLEVEL: 8,
+			Z_MIN_LEVEL: -1,
+			Z_MAX_LEVEL: 9,
+			Z_DEFAULT_LEVEL: -1,
+			BROTLI_OPERATION_PROCESS: 0,
+			BROTLI_OPERATION_FLUSH: 1,
+			BROTLI_OPERATION_FINISH: 2,
+			BROTLI_OPERATION_EMIT_METADATA: 3,
+			BROTLI_PARAM_MODE: 0,
+			BROTLI_MODE_GENERIC: 0,
+			BROTLI_MODE_TEXT: 1,
+			BROTLI_MODE_FONT: 2,
+			BROTLI_DEFAULT_MODE: 0,
+			BROTLI_PARAM_QUALITY: 1,
+			BROTLI_MIN_QUALITY: 0,
+			BROTLI_MAX_QUALITY: 11,
+			BROTLI_DEFAULT_QUALITY: 11,
+			BROTLI_PARAM_LGWIN: 2,
+			BROTLI_MIN_WINDOW_BITS: 10,
+			BROTLI_MAX_WINDOW_BITS: 24,
+			BROTLI_LARGE_MAX_WINDOW_BITS: 30,
+			BROTLI_DEFAULT_WINDOW: 22,
+			BROTLI_PARAM_LGBLOCK: 3,
+			BROTLI_MIN_INPUT_BLOCK_BITS: 16,
+			BROTLI_MAX_INPUT_BLOCK_BITS: 24,
+			BROTLI_PARAM_DISABLE_LITERAL_CONTEXT_MODELING: 4,
+			BROTLI_PARAM_SIZE_HINT: 5,
+			BROTLI_PARAM_LARGE_WINDOW: 6,
+			BROTLI_PARAM_NPOSTFIX: 7,
+			BROTLI_PARAM_NDIRECT: 8,
+			BROTLI_DECODER_RESULT_ERROR: 0,
+			BROTLI_DECODER_RESULT_SUCCESS: 1,
+			BROTLI_DECODER_RESULT_NEEDS_MORE_INPUT: 2,
+			BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT: 3,
+			BROTLI_DECODER_PARAM_DISABLE_RING_BUFFER_REALLOCATION: 0,
+			BROTLI_DECODER_PARAM_LARGE_WINDOW: 1,
+			BROTLI_DECODER_NO_ERROR: 0,
+			BROTLI_DECODER_SUCCESS: 1,
+			BROTLI_DECODER_NEEDS_MORE_INPUT: 2,
+			BROTLI_DECODER_NEEDS_MORE_OUTPUT: 3,
+			BROTLI_DECODER_ERROR_FORMAT_EXUBERANT_NIBBLE: -1,
+			BROTLI_DECODER_ERROR_FORMAT_RESERVED: -2,
+			BROTLI_DECODER_ERROR_FORMAT_EXUBERANT_META_NIBBLE: -3,
+			BROTLI_DECODER_ERROR_FORMAT_SIMPLE_HUFFMAN_ALPHABET: -4,
+			BROTLI_DECODER_ERROR_FORMAT_SIMPLE_HUFFMAN_SAME: -5,
+			BROTLI_DECODER_ERROR_FORMAT_CL_SPACE: -6,
+			BROTLI_DECODER_ERROR_FORMAT_HUFFMAN_SPACE: -7,
+			BROTLI_DECODER_ERROR_FORMAT_CONTEXT_MAP_REPEAT: -8,
+			BROTLI_DECODER_ERROR_FORMAT_BLOCK_LENGTH_1: -9,
+			BROTLI_DECODER_ERROR_FORMAT_BLOCK_LENGTH_2: -10,
+			BROTLI_DECODER_ERROR_FORMAT_TRANSFORM: -11,
+			BROTLI_DECODER_ERROR_FORMAT_DICTIONARY: -12,
+			BROTLI_DECODER_ERROR_FORMAT_WINDOW_BITS: -13,
+			BROTLI_DECODER_ERROR_FORMAT_PADDING_1: -14,
+			BROTLI_DECODER_ERROR_FORMAT_PADDING_2: -15,
+			BROTLI_DECODER_ERROR_FORMAT_DISTANCE: -16,
+			BROTLI_DECODER_ERROR_DICTIONARY_NOT_SET: -19,
+			BROTLI_DECODER_ERROR_INVALID_ARGUMENTS: -20,
+			BROTLI_DECODER_ERROR_ALLOC_CONTEXT_MODES: -21,
+			BROTLI_DECODER_ERROR_ALLOC_TREE_GROUPS: -22,
+			BROTLI_DECODER_ERROR_ALLOC_CONTEXT_MAP: -25,
+			BROTLI_DECODER_ERROR_ALLOC_RING_BUFFER_1: -26,
+			BROTLI_DECODER_ERROR_ALLOC_RING_BUFFER_2: -27,
+			BROTLI_DECODER_ERROR_ALLOC_BLOCK_TYPE_TREES: -30,
+			BROTLI_DECODER_ERROR_UNREACHABLE: -31,
+		},
+		trace: {
+			TRACE_EVENT_PHASE_BEGIN: 66,
+			TRACE_EVENT_PHASE_END: 69,
+			TRACE_EVENT_PHASE_COMPLETE: 88,
+			TRACE_EVENT_PHASE_INSTANT: 73,
+			TRACE_EVENT_PHASE_ASYNC_BEGIN: 83,
+			TRACE_EVENT_PHASE_ASYNC_STEP_INTO: 84,
+			TRACE_EVENT_PHASE_ASYNC_STEP_PAST: 112,
+			TRACE_EVENT_PHASE_ASYNC_END: 70,
+			TRACE_EVENT_PHASE_NESTABLE_ASYNC_BEGIN: 98,
+			TRACE_EVENT_PHASE_NESTABLE_ASYNC_END: 101,
+			TRACE_EVENT_PHASE_NESTABLE_ASYNC_INSTANT: 110,
+			TRACE_EVENT_PHASE_FLOW_BEGIN: 115,
+			TRACE_EVENT_PHASE_FLOW_STEP: 116,
+			TRACE_EVENT_PHASE_FLOW_END: 102,
+			TRACE_EVENT_PHASE_METADATA: 77,
+			TRACE_EVENT_PHASE_COUNTER: 67,
+			TRACE_EVENT_PHASE_SAMPLE: 80,
+			TRACE_EVENT_PHASE_CREATE_OBJECT: 78,
+			TRACE_EVENT_PHASE_SNAPSHOT_OBJECT: 79,
+			TRACE_EVENT_PHASE_DELETE_OBJECT: 68,
+			TRACE_EVENT_PHASE_MEMORY_DUMP: 118,
+			TRACE_EVENT_PHASE_MARK: 82,
+			TRACE_EVENT_PHASE_CLOCK_SYNC: 99,
+			TRACE_EVENT_PHASE_ENTER_CONTEXT: 40,
+			TRACE_EVENT_PHASE_LEAVE_CONTEXT: 41,
+			TRACE_EVENT_PHASE_LINK_IDS: 61,
+		},
+		internal: {
+			EXTENSIONLESS_FORMAT_JAVASCRIPT: 0,
+			EXTENSIONLESS_FORMAT_WASM: 1,
+		},
+	},
+	// @TODO: Implement those modules
+	module_wrap: (() => {
+		// Storage for ESM loader callbacks
+		const esmCallbacks = {
+			importDynamically: null,
+			initializeImportMeta: null,
+		};
+
+		class ModuleWrap {
+			constructor(url, context, source, lineOffset, columnOffset) {
+				console.trace('[ModuleWrap] constructor called', url);
+				console.log('[ModuleWrap] constructor args:', {
+					url,
+					hasContext: !!context,
+					sourceType: typeof source,
+					sourceLength:
+						typeof source === 'string' ? source.length : 'N/A',
+					lineOffset,
+					columnOffset,
+				});
+				this.url = url;
+				this.context = context;
+				this.exports = {};
+				this.namespace = {};
+				this._source = source;
+				this._instantiated = false;
+				this._evaluated = false;
+			}
+
+			instantiate() {
+				if (this._instantiated) return;
+				console.log('[ModuleWrap] instantiate', this.url);
+				this._instantiated = true;
+				// In a real implementation, this would parse the module and set up dependencies
+			}
+
+			async evaluate(timeout = -1, breakOnSigint = false) {
+				if (this._evaluated) {
+					console.log(
+						'[ModuleWrap] evaluate: already evaluated',
+						this.url
+					);
+					return;
+				}
+
+				console.log('[ModuleWrap] evaluate', this.url);
+				this._evaluated = true;
+
+				try {
+					// First try CJS fallback for compatibility
+					const Module = globalThis.coreModules?.module?.Module;
+					if (Module && Module._load) {
+						try {
+							let modulePath = this.url;
+							if (modulePath.startsWith('file://')) {
+								modulePath = modulePath.slice(7);
+							}
+
+							console.log(
+								'[ModuleWrap] Attempting CJS load for',
+								modulePath
+							);
+							const exports = Module._load(
+								modulePath,
+								null,
+								false
+							);
+
+							if (exports && typeof exports === 'object') {
+								Object.assign(this.namespace, exports);
+								this.exports = exports;
+							}
+
+							console.log(
+								'[ModuleWrap] Successfully loaded via CJS',
+								modulePath
+							);
+							return;
+						} catch (cjsError) {
+							console.log(
+								'[ModuleWrap] CJS failed, trying ESM:',
+								cjsError.message
+							);
+							// Fall through to ESM execution
+						}
+					}
+
+					// Execute as ESM using browser's native import()
+					if (this._source && typeof this._source === 'string') {
+						console.log(
+							'[ModuleWrap] Executing ESM code with native import()'
+						);
+
+						// Create a blob URL from the source code
+						const blob = new Blob([this._source], {
+							type: 'application/javascript',
+						});
+						const blobUrl = URL.createObjectURL(blob);
+
+						try {
+							// Use dynamic import to execute the ESM code
+							const module = await import(blobUrl);
+
+							// Copy all exports to our namespace
+							Object.assign(this.namespace, module);
+							if (module.default) {
+								this.namespace.default = module.default;
+							}
+
+							console.log(
+								'[ModuleWrap] Successfully executed ESM code',
+								this.url
+							);
+							console.log(
+								'[ModuleWrap] Exports:',
+								Object.keys(this.namespace)
+							);
+
+							// Clean up the blob URL
+							URL.revokeObjectURL(blobUrl);
+							return;
+						} catch (importError) {
+							URL.revokeObjectURL(blobUrl);
+							console.error(
+								'[ModuleWrap] ESM import failed:',
+								importError
+							);
+							throw importError;
+						}
+					}
+
+					// If we have no source, try to read the file
+					if (this.url && this.url.startsWith('file://')) {
+						const filePath = this.url.slice(7);
+						console.log(
+							'[ModuleWrap] Reading source from',
+							filePath
+						);
+
+						const fs = globalThis.coreModules?.fs;
+						if (fs && fs.readFileSync) {
+							try {
+								const source = fs.readFileSync(
+									filePath,
+									'utf8'
+								);
+								this._source = source;
+
+								// Now that we have source, evaluate it
+								const blob = new Blob([source], {
+									type: 'application/javascript',
+								});
+								const blobUrl = URL.createObjectURL(blob);
+
+								try {
+									const module = await import(blobUrl);
+									Object.assign(this.namespace, module);
+									if (module.default) {
+										this.namespace.default = module.default;
+									}
+
+									console.log(
+										'[ModuleWrap] Successfully executed ESM from file',
+										this.url
+									);
+									URL.revokeObjectURL(blobUrl);
+									return;
+								} catch (importError) {
+									URL.revokeObjectURL(blobUrl);
+									throw importError;
+								}
+							} catch (fsError) {
+								console.error(
+									'[ModuleWrap] Failed to read file:',
+									fsError
+								);
+								throw fsError;
+							}
+						}
+					}
+
+					console.error(
+						'[ModuleWrap] No source available to evaluate',
+						this.url
+					);
+					return Promise.resolve();
+				} catch (error) {
+					console.error('[ModuleWrap] evaluate error:', error);
+					throw error;
+				}
+			}
+
+			getNamespace() {
+				console.log('[ModuleWrap] getNamespace', this.url);
+				return this.namespace;
+			}
+
+			getModuleRequests() {
+				console.log('[ModuleWrap] getModuleRequests', this.url);
+				// Return empty array for now - means "no dependencies"
+				// A real implementation would parse the source to extract import statements
+				// Each element should be an object with { specifier, attributes }
+				return [];
+			}
+
+			link(linker) {
+				console.log('[ModuleWrap] link', this.url);
+				// Linker function is called for each dependency
+				// Since we return no dependencies from getModuleRequests(), this won't be called
+			}
+		}
+
+		return {
+			ModuleWrap,
+			// Module status constants
+			kUninstantiated: 0,
+			kInstantiated: 1,
+			kEvaluating: 2,
+			kEvaluated: 3,
+			kErrored: 4,
+			// Phase constants
+			kEvaluationPhase: 0,
+			kSourcePhase: 1,
+			// Helpers
+			throwIfPromiseRejected(promise) {
+				if (promise && typeof promise.catch === 'function') {
+					promise.catch((error) => {
+						console.error('[ModuleWrap] Promise rejected:', error);
+						throw error;
+					});
+				}
+			},
+			setInitializeImportMetaObjectCallback(
+				/**
+				 * Defines the `import.meta` object for a given module.
+				 * @param {symbol} symbol - Reference to the module.
+				 * @param {Record<string, string | Function>} meta - The import.meta object to initialize.
+				 * @param {ModuleWrap} wrap - The ModuleWrap of the SourceTextModule where `import.meta` is referenced.
+				 */
+				initializeImportMetaObject
+			) {
+				// console.log('[ESM] Storing initializeImportMetaObject callback');
+				esmCallbacks.initializeImportMeta = initializeImportMetaObject;
+			},
+			setImportModuleDynamicallyCallback(
+				/**
+				 * Asynchronously imports a module dynamically using a callback function. The native callback.
+				 * @param {symbol} referrerSymbol - Referrer symbol of the registered script, function, module, or contextified object.
+				 * @param {string} specifier - The module specifier string.
+				 * @param {number} phase - The module import phase.
+				 * @param {Record<string, string>} attributes - The import attributes object.
+				 * @param {string|null|undefined} referrerName - name of the referrer.
+				 * @returns {Promise<import('internal/modules/esm/loader.js').ModuleExports>} - The imported module object.
+				 * @throws {ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING} - If the callback function is missing.
+				 */
+				importModuleDynamicallyCallback
+			) {
+				// console.log('[ESM] Storing importModuleDynamically callback');
+				esmCallbacks.importDynamically =
+					importModuleDynamicallyCallback;
+			},
+		};
+	})(),
+	block_list: {
+		schemelessBlockList: new Set([]),
+		BlockList: class BlockList {
+			constructor() {
+				this.schemelessBlockList = new Set([]);
+			}
+		},
+	},
+};
+
+Object.assign(
+	globalThis.internalModules.constants,
+	globalThis.internalModules.constants.fs
+);
+
+globalThis.internalModules.os.constants =
+	globalThis.internalModules.constants.os;
+globalThis.internalModules.os.default = globalThis.internalModules.os;
+
+await import('../../dist/primordials.js');
+// import * as myPrimordials from "./src/this-is-imported-directly/primordials.js";
+// globalThis.primordials = { ...myPrimordials, ...globalThis.primordials };
+// console.log(globalThis.primordials);
+
+globalThis.getInternalBinding = globalThis.internalBinding = function (
+	moduleName
+) {
+	if (globalThis.internalModules[moduleName]) {
+		const module = globalThis.internalModules[moduleName];
+		if (moduleName === 'errors') {
+			return { ...module, exitCodes: module.codes };
+		}
+		return module;
+	}
+	throw new Error(`Unknown module "${moduleName}"`);
+};
+globalThis.coreModules = {};
+
+const process = (await import('../../dist/process.js')).default;
+globalThis.process = { ...process };
+globalThis.coreModules.process = globalThis.process;
+
+const types = await import('../../dist/internal/types.js');
+globalThis.internalModules.util = {
+	types: { ...types },
+	...globalThis.internalModules.util,
+};
+globalThis.internalModules.types = {
+	...globalThis.internalModules.types,
+	...types,
+};
+
+const internalProcessPreExecution = await import(
+	'../../dist/internal/process/pre_execution.js'
+);
+// console.log({ internalProcessPreExecution });
+globalThis.internalModules.process = {
+	...(globalThis.internalModules.process || {}),
+	...(internalProcessPreExecution.default || {}),
+};
+
+const internalConstants = await import('../../dist/internal/constants.js');
+globalThis.internalModules.constants = {
+	...globalThis.internalModules.constants,
+	...internalConstants,
+	os: {
+		errno: {
+			EINVAL: 22,
+			EACCES: 13,
+			ENOENT: 2,
+			ENOTDIR: 20,
+			ENOTEMPTY: 66,
+			EEXIST: 17,
+			EROFS: 30,
+			EISDIR: 21,
+			ETIMEDOUT: 60,
+			ECONNREFUSED: 61,
+			ECONNRESET: 54,
+			ECONNABORTED: 53,
+			ECONNREFUSED: 61,
+			ECONNRESET: 54,
+		},
+	},
+};
+globalThis.coreModules.constants = globalThis.internalModules.constants;
+globalThis.internalModules.util = {
+	constants: { ...internalConstants },
+	...globalThis.internalModules.util,
+};
+
+const CryptoInternal = await import('../../dist/crypto.js');
+globalThis.internalModules.crypto = {
+	startLoadingCertificatesOffThread() {
+		return;
+	}, // throw new Error('Not implemented')},
+	createNativeKeyObjectClass() {
+		return [null, null, null, null];
+	},
+	...globalThis.internalModules.crypto,
+	...CryptoInternal.default,
+};
+const buffer = await import('../../dist/buffer.js');
+globalThis.internalModules.buffer = {
+	buffer: { ...buffer.default },
+	...globalThis.internalModules.buffer,
+};
+globalThis.coreModules.buffer = buffer.default;
+globalThis.buffer = buffer.default;
+globalThis.Buffer = buffer.default.Buffer;
+
+const stringDecoder = await import('../../dist/string_decoder.js');
+globalThis.internalModules.string_decoder = {
+	stringDecoder: { ...stringDecoder },
+	...globalThis.internalModules.string_decoder,
+};
+globalThis.coreModules.string_decoder = stringDecoder.default;
+
+const inspect = await import('../../dist/util/inspect.js');
+globalThis.internalModules.util = {
+	inspect: { ...inspect },
+	...globalThis.internalModules.util,
+};
+
+const util = await import('../../dist/util.js');
+globalThis.internalModules.util = {
+	...globalThis.internalModules.util,
+	...util,
+	encodingsMap: globalThis.internalModules.string_decoder.encodings,
+};
+globalThis.coreModules.util = util.default;
+globalThis.coreModules.util.encodingsMap =
+	globalThis.internalModules.string_decoder.encodings;
+globalThis.coreModules.util.TextDecoder = globalThis.TextDecoder;
+globalThis.coreModules.util.TextEncoder = globalThis.TextEncoder;
+
+const errors = await import('../../dist/errors.js');
+globalThis.internalModules.errors = {
+	...globalThis.internalModules.errors,
+	...errors.default,
+	codes: errors.default.codes,
+};
+
+const realm = await import('../../dist/realm.js');
+globalThis.realm = { ...realm };
+
+const path = await import('../../dist/path.js');
+globalThis.coreModules.path = path.default;
+
+const stream = await import('../../dist/stream.js');
+globalThis.coreModules.stream = stream.default;
+
+const asyncHooks = await import('../../dist/async_hooks.js');
+globalThis.coreModules.async_hooks = asyncHooks.default;
+
+const debuglog = await import('../../dist/internal/util/debuglog.js');
+globalThis.internalModules.util = {
+	...globalThis.internalModules.util,
+	debuglog: debuglog.default,
+};
+debuglog.default.initializeDebugEnv('debug');
+
+globalThis.coreModules.os = globalThis.internalModules.os;
+
+// Node Response class has an abort method.
+// globalThis.Response.prototype.abort = () => {
+// 	// do nothing
+// };
+
+const blob = await import('../../dist/blob.js');
+globalThis.coreModules.blob = blob.default;
+
+const fs = await import('../../dist/fs.js');
+
+// Register internal/fs/dir module for lazy loading
+// Use the Dir class we implemented in fs_dir binding
+globalThis.__moduleRegistry.set('internal/fs/dir', {
+	Dir: globalThis.internalModules.fs_dir.Dir,
+	opendir: fs.default.opendir,
+	opendirSync: fs.default.opendirSync,
+});
+
+// Also expose in internalModules for other code that might need it
+globalThis.internalModules.fs_dir_exports =
+	globalThis.__moduleRegistry.get('internal/fs/dir');
+
+globalThis.coreModules.fs = fs.default;
+globalThis.fs = globalThis.coreModules.fs;
+globalThis.fs.writeSync = (...args) => globalThis.globalFs.writeSync(...args);
+
+const supportsBinaryResult = (options) => {
+	if (options === undefined || options === null) {
+		return true;
+	}
+	if (typeof options === 'string') {
+		return options === 'buffer';
+	}
+	if (options && typeof options === 'object') {
+		const encoding = options.encoding;
+		return (
+			encoding === undefined || encoding === null || encoding === 'buffer'
+		);
+	}
+	return false;
+};
+
+if (
+	globalThis.coreModules.fs &&
+	!globalThis.coreModules.fs.__patchedProcessControllerReadFile
+) {
+	const pathModule = globalThis.coreModules?.path;
+	const urlModule = globalThis.coreModules?.url;
+
+	const normalizePathForFs = (value) => {
+		if (typeof value === 'string') {
+			if (value.startsWith('file://') && urlModule?.fileURLToPath) {
+				try {
+					return urlModule.fileURLToPath(value);
+				} catch {
+					// Ignore and fall back to original value
+				}
+			}
+			if (
+				pathModule &&
+				typeof pathModule.isAbsolute === 'function' &&
+				typeof pathModule.resolve === 'function'
+			) {
+				if (!pathModule.isAbsolute(value)) {
+					const cwd =
+						typeof process !== 'undefined' &&
+						typeof process.cwd === 'function'
+							? process.cwd()
+							: '/';
+					try {
+						return pathModule.resolve(cwd || '/', value);
+					} catch {
+						// Ignore and fall back to original value
+					}
+				}
+			}
+			return value;
+		}
+		if (
+			value &&
+			typeof value === 'object' &&
+			typeof value.href === 'string' &&
+			urlModule?.fileURLToPath
+		) {
+			try {
+				return urlModule.fileURLToPath(value);
+			} catch {
+				// Ignore and fall back to original value
+			}
+		}
+		return value;
+	};
+
+	const originalReadFileSync = globalThis.coreModules.fs.readFileSync.bind(
+		globalThis.coreModules.fs
+	);
+	globalThis.coreModules.fs.readFileSync = function patchedReadFileSync(
+		path,
+		options
+	) {
+		let result;
+		let usedFallback = false;
+		const normalizedPath =
+			typeof path === 'string' || (path && typeof path.href === 'string')
+				? normalizePathForFs(path)
+				: path;
+
+		try {
+			result = originalReadFileSync(path, options);
+		} catch (originalError) {
+			if (
+				typeof normalizedPath !== 'string' &&
+				!(
+					normalizedPath &&
+					typeof normalizedPath === 'object' &&
+					typeof normalizedPath.href === 'string'
+				)
+			) {
+				throw originalError;
+			}
+			try {
+				result = globalThis.processController.fsSync.readFileSync(
+					normalizedPath,
+					options ?? null
+				);
+				usedFallback = true;
+			} catch {
+				throw originalError;
+			}
+		}
+
+		const shouldReturnBuffer =
+			supportsBinaryResult(options) &&
+			typeof Buffer !== 'undefined' &&
+			typeof Buffer.from === 'function';
+
+		if (!usedFallback) {
+			if (!shouldReturnBuffer) {
+				return result;
+			}
+			const availableLength =
+				typeof result === 'string'
+					? result.length
+					: result &&
+					  typeof result === 'object' &&
+					  typeof (result.byteLength ?? result.length) === 'number'
+					? result.byteLength ?? result.length
+					: 0;
+			if (availableLength > 0 || typeof normalizedPath !== 'string') {
+				return result;
+			}
+			try {
+				result = globalThis.processController.fsSync.readFileSync(
+					normalizedPath,
+					null
+				);
+				usedFallback = true;
+			} catch {
+				return result;
+			}
+		}
+
+		if (!shouldReturnBuffer) {
+			return result;
+		}
+
+		let fallback =
+			result instanceof Uint8Array
+				? result
+				: typeof result === 'string'
+				? Buffer.from(result)
+				: null;
+
+		if (!fallback || !(fallback instanceof Uint8Array)) {
+			if (
+				!result ||
+				typeof result !== 'object' ||
+				!(result.buffer instanceof ArrayBuffer)
+			) {
+				return result;
+			}
+			fallback = new Uint8Array(
+				result.buffer,
+				result.byteOffset ?? result.offset ?? 0,
+				result.byteLength ?? result.length ?? 0
+			);
+		}
+
+		if (fallback.byteLength === 0) {
+			return result;
+		}
+
+		return Buffer.from(fallback);
+	};
+	Object.defineProperty(
+		globalThis.coreModules.fs.readFileSync,
+		'__patchedProcessControllerReadFile',
+		{
+			value: true,
+			configurable: false,
+			enumerable: false,
+			writable: false,
+		}
+	);
+}
+
+const fsPromises = await import('../../dist/fs/promises.js');
+globalThis.coreModules['fs/promises'] = fsPromises.default.exports;
+globalThis.coreModules['fs'].FileHandle = fsPromises.default.FileHandle;
+
+// Make fs.promises.opendir usable directly in for await...of by returning
+// a thenable that is also async-iterable
+{
+	const fsp = globalThis.coreModules['fs/promises'];
+	const originalOpendir = fsp && fsp.opendir;
+	if (typeof originalOpendir === 'function') {
+		fsp.opendir = function (...args) {
+			return globalThis.internalModules.fs_dir.opendir(...args);
+		};
+	}
+}
+
+const events = await import('../../dist/events.js');
+globalThis.coreModules.events = events.default;
+
+const event_target = await import('../../dist/internal/event_target.js');
+globalThis.internalModules.event_target = event_target.default;
+
+const setupMessagingBinding = () => {
+	const { EventEmitter } = events.default;
+	const symbols = globalThis.internalModules.symbols ?? {};
+	const noMessageSymbol =
+		symbols.no_message ?? Symbol.for('nodejs.internal.no_message');
+
+	const nativePortSymbol = Symbol('nativePort');
+	const startedSymbol = Symbol('started');
+	const pendingSymbol = Symbol('pendingMessages');
+	const refSymbol = Symbol('refed');
+	const closedSymbol = Symbol('closed');
+	const onMessageSymbol = Symbol('onMessageHandler');
+	const onMessageErrorSymbol = Symbol('onMessageErrorHandler');
+
+	const wrapperForNativePort = new WeakMap();
+
+	function isPlainObject(value) {
+		if (!value || typeof value !== 'object') {
+			return false;
+		}
+		const proto = Object.getPrototypeOf(value);
+		return proto === Object.prototype || proto === null;
+	}
+
+	function unwrapPortValue(value, seen = new WeakMap()) {
+		if (!value || typeof value !== 'object') {
+			return value;
+		}
+
+		if (value[nativePortSymbol]) {
+			return value[nativePortSymbol];
+		}
+
+		if (value instanceof globalThis.MessagePort) {
+			return value;
+		}
+
+		if (seen.has(value)) {
+			return seen.get(value);
+		}
+
+		if (Array.isArray(value)) {
+			const result = [];
+			seen.set(value, result);
+			for (let i = 0; i < value.length; i++) {
+				result[i] = unwrapPortValue(value[i], seen);
+			}
+			return result;
+		}
+
+		if (isPlainObject(value)) {
+			const result = {};
+			seen.set(value, result);
+			for (const [key, entry] of Object.entries(value)) {
+				result[key] = unwrapPortValue(entry, seen);
+			}
+			return result;
+		}
+
+		return value;
+	}
+
+	function wrapPortValue(value, seen = new WeakMap()) {
+		if (!value || typeof value !== 'object') {
+			return value;
+		}
+
+		if (value instanceof MessagePortImpl) {
+			return value;
+		}
+
+		if (value instanceof globalThis.MessagePort) {
+			return ensurePort(value);
+		}
+
+		if (seen.has(value)) {
+			return seen.get(value);
+		}
+
+		if (Array.isArray(value)) {
+			const result = [];
+			seen.set(value, result);
+			for (let i = 0; i < value.length; i++) {
+				result[i] = wrapPortValue(value[i], seen);
+			}
+			return result;
+		}
+
+		if (isPlainObject(value)) {
+			const result = {};
+			seen.set(value, result);
+			for (const [key, entry] of Object.entries(value)) {
+				result[key] = wrapPortValue(entry, seen);
+			}
+			return result;
+		}
+
+		return value;
+	}
+
+	const toNativePort = (value) =>
+		value && value[nativePortSymbol] ? value[nativePortSymbol] : value;
+
+	const sanitizeTransferList = (list) => {
+		if (!Array.isArray(list)) {
+			return undefined;
+		}
+		return list
+			.map((item) => toNativePort(item))
+			.filter((item) => item != null);
+	};
+
+	class MessagePortImpl extends events.default.EventEmitter {
+		constructor(nativePort) {
+			super();
+			this.addEventListener = this.addEventListener.bind(this);
+			this.removeEventListener = this.removeEventListener.bind(this);
+			this.dispatchEvent = this.dispatchEvent.bind(this);
+			if (typeof globalThis.MessageChannel !== 'function') {
+				throw new Error(
+					'MessagePort is not supported in this environment'
+				);
+			}
+
+			const port =
+				nativePort instanceof globalThis.MessagePort
+					? nativePort
+					: new globalThis.MessageChannel().port1;
+
+			this[nativePortSymbol] = port;
+			this[startedSymbol] = false;
+			this[refSymbol] = true;
+			this[closedSymbol] = false;
+			this[pendingSymbol] = [];
+
+			this[onMessageSymbol] = (event) => {
+				const data = wrapPortValue(event?.data);
+				if (this[startedSymbol]) {
+					(
+						globalThis.queueMicrotask ??
+						((fn) => Promise.resolve().then(fn))
+					)(() => this.emit('message', data));
+				} else {
+					this[pendingSymbol].push({ type: 'message', data });
+				}
+			};
+			this[onMessageErrorSymbol] = (event) => {
+				const data = wrapPortValue(event?.data);
+				if (this[startedSymbol]) {
+					(
+						globalThis.queueMicrotask ??
+						((fn) => Promise.resolve().then(fn))
+					)(() => this.emit('messageerror', data));
+				} else {
+					this[pendingSymbol].push({ type: 'messageerror', data });
+				}
+			};
+
+			port.addEventListener('message', this[onMessageSymbol]);
+			port.addEventListener('messageerror', this[onMessageErrorSymbol]);
+			if (typeof port.start === 'function') {
+				port.start();
+			}
+
+			wrapperForNativePort.set(port, this);
+		}
+
+		addEventListener(type, listener) {
+			return this.on(type, listener);
+		}
+
+		removeEventListener(type, listener) {
+			return this.off(type, listener);
+		}
+
+		dispatchEvent(event) {
+			if (!event || typeof event.type !== 'string') {
+				return false;
+			}
+			this.emit(event.type, event);
+			return true;
+		}
+
+		start() {
+			if (this[closedSymbol]) {
+				return;
+			}
+			if (this[startedSymbol]) {
+				return;
+			}
+			this[startedSymbol] = true;
+			const pending = this[pendingSymbol].splice(0);
+			for (const entry of pending) {
+				(
+					globalThis.queueMicrotask ??
+					((fn) => Promise.resolve().then(fn))
+				)(() => this.emit(entry.type, entry.data));
+			}
+		}
+
+		postMessage(value, transferList) {
+			if (this[closedSymbol]) {
+				throw new Error('Cannot postMessage() on a closed MessagePort');
+			}
+			const nativeTransfer = sanitizeTransferList(transferList);
+			const payload = unwrapPortValue(value);
+			this[nativePortSymbol].postMessage(payload, nativeTransfer);
+		}
+
+		close() {
+			if (this[closedSymbol]) {
+				return;
+			}
+			this[closedSymbol] = true;
+			try {
+				this[nativePortSymbol].removeEventListener(
+					'message',
+					this[onMessageSymbol]
+				);
+				this[nativePortSymbol].removeEventListener(
+					'messageerror',
+					this[onMessageErrorSymbol]
+				);
+			} catch {
+				// Ignore listener cleanup failures.
+			}
+			try {
+				this[nativePortSymbol].close();
+			} catch {
+				// Ignore close failures.
+			}
+			this.emit('close');
+		}
+
+		ref() {
+			this[refSymbol] = true;
+			return this;
+		}
+
+		unref() {
+			this[refSymbol] = false;
+			return this;
+		}
+
+		hasRef() {
+			return Boolean(this[refSymbol]);
+		}
+
+		drain() {
+			this.start();
+		}
+
+		stop() {
+			this[startedSymbol] = false;
+		}
+
+		dequeue() {
+			const entry = this[pendingSymbol].shift();
+			return entry ? entry.data : undefined;
+		}
+	}
+
+	const ensurePort = (port) => {
+		if (!port) {
+			throw new TypeError('MessagePort expected');
+		}
+		if (port instanceof MessagePortImpl) {
+			return port;
+		}
+		if (port instanceof globalThis.MessagePort) {
+			const existing = wrapperForNativePort.get(port);
+			return existing ?? new MessagePortImpl(port);
+		}
+		throw new TypeError('Unsupported MessagePort implementation');
+	};
+
+	class MessageChannelImpl {
+		constructor() {
+			if (typeof globalThis.MessageChannel !== 'function') {
+				throw new Error(
+					'MessageChannel is not supported in this environment'
+				);
+			}
+			const channel = new globalThis.MessageChannel();
+			this.port1 = ensurePort(channel.port1);
+			this.port2 = ensurePort(channel.port2);
+		}
+	}
+
+	class BroadcastChannelWrapper extends EventEmitter {
+		constructor(name) {
+			super();
+			if (typeof globalThis.BroadcastChannel !== 'function') {
+				throw new Error(
+					'BroadcastChannel is not supported in this environment'
+				);
+			}
+			this._channel = new globalThis.BroadcastChannel(String(name));
+			this._refed = true;
+			this._onMessage = (event) => this.emit('message', event?.data);
+			this._onMessageError = (event) =>
+				this.emit('messageerror', event?.data);
+			this._channel.addEventListener('message', this._onMessage);
+			this._channel.addEventListener(
+				'messageerror',
+				this._onMessageError
+			);
+		}
+
+		postMessage(value) {
+			this._channel.postMessage(value);
+		}
+
+		close() {
+			try {
+				this._channel.removeEventListener('message', this._onMessage);
+				this._channel.removeEventListener(
+					'messageerror',
+					this._onMessageError
+				);
+			} catch {
+				// Ignore cleanup failures.
+			}
+			this._channel.close();
+		}
+
+		ref() {
+			this._refed = true;
+			return this;
+		}
+
+		unref() {
+			this._refed = false;
+			return this;
+		}
+	}
+
+	const broadcastChannelFactory = (name) => new BroadcastChannelWrapper(name);
+
+	let deserializerFactory = null;
+
+	const setDeserializerCreateObjectFunction = (fn) => {
+		deserializerFactory = typeof fn === 'function' ? fn : null;
+	};
+
+	const structuredCloneImpl = (value, options) => {
+		const transfer = Array.isArray(options?.transfer)
+			? sanitizeTransferList(options.transfer)
+			: undefined;
+		if (typeof globalThis.structuredClone === 'function') {
+			return globalThis.structuredClone(
+				value,
+				transfer ? { transfer } : undefined
+			);
+		}
+		return JSON.parse(JSON.stringify(value));
+	};
+
+	const receiveMessageOnPortImpl = (port) => {
+		const wrapper = ensurePort(port);
+		const value = wrapper.dequeue();
+		return value === undefined ? noMessageSymbol : value;
+	};
+
+	const drainMessagePortImpl = (port) => {
+		ensurePort(port).drain();
+	};
+
+	const stopMessagePortImpl = (port) => {
+		ensurePort(port).stop();
+	};
+
+	const moveMessagePortToContextImpl = (port) => ensurePort(port);
+
+	const exposeLazyDOMExceptionProperty = (target) => {
+		if (!target || typeof target !== 'object') {
+			return;
+		}
+		if (
+			!('DOMException' in target) &&
+			typeof globalThis.DOMException === 'function'
+		) {
+			Object.defineProperty(target, 'DOMException', {
+				configurable: true,
+				enumerable: false,
+				get() {
+					return globalThis.DOMException;
+				},
+			});
+		}
+	};
+
+	return {
+		MessagePort: MessagePortImpl,
+		MessageChannel: MessageChannelImpl,
+		broadcastChannel: broadcastChannelFactory,
+		ensurePort,
+		drainMessagePort: drainMessagePortImpl,
+		stopMessagePort: stopMessagePortImpl,
+		receiveMessageOnPort: receiveMessageOnPortImpl,
+		moveMessagePortToContext: moveMessagePortToContextImpl,
+		setDeserializerCreateObjectFunction,
+		structuredClone: structuredCloneImpl,
+		DOMException: globalThis.DOMException,
+		exposeLazyDOMExceptionProperty,
+	};
+};
+
+globalThis.internalModules.messaging = setupMessagingBinding();
+const messagingBinding = globalThis.internalModules.messaging;
+const ensureNodeMessagePort =
+	typeof messagingBinding.ensurePort === 'function'
+		? messagingBinding.ensurePort
+		: (value) => value;
+
+const ensureNodeSpawnBridge = () => {
+	const controller = globalThis.processController;
+	if (!controller || typeof controller.spawn !== 'function') {
+		throw new Error(
+			'processController.spawn is not available for Node runtime'
+		);
+	}
+	if (typeof controller.spawnNodeProcess === 'function') {
+		return;
+	}
+
+	let counter = 0;
+	const decoder = new TextDecoder();
+
+	const sanitizeArgv = (input) => {
+		if (!Array.isArray(input)) {
+			return [];
+		}
+		return input.map((value) =>
+			value == null
+				? ''
+				: typeof value === 'string'
+				? value
+				: String(value)
+		);
+	};
+
+	const sanitizeEnv = (input) => {
+		const result = {};
+		if (!input || typeof input !== 'object') {
+			return result;
+		}
+		for (const [key, value] of Object.entries(input)) {
+			if (typeof key !== 'string' || key.length === 0) {
+				continue;
+			}
+			result[key] =
+				value == null
+					? ''
+					: typeof value === 'string'
+					? value
+					: String(value);
+		}
+		return result;
+	};
+
+	controller.spawnNodeProcess = function spawnNodeProcess(options = {}) {
+		const argv = Array.isArray(options.argv)
+			? sanitizeArgv(options.argv)
+			: sanitizeArgv(
+					Array.isArray(options.argvInput)
+						? options.argvInput
+						: options.argv
+			  );
+		if (argv.length === 0) {
+			throw new Error(
+				'spawnNodeProcess: argv must be a non-empty array of strings'
+			);
+		}
+
+		const env = {
+			...(typeof controller.getAllEnv === 'function'
+				? controller.getAllEnv()
+				: {}),
+			...sanitizeEnv(options.env),
+		};
+
+		const cwd =
+			typeof options.cwd === 'string' && options.cwd.length
+				? options.cwd
+				: typeof controller.cwd === 'function'
+				? controller.cwd()
+				: '/';
+
+		const resolvedName =
+			typeof options.name === 'string' && options.name.length
+				? options.name
+				: typeof options.workerThreadName === 'string' &&
+				  options.workerThreadName.length
+				? options.workerThreadName
+				: `node-process-${++counter}`;
+
+		const spawnPromise = controller.spawn({
+			argv,
+			env,
+			cwd,
+			name: resolvedName,
+			debug: Boolean(options.debug),
+			stdio: {
+				stdin:
+					options.stdio?.stdin &&
+					typeof options.stdio.stdin === 'string'
+						? options.stdio.stdin
+						: 'ignore',
+				stdout:
+					options.stdio?.stdout &&
+					typeof options.stdio.stdout === 'string'
+						? options.stdio.stdout
+						: 'pipe',
+				stderr:
+					options.stdio?.stderr &&
+					typeof options.stdio.stderr === 'string'
+						? options.stdio.stderr
+						: 'pipe',
+			},
+			ipcPort:
+				options.messagePort && typeof options.messagePort === 'object'
+					? options.messagePort
+					: undefined,
+			workerThreadId:
+				typeof options.workerThreadId === 'number'
+					? options.workerThreadId
+					: undefined,
+			workerThreadName:
+				typeof options.workerThreadName === 'string'
+					? options.workerThreadName
+					: resolvedName,
+		});
+
+		return spawnPromise
+			.then((handle) => {
+				const detachments = [];
+				const normalizeChunk = (chunk) =>
+					typeof chunk === 'string' ? chunk : decoder.decode(chunk);
+
+				if (handle.stdout && typeof options.onStdout === 'function') {
+					const listener = (chunk) =>
+						options.onStdout?.(normalizeChunk(chunk));
+					const detach = handle.stdout.on('data', listener);
+					detachments.push(() => {
+						try {
+							detach?.();
+						} catch {
+							// ignore
+						}
+					});
+				}
+
+				if (handle.stderr && typeof options.onStderr === 'function') {
+					const listener = (chunk) =>
+						options.onStderr?.(normalizeChunk(chunk));
+					const detach = handle.stderr.on('data', listener);
+					detachments.push(() => {
+						try {
+							detach?.();
+						} catch {
+							// ignore
+						}
+					});
+				}
+
+				let messagePortListener = null;
+				if (
+					handle.messagePort &&
+					typeof options.onMessage === 'function'
+				) {
+					messagePortListener = (event) =>
+						options.onMessage?.(event.data);
+					handle.messagePort.addEventListener(
+						'message',
+						messagePortListener
+					);
+					try {
+						handle.messagePort.start();
+					} catch {
+						// optional start not supported
+					}
+					detachments.push(() => {
+						if (!handle.messagePort || !messagePortListener) {
+							return;
+						}
+						try {
+							handle.messagePort.removeEventListener(
+								'message',
+								messagePortListener
+							);
+						} catch {
+							// ignore
+						}
+					});
+				}
+
+				let resolveExit;
+				const exitPromise = new Promise((resolve) => {
+					resolveExit = resolve;
+				});
+
+				const exitHandler = (code) => {
+					const info = { code, signal: null };
+					options.onExit?.(info);
+					resolveExit(info);
+					try {
+						handle.offExit(exitHandler);
+					} catch {
+						// ignore
+					}
+					for (const detach of detachments) {
+						try {
+							detach();
+						} catch {
+							// ignore
+						}
+					}
+					if (messagePortListener && handle.messagePort) {
+						try {
+							handle.messagePort.close();
+						} catch {
+							// ignore
+						}
+					}
+				};
+
+				handle.onExit(exitHandler);
+				options.onReady?.();
+
+				return {
+					waitForExit: () => exitPromise,
+					write(data) {
+						try {
+							const length =
+								typeof data === 'string'
+									? data.length
+									: data && typeof data === 'object'
+									? data.byteLength ?? data.length ?? 0
+									: 0;
+							let preview = '';
+							if (
+								typeof data !== 'string' &&
+								data &&
+								typeof Buffer !== 'undefined'
+							) {
+								try {
+									preview = Buffer.from(data)
+										.toString('hex')
+										.slice(0, 80);
+								} catch {
+									preview = '';
+								}
+							} else if (typeof data === 'string') {
+								preview = data.slice(0, 80);
+							}
+							console.error(
+								'[spawn bridge] stdin.write',
+								length,
+								preview
+							);
+							try {
+								if (
+									processController &&
+									processController.fsSync &&
+									typeof processController.fsSync
+										.writeFileSync === 'function'
+								) {
+									const targetPath =
+										'/tmp/esbuild-stdin-dump.bin';
+									const existing =
+										processController.fsSync.existsSync(
+											targetPath
+										);
+									processController.fsSync.writeFileSync(
+										targetPath,
+										data,
+										existing
+											? { flag: 'a', mode: 0o600 }
+											: { mode: 0o600 }
+									);
+								}
+							} catch (dumpError) {
+								console.error(
+									'[spawn bridge] failed to dump stdin',
+									dumpError && dumpError.message
+								);
+							}
+							handle.stdin?.write(data);
+						} catch {
+							// ignore
+						}
+					},
+					end() {
+						try {
+							handle.stdin?.end();
+						} catch {
+							// ignore
+						}
+					},
+					resize(_cols, _rows) {
+						// no-op
+					},
+					signal(_signal) {
+						handle.kill();
+					},
+					terminate() {
+						handle.kill();
+					},
+					messagePort: handle.messagePort ?? null,
+					stdin: handle.stdin ?? null,
+					stdout: handle.stdout ?? null,
+					stderr: handle.stderr ?? null,
+					threadId: handle.threadId ?? null,
+					threadName: handle.threadName ?? null,
+				};
+			})
+			.catch((error) => {
+				const normalised =
+					error instanceof Error ? error : new Error(String(error));
+				options.onError?.(normalised);
+				throw normalised;
+			});
+	};
+};
+
+ensureNodeSpawnBridge();
+
+const _http_agent = await import('../../dist/_http_agent.js');
+globalThis.coreModules._http_agent = _http_agent.default;
+
+const http = await import('../../dist/http.js');
+globalThis.coreModules.http = http.default;
+
+// Recycle http module for http2
+const http2 = await import('../../dist/http2.js');
+globalThis.coreModules.http2 = {
+	// For HTTP2 constants
+	// ...http2.default,
+	constants: http2.default.constants,
+	// For actual requests
+	...http2.default,
+};
+
+const cryptoModule = await import('../../dist/crypto.js');
+const cryptoExports = cryptoModule?.default ?? {};
+globalThis.coreModules.crypto = cryptoExports;
+const randomFillSync =
+	typeof cryptoExports.randomFillSync === 'function'
+		? cryptoExports.randomFillSync
+		: null;
+const randomBytes =
+	typeof cryptoExports.randomBytes === 'function'
+		? cryptoExports.randomBytes
+		: null;
+const ensureRandomValues = (typedArray) => {
+	if (
+		!typedArray ||
+		typeof typedArray.length !== 'number' ||
+		!ArrayBuffer.isView(typedArray)
+	) {
+		throw new TypeError(
+			'crypto.getRandomValues() expects an integer TypedArray'
+		);
+	}
+	if (randomFillSync) {
+		randomFillSync(typedArray);
+		return typedArray;
+	}
+	if (randomBytes) {
+		const buffer = randomBytes(typedArray.byteLength);
+		typedArray.set(buffer);
+		return typedArray;
+	}
+	throw new Error(
+		'crypto.getRandomValues() not supported in this environment'
+	);
+};
+const cryptoPolyfill = {
+	...cryptoExports,
+	getRandomValues:
+		typeof cryptoExports.getRandomValues === 'function'
+			? cryptoExports.getRandomValues.bind(cryptoExports)
+			: ensureRandomValues,
+	randomUUID:
+		typeof cryptoExports.randomUUID === 'function'
+			? cryptoExports.randomUUID.bind(cryptoExports)
+			: undefined,
+	// Preserve subtle/webcrypto if available from browser
+	subtle: globalThis.crypto?.subtle ?? cryptoExports.subtle,
+};
+
+/**
+ * We cannot do either of these in here:
+ *
+ * globalThis.crypto = cryptoExports
+ * Object.assign(globalThis.crypto, cryptoPolyfill);
+ *
+ * Why? The browser is protective of these properties and will not allow overriding them.
+ * The error is "TypeError: Cannot set property crypto of #<WorkerGlobalScope> which has only a getter".
+ * Perhaps there's a way to re-configure the parent object and enable a setter
+ * or unfreeze the configuration, or so something else. Let's explore it once the
+ * simple function override is not enough.
+ */
+globalThis.crypto.randomBytes = cryptoExports.randomBytes;
+try {
+	globalThis.crypto.getRandomValues = cryptoPolyfill.getRandomValues;
+} catch (error) {
+	try {
+		Object.defineProperty(globalThis.crypto, 'getRandomValues', {
+			configurable: true,
+			enumerable: true,
+			writable: true,
+			value: cryptoPolyfill.getRandomValues,
+		});
+	} catch (defineError) {
+		console.warn(
+			'[client-boot] failed to install crypto.getRandomValues override',
+			error,
+			defineError
+		);
+	}
+}
+
+const https = await import('../../dist/https.js');
+globalThis.coreModules.https = https.default;
+
+const tls = await import('../../dist/tls.js');
+globalThis.coreModules.tls = tls.default;
+
+const net = await import('../../dist/net.js');
+globalThis.coreModules.net = net.default;
+
+const url = await import('../../dist/url.js');
+globalThis.coreModules.url = {
+	...url.default,
+	pathToFileURL: globalThis.internalModules.url.pathToFileURL,
+	fileURLToPath: globalThis.internalModules.url.fileURLToPath,
+};
+
+const zlib = await import('../../dist/zlib.js');
+globalThis.coreModules.zlib = zlib.default;
+
+const dns = await import('../../dist/dns.js');
+globalThis.coreModules.dns = dns.default;
+
+const readline = await import('../../dist/readline.js');
+globalThis.coreModules.readline = readline.default;
+
+const querystring = await import('../../dist/querystring.js');
+globalThis.coreModules.querystring = querystring.default;
+
+const console2 = await import('../../dist/console.js');
+globalThis.coreModules.console = console2.default;
+
+const tty = await import('../../dist/tty.js');
+globalThis.coreModules.tty = tty.default;
+
+const assert = await import('../../dist/assert.js');
+globalThis.coreModules.assert = assert.default;
+
+const assertStrict = await import('../../dist/assert/strict.js');
+globalThis.coreModules['assert/strict'] = assertStrict.default;
+
+const timers = await import('../../dist/timers.js');
+globalThis.coreModules.timers = timers.default;
+
+const timersPromises = await import('../../dist/timers/promises.js');
+globalThis.coreModules['timers/promises'] = timersPromises.default;
+
+const childProcess = await import('../../dist/child_process.js');
+globalThis.coreModules.child_process = childProcess.default;
+
+const vm = await import('../../dist/vm.js');
+globalThis.coreModules.vm = vm.default;
+
+const v8 = await import('../../dist/v8.js');
+globalThis.coreModules.v8 = { ...v8 };
+const workerBindingContext = (() => {
+	const threadIdValue =
+		typeof globalThis.__kernelProcessThreadId === 'number'
+			? globalThis.__kernelProcessThreadId
+			: 0;
+	const threadNameValue =
+		typeof globalThis.__kernelProcessThreadName === 'string'
+			? globalThis.__kernelProcessThreadName
+			: threadIdValue === 0
+			? 'MainThread'
+			: `worker-${threadIdValue}`;
+	const messagePortValue = globalThis.__kernelProcessMessagePort
+		? ensureNodeMessagePort(globalThis.__kernelProcessMessagePort)
+		: null;
+	if (messagePortValue) {
+		try {
+			messagePortValue.unref();
+		} catch {
+			// Ignore inability to adjust ref state on bootstrap port.
+		}
+		globalThis.__kernelProcessMessagePort = messagePortValue;
+	}
+	return {
+		threadId: threadIdValue,
+		threadName: threadNameValue,
+		isMainThread: threadIdValue === 0,
+		messagePort: messagePortValue,
+	};
+})();
+
+if (typeof globalThis.__kernelWorkerThreadCounter !== 'number') {
+	const seed = workerBindingContext.isMainThread
+		? 1
+		: (workerBindingContext.threadId ?? 0) + 1;
+	globalThis.__kernelWorkerThreadCounter = seed;
+}
+
+const allocateWorkerThreadId = () => {
+	const key = '__kernelWorkerThreadCounter';
+	const current = typeof globalThis[key] === 'number' ? globalThis[key] : 1;
+	globalThis[key] = current + 1;
+	return current;
+};
+
+const workerDataFromEnv = () => {
+	if (workerBindingContext.isMainThread) {
+		return undefined;
+	}
+	try {
+		const raw = process?.env?.__KERNEL_WORKER_DATA;
+		if (raw) {
+			delete process.env.__KERNEL_WORKER_DATA;
+			return JSON.parse(raw);
+		}
+	} catch {
+		// Ignore workerData parsing issues.
+	}
+	return undefined;
+};
+
+const createWorkerThreadsPolyfill = () => {
+	let workerIdCounter =
+		workerBindingContext.threadId && workerBindingContext.threadId > 0
+			? workerBindingContext.threadId + 1
+			: 1;
+
+	const isMainThread = workerBindingContext.isMainThread;
+
+	const kNativePort = Symbol('nodeWorkerNativePort');
+	const portWrapperCache = new WeakMap();
+
+	const wrapMessagePortForUser = (port) => {
+		if (!port) {
+			return null;
+		}
+		const nativePort = port[kNativePort] ?? port;
+		if (portWrapperCache.has(nativePort)) {
+			return portWrapperCache.get(nativePort);
+		}
+		const emitter = new events.default.EventEmitter();
+		const pendingEvents = [];
+		const listenerCountFor = (eventName) => {
+			if (emitter && typeof emitter.listenerCount === 'function') {
+				return emitter.listenerCount(eventName);
+			}
+			if (
+				events?.default?.EventEmitter &&
+				typeof events.default.EventEmitter.listenerCount === 'function'
+			) {
+				return events.default.EventEmitter.listenerCount(
+					emitter,
+					eventName
+				);
+			}
+			return 0;
+		};
+		const queueOrEmit = (type, value) => {
+			if (type !== 'message' && type !== 'messageerror') {
+				emitter.emit(type, value);
+				return;
+			}
+			if (listenerCountFor(type) > 0) {
+				emitter.emit(type, value);
+				return;
+			}
+			pendingEvents.push({ type, value });
+		};
+		const flushPending = (type) => {
+			if (!pendingEvents.length) {
+				return;
+			}
+			if (listenerCountFor(type) === 0) {
+				return;
+			}
+			const remaining = [];
+			for (const entry of pendingEvents) {
+				if (entry.type === type) {
+					emitter.emit(type, entry.value);
+				} else {
+					remaining.push(entry);
+				}
+			}
+			pendingEvents.length = 0;
+			if (remaining.length) {
+				pendingEvents.push(...remaining);
+			}
+		};
+		const wrapAddListener = (original) =>
+			function (type, listener) {
+				const result = original.call(this, type, listener);
+				if (type === 'message' || type === 'messageerror') {
+					flushPending(type);
+				}
+				return result;
+			};
+		if (typeof emitter.on === 'function') {
+			const originalOn = emitter.on;
+			emitter.on = wrapAddListener(originalOn);
+			emitter.addListener = emitter.on;
+		}
+		if (typeof emitter.once === 'function') {
+			const originalOnce = emitter.once;
+			emitter.once = wrapAddListener(originalOnce);
+		}
+		if (typeof emitter.prependListener === 'function') {
+			const originalPrepend = emitter.prependListener;
+			emitter.prependListener = wrapAddListener(originalPrepend);
+		}
+		if (typeof emitter.prependOnceListener === 'function') {
+			const originalPrependOnce = emitter.prependOnceListener;
+			emitter.prependOnceListener = wrapAddListener(originalPrependOnce);
+		}
+
+		// Helper to check if value is a Buffer instance
+		const isBuffer = (value) => {
+			// Try Buffer.isBuffer if available (after buffer module loads)
+			if (
+				typeof globalThis.Buffer !== 'undefined' &&
+				typeof globalThis.Buffer.isBuffer === 'function'
+			) {
+				return globalThis.Buffer.isBuffer(value);
+			}
+			// Fallback: check for Buffer-like objects
+			return (
+				value &&
+				typeof value === 'object' &&
+				value.constructor &&
+				value.constructor.name === 'Buffer' &&
+				typeof value.length === 'number'
+			);
+		};
+
+		const wrapIncoming = (value) => {
+			if (!value || typeof value !== 'object') {
+				return value;
+			}
+			// Deserialize Buffer instances
+			if (value.__nodeBuffer === true && Array.isArray(value.data)) {
+				if (
+					typeof globalThis.Buffer !== 'undefined' &&
+					typeof globalThis.Buffer.from === 'function'
+				) {
+					return globalThis.Buffer.from(value.data);
+				}
+				// Fallback to Uint8Array if Buffer not available yet
+				return new Uint8Array(value.data);
+			}
+			if (value && value[kNativePort]) {
+				return wrapMessagePortForUser(value[kNativePort]);
+			}
+			if (
+				typeof MessagePort !== 'undefined' &&
+				value instanceof MessagePort
+			) {
+				return wrapMessagePortForUser(value);
+			}
+			// Preserve TypedArray and other ArrayBufferView instances (but not Buffer, which we serialize separately)
+			if (ArrayBuffer.isView(value) && !isBuffer(value)) {
+				return value;
+			}
+			if (Array.isArray(value)) {
+				return value.map(wrapIncoming);
+			}
+			const result = { ...value };
+			for (const key of Object.keys(result)) {
+				result[key] = wrapIncoming(result[key]);
+			}
+			return result;
+		};
+
+		const unwrapOutgoing = (value) => {
+			if (!value || typeof value !== 'object') {
+				return value;
+			}
+			// Serialize Buffer instances
+			if (isBuffer(value)) {
+				return {
+					__nodeBuffer: true,
+					data: Array.from(value),
+				};
+			}
+			if (value && value[kNativePort]) {
+				return value[kNativePort];
+			}
+			if (
+				typeof MessagePort !== 'undefined' &&
+				value instanceof MessagePort
+			) {
+				return value;
+			}
+			// Preserve TypedArray and other ArrayBufferView instances (but not Buffer, which we serialize separately)
+			if (ArrayBuffer.isView(value) && !isBuffer(value)) {
+				return value;
+			}
+			if (Array.isArray(value)) {
+				return value.map(unwrapOutgoing);
+			}
+			const result = { ...value };
+			for (const key of Object.keys(result)) {
+				result[key] = unwrapOutgoing(result[key]);
+			}
+			return result;
+		};
+		const extractMessagePayload = (event) => {
+			if (event && typeof event === 'object' && 'data' in event) {
+				// DOM MessageEvent-style payload
+				return event.data;
+			}
+			// Node-style EventEmitter payload passes the value directly
+			return event;
+		};
+		const handleMessage = (event) =>
+			queueOrEmit('message', wrapIncoming(extractMessagePayload(event)));
+		const handleMessageError = (event) =>
+			queueOrEmit('messageerror', extractMessagePayload(event));
+		nativePort.addEventListener?.('message', handleMessage);
+		nativePort.addEventListener?.('messageerror', handleMessageError);
+		nativePort.start?.();
+		emitter.postMessage = (value, transferList) => {
+			const nativeTransfers = Array.isArray(transferList)
+				? transferList.map((item) =>
+						item && item[kNativePort] ? item[kNativePort] : item
+				  )
+				: undefined;
+			nativePort.postMessage(unwrapOutgoing(value), nativeTransfers);
+		};
+		emitter.close = () => {
+			try {
+				nativePort.removeEventListener?.('message', handleMessage);
+				nativePort.removeEventListener?.(
+					'messageerror',
+					handleMessageError
+				);
+			} catch {
+				// ignore
+			}
+			try {
+				nativePort.close?.();
+			} catch {
+				// ignore
+			}
+			pendingEvents.length = 0;
+			emitter.emit('close');
+		};
+		emitter.start = () => nativePort.start?.();
+		emitter.ref = () => emitter;
+		emitter.unref = () => emitter;
+		emitter[kNativePort] = nativePort;
+		portWrapperCache.set(nativePort, emitter);
+		return emitter;
+	};
+
+	const parentPort = isMainThread
+		? null
+		: wrapMessagePortForUser(workerBindingContext.messagePort);
+
+	const workerData = workerDataFromEnv();
+	const SHARE_ENV = Symbol.for('nodejs.worker_threads.SHARE_ENV');
+
+	class Worker extends events.default.EventEmitter {
+		#port;
+		#handle = null;
+		#readyPromise;
+		#closed = false;
+		threadId;
+		threadName;
+
+		constructor(filename, options = {}) {
+			super();
+			if (typeof filename !== 'string' || filename.length === 0) {
+				throw new Error('Worker filename must be a non-empty string');
+			}
+
+			if (
+				!globalThis.processController ||
+				typeof globalThis.processController.spawnNodeProcess !==
+					'function'
+			) {
+				throw new Error(
+					'worker_threads is not available in this environment'
+				);
+			}
+
+			const resolvedName =
+				typeof options.name === 'string' && options.name.length
+					? options.name
+					: `worker-${workerIdCounter++}`;
+
+			const { port1, port2 } = new MessageChannel();
+			this.#port = wrapMessagePortForUser(port1);
+			this.#port.on('message', (value) => this.emit('message', value));
+			this.#port.on('messageerror', (value) =>
+				this.emit('messageerror', value)
+			);
+			this.#port.on('close', () => {
+				if (this.#closed) {
+					return;
+				}
+				this.#closed = true;
+				this.emit('exit', 0);
+			});
+
+			const spawnEnv = {
+				...(options.env ?? {}),
+			};
+			if ('workerData' in options) {
+				try {
+					spawnEnv.__KERNEL_WORKER_DATA = JSON.stringify(
+						options.workerData
+					);
+				} catch {
+					// Ignore serialization errors.
+				}
+			}
+
+			const cwd =
+				typeof options.cwd === 'string' && options.cwd.length
+					? options.cwd
+					: typeof globalThis.processController.cwd === 'function'
+					? globalThis.processController.cwd()
+					: '/';
+
+			const stdio = {
+				stdin: options.stdin ? 'pipe' : 'ignore',
+				stdout:
+					options.stdout === false
+						? 'ignore'
+						: options.stdout === 'inherit'
+						? 'inherit'
+						: 'pipe',
+				stderr:
+					options.stderr === false
+						? 'ignore'
+						: options.stderr === 'inherit'
+						? 'inherit'
+						: 'pipe',
+			};
+
+			this.threadId = allocateWorkerThreadId();
+			this.threadName = resolvedName;
+
+			this.#readyPromise = globalThis.processController
+				.spawnNodeProcess({
+					argv: ['node', filename],
+					env: spawnEnv,
+					cwd,
+					name: resolvedName,
+					debug: Boolean(options.debug),
+					stdio,
+					messagePort: port2,
+					workerThreadId: this.threadId,
+					workerThreadName: this.threadName,
+					onExit: ({ code }) => {
+						if (this.#closed) {
+							return;
+						}
+						this.#closed = true;
+						this.emit('exit', typeof code === 'number' ? code : 0);
+					},
+					onError: (error) => {
+						queueMicrotask(() => this.emit('error', error));
+					},
+					onReady: () => {
+						queueMicrotask(() => this.emit('online'));
+					},
+				})
+				.then((handle) => {
+					this.#handle = handle;
+					this.stdin = handle.stdin ?? null;
+					this.stdout = handle.stdout ?? null;
+					this.stderr = handle.stderr ?? null;
+					return handle;
+				})
+				.catch((error) => {
+					queueMicrotask(() => this.emit('error', error));
+					throw error;
+				});
+		}
+
+		postMessage(value, transferList) {
+			this.#port.postMessage(value, transferList);
+		}
+
+		async terminate() {
+			if (this.#closed) {
+				return 0;
+			}
+			this.#closed = true;
+			const exitPromise = new Promise((resolve) => {
+				this.once('exit', (code) => {
+					resolve(typeof code === 'number' ? code : 0);
+				});
+			});
+			try {
+				const handle = await this.#readyPromise;
+				handle?.terminate?.();
+			} catch {
+				// Ignore termination errors.
+			}
+			return exitPromise;
+		}
+
+		ref() {
+			this.#port.ref?.();
+			return this;
+		}
+
+		unref() {
+			this.#port.unref?.();
+			return this;
+		}
+	}
+
+	class NodeMessageChannel {
+		constructor() {
+			const native = new MessageChannel();
+			this.port1 = wrapMessagePortForUser(native.port1);
+			this.port2 = wrapMessagePortForUser(native.port2);
+		}
+	}
+
+	function MessagePortCtor() {
+		throw new Error('MessagePort cannot be constructed directly');
+	}
+	MessagePortCtor.prototype = events.default.EventEmitter.prototype;
+	Object.defineProperty(MessagePortCtor, 'prototype', { writable: false });
+
+	return {
+		Worker,
+		isMainThread,
+		parentPort,
+		workerData,
+		threadId: workerBindingContext.threadId ?? 0,
+		SHARE_ENV,
+		MessageChannel: NodeMessageChannel,
+		MessagePort: MessagePortCtor,
+		BroadcastChannel: globalThis.BroadcastChannel,
+		receiveMessageOnPort: messagingBinding.receiveMessageOnPort,
+		moveMessagePortToContext: messagingBinding.moveMessagePortToContext,
+	};
+};
+
+const workerThreadsPolyfill = createWorkerThreadsPolyfill();
+workerThreadsPolyfill.default = workerThreadsPolyfill;
+globalThis.coreModules.worker_threads = workerThreadsPolyfill;
+globalThis.coreModules['node:worker_threads'] = workerThreadsPolyfill;
+globalThis.internalModules.worker_threads = workerThreadsPolyfill;
+globalThis.internalModules.worker = {
+	ownsProcessState: false,
+	isMainThread: workerBindingContext.isMainThread,
+	isInternalThread: false,
+	resourceLimits: {},
+	threadId: workerBindingContext.threadId ?? 0,
+	threadName: workerBindingContext.threadName ?? 'WorkerThread',
+	createMainThreadPort() {
+		const { port1, port2 } = new MessageChannel();
+		try {
+			port1.start?.();
+		} catch {
+			// ignore
+		}
+		return port2;
+	},
+	destroyMainThreadPort(port) {
+		try {
+			port?.close?.();
+		} catch {
+			// ignore
+		}
+	},
+	getEnvMessagePort() {
+		if (!workerBindingContext.messagePort) {
+			throw new Error('Worker environment message port is not available');
+		}
+		return workerBindingContext.messagePort;
+	},
+	Worker: workerThreadsPolyfill.Worker,
+};
+
+const Module = await import('./module.js');
+globalThis.coreModules.module = {
+	...Module,
+	runMain: () => Module.Module.runMain(),
+	createRequire: (parentModule) => Module.Module.createRequire(parentModule),
+};
+
+// realm.BuiltinModule
+for (const key in globalThis.coreModules) {
+	realm.default.BuiltinModule.allowRequireByUsers(key);
+	realm.default.BuiltinModule.map.set(key, {
+		exports: globalThis.coreModules[key],
+		filename: key,
+		id: key,
+		loaded: true,
+		loading: false,
+		compileForPublicLoader() {},
+	});
+}
+
+globalThis.internalModules.natives = Object.keys(globalThis.internalModules);
+
+// const ModuleCJSLoader = await import("../../dist/internal/modules/cjs/loader.js");
+// console.log({ ModuleCJSLoader })
+// globalThis.coreModules.module.Module = ModuleCJSLoader.Module;
+// console.log({ModuleCJSLoader})
+
+// @TODO:
+// const resolveModule = await import("../../dist/internal/resolve.js");
+// console.log({ resolveModule })
+
+function normalizeArgv(argv) {
+	if (!Array.isArray(argv)) {
+		return null;
+	}
+	return argv.map((value) => {
+		if (value == null) {
+			return '';
+		}
+		return String(value);
+	});
+}
+
+function ensureEntryFromArgv(argv) {
+	if (!Array.isArray(argv)) {
+		return '';
+	}
+	const candidate = argv.length > 1 ? argv[1] : argv[0];
+	return typeof candidate === 'string' && candidate.length ? candidate : '';
+}
+
+export function runMain() {
+	globalThis.coreModules.module.initializeCJS();
+	globalThis.internalModules.process.setupUserModules(true);
+	return globalThis.coreModules.module.Module.runMain();
+}
+
+globalThis.setImmediate = setTimeout;
+
+globalThis.coreModules.fs.realpath.native = globalThis.coreModules.fs.realpath; //globalThis.internalModules.fs.realpathSync;
+globalThis.coreModules.fs.lutimes = function (
+	path,
+	atime,
+	mtime,
+	kUsePromises
+) {
+	return maybePromiseFromSync(() => {
+		// Update timestamps on symlink itself if symlink; otherwise behave like utimes
+		const { node } = globalFs.walk(path);
+		if (!node) {
+			const error = new Error(
+				`ENOENT: no such file or directory, lutimes '${path}'`
+			);
+			error.code = 'ENOENT';
+			throw error;
+		}
+		if (node.type !== 'symlink') {
+			// If not a symlink, match Node: apply to target file
+			return globalFs.utimesSync(path, atime, mtime);
+		}
+		// For symlink, store times on the link node
+		node.atime = atime;
+		node.mtime = mtime;
+		node.ctime = Date.now();
+	}, kUsePromises);
+};
+
+const timeouts = new Map();
+const originalSetTimeout = globalThis.setTimeout;
+const originalClearTimeout = globalThis.clearTimeout;
+
+globalThis.setTimeout = (callback, after, ...args) => {
+	// Start the timeout immediately
+	const timeoutId = originalSetTimeout(callback, after, ...args);
+
+	// Create a timeout object that mimics Node.js behavior
+	const timeoutObj = {
+		_id: timeoutId,
+		_unrefd: false,
+		unref() {
+			this._unrefd = true;
+			return this;
+		},
+		ref() {
+			this._unrefd = false;
+			return this;
+		},
+		hasRef() {
+			return !this._unrefd;
+		},
+	};
+
+	// Store the mapping for clearTimeout
+	timeouts.set(timeoutObj, timeoutId);
+
+	return timeoutObj;
+};
+
+globalThis.clearTimeout = (timeout) => {
+	if (timeout && typeof timeout === 'object' && timeouts.has(timeout)) {
+		// Handle our custom timeout objects
+		const timeoutId = timeouts.get(timeout);
+		timeouts.delete(timeout);
+		return originalClearTimeout(timeoutId);
+	} else {
+		// Handle regular timeout IDs (for compatibility)
+		return originalClearTimeout(timeout);
+	}
+};
+
+const intervals = new Map();
+const originalSetInterval = globalThis.setInterval;
+const originalClearInterval = globalThis.clearInterval;
+
+globalThis.setInterval = (callback, interval, ...args) => {
+	// Start the interval immediately
+	const intervalId = originalSetInterval(callback, interval, ...args);
+
+	// Create an interval object that mimics Node.js behavior
+	const intervalObj = {
+		_id: intervalId,
+		_unrefd: false,
+		unref() {
+			this._unrefd = true;
+			return this;
+		},
+		ref() {
+			this._unrefd = false;
+			return this;
+		},
+		hasRef() {
+			return !this._unrefd;
+		},
+	};
+
+	// Store the mapping for clearInterval
+	intervals.set(intervalObj, intervalId);
+
+	return intervalObj;
+};
+
+globalThis.clearInterval = (interval) => {
+	if (interval && typeof interval === 'object' && intervals.has(interval)) {
+		// Handle our custom interval objects
+		const intervalId = intervals.get(interval);
+		intervals.delete(interval);
+		return originalClearInterval(intervalId);
+	} else {
+		// Handle regular interval IDs (for compatibility)
+		return originalClearInterval(interval);
+	}
+};
+
+// Instantiate the process global
+const streamModule = globalThis.coreModules?.stream;
+if (!streamModule) {
+	throw new Error('stream module is not available');
+}
+// @TODO: A better way of connecting a TTY stream
+const { Writable, Readable } = streamModule;
+
+const stdin = new (class Stdin extends Readable {
+	#detachData = null;
+	#detachEnd = null;
+	#detachClose = null;
+	#initialized = false;
+	constructor() {
+		super({ objectMode: true });
+		this.fd = 0;
+		// Don't connect to source yet - processController may not be initialized
+		// Connection will happen lazily on first read
+	}
+	#ensureConnected() {
+		if (this.#initialized) {
+			return;
+		}
+		this.#initialized = true;
+
+		const source = processController.stdin;
+		if (!source || typeof source.on !== 'function') {
+			queueMicrotask(() => this.push(null));
+			return;
+		}
+		this.#detachData = source.on('data', (chunk) => {
+			this.push(chunk);
+		});
+		this.#detachEnd = source.on('end', () => {
+			this.push(null);
+		});
+		this.#detachClose = source.on('close', () => {
+			this.destroy();
+		});
+	}
+	_read(_size) {
+		// Lazy initialization - connect to processController.stdin on first read
+		this.#ensureConnected();
+		// Data is pushed via processController stdin events.
+	}
+	_destroy(err, callback) {
+		try {
+			this.#detachData?.();
+			this.#detachEnd?.();
+			this.#detachClose?.();
+		} catch {
+			// ignore
+		}
+		callback(err);
+	}
+})();
+
+const stdout = new (class Stdout extends Writable {
+	constructor() {
+		super({ objectMode: true });
+		this.fd = 1;
+	}
+	_write(chunk, encoding, callback) {
+		try {
+			processController.stdout.write(chunk);
+			callback();
+		} catch (error) {
+			console.error('Error writing to stdout:', error);
+			callback(error);
+		}
+	}
+})();
+
+stdout.on('finish', () => {
+	processController.stdout.end();
+});
+
+const stderr = new (class Stderr extends Writable {
+	constructor() {
+		super({ objectMode: true });
+		this.fd = 2;
+	}
+	_write(chunk, encoding, callback) {
+		try {
+			processController.stderr.write(chunk);
+			callback();
+		} catch (error) {
+			console.error('Error writing to stderr:', error);
+			callback(error);
+		}
+	}
+})();
+
+stderr.on('finish', () => {
+	processController.stderr.end();
+});
+
+globalThis.process.initStreams({
+	stdin,
+	stdout,
+	stderr,
+});
+globalThis.process.stdin.setEncoding('utf-8');
+globalThis.process.stdin.resume();
+
+const originalFetch = globalThis.fetch;
+globalThis.fetch = async (input, init) => {
+	// Check if the URL is cross-origin and needs proxying
+	let url =
+		typeof input === 'string'
+			? input
+			: input instanceof URL
+			? input.href
+			: input.url;
+
+	if (url && typeof url === 'string') {
+		try {
+			const parsedUrl = new URL(url, globalThis.location?.href);
+			const currentOrigin = globalThis.location?.origin;
+
+			// If it's a cross-origin request, proxy it through our CORS proxy
+			if (currentOrigin && parsedUrl.origin !== currentOrigin) {
+				const proxyUrl = `/proxy/?url=${encodeURIComponent(url)}`;
+
+				if (typeof input === 'string') {
+					input = proxyUrl;
+				} else if (input instanceof URL) {
+					input = new URL(proxyUrl);
+				} else if (input && typeof input === 'object') {
+					input = { ...input, url: proxyUrl };
+				}
+			}
+		} catch (error) {
+			// If URL parsing fails, proceed with original request
+			console.warn('Failed to parse URL for proxy check:', error);
+		}
+	}
+
+	return originalFetch(input, init);
+};
