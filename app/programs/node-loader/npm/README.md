@@ -1,0 +1,1 @@
+NPM package manager bundled as two JavaScript files.

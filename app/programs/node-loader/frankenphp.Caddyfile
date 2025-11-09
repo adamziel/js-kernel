@@ -1,0 +1,12 @@
+{
+	frankenphp {
+		num_threads 10
+		max_threads 10
+	}
+}
+
+:8043 {
+	root * ./
+	php_server
+	file_server
+}
