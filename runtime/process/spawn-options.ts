@@ -20,6 +20,10 @@ export interface NormalizedSpawnOptions {
 	debug: boolean
 	stdio?: SpawnStdioOptions
 	timeout?: number
+	ipcPort?: MessagePort
+	workerThreadId?: number
+	workerThreadName?: string
+	fsConnector?: 'auto' | 'shared' | 'wasmfs'
 }
 
 const cloneEnvRecord = (
@@ -118,6 +122,41 @@ export function normalizeSpawnOptions(
 		}
 	}
 
+	const candidatePort =
+		(value.ipcPort as unknown) ?? (value.messagePort as unknown)
+	const ipcPort =
+		typeof candidatePort === 'object' &&
+		candidatePort !== null &&
+		'postMessage' in (candidatePort as MessagePort)
+			? (candidatePort as MessagePort)
+			: undefined
+
+	const workerThreadId =
+		typeof (value as { workerThreadId?: unknown }).workerThreadId ===
+		'number'
+			? (value as { workerThreadId: number }).workerThreadId
+			: undefined
+
+	const workerThreadNameRaw = (value as {
+		workerThreadName?: unknown
+	}).workerThreadName
+	const workerThreadName =
+		typeof workerThreadNameRaw === 'string'
+			? workerThreadNameRaw
+			: undefined
+
+	const fsConnectorRaw = (value as { fsConnector?: unknown }).fsConnector
+	let fsConnector: 'auto' | 'shared' | 'wasmfs' | undefined
+	if (typeof fsConnectorRaw === 'string') {
+		if (
+			fsConnectorRaw === 'auto' ||
+			fsConnectorRaw === 'shared' ||
+			fsConnectorRaw === 'wasmfs'
+		) {
+			fsConnector = fsConnectorRaw
+		}
+	}
+
 	return {
 		argv,
 		env,
@@ -126,5 +165,9 @@ export function normalizeSpawnOptions(
 		debug,
 		stdio,
 		timeout,
+		ipcPort,
+		workerThreadId,
+		workerThreadName,
+		fsConnector,
 	}
 }

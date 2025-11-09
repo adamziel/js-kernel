@@ -1,0 +1,21 @@
+{
+  "name": "flash-wasm-builder",
+  "version": "0.1.0",
+  "description": "Build scripts for Flash WebAssembly parser",
+  "private": true,
+  "scripts": {
+    "prebuild": "node -e \"const { execSync } = require('child_process'); try { execSync('rustc --version', { stdio: 'ignore' }); } catch (e) { console.error('\\n❌ Rust is not installed. Install from https://rustup.rs/\\n   curl --proto \\'=https\\' --tlsv1.2 -sSf https://sh.rustup.rs | sh\\n'); process.exit(1); } try { execSync('wasm-pack --version', { stdio: 'ignore' }); } catch (e) { console.log('📦 Installing wasm-pack...'); execSync('cargo install wasm-pack', { stdio: 'inherit' }); } try { execSync('rustup target list --installed | grep wasm32-unknown-unknown', { stdio: 'ignore' }); } catch (e) { console.log('🎯 Adding wasm32 target...'); execSync('rustup target add wasm32-unknown-unknown', { stdio: 'inherit' }); }\"",
+    "build": "wasm-pack build --target web --out-dir pkg",
+    "build:release": "wasm-pack build --release --target web --out-dir pkg",
+    "clean": "cargo clean",
+    "rebuild": "npm run clean && npm run build",
+    "check-deps": "node -e \"const { execSync } = require('child_process'); console.log('\\n🔍 Checking dependencies...\\n'); try { const rustVersion = execSync('rustc --version', { encoding: 'utf8' }); console.log('✅ Rust:', rustVersion.trim()); } catch (e) { console.log('❌ Rust: Not installed'); } try { const wasmPackVersion = execSync('wasm-pack --version', { encoding: 'utf8' }); console.log('✅ wasm-pack:', wasmPackVersion.trim()); } catch (e) { console.log('❌ wasm-pack: Not installed'); } try { execSync('rustup target list --installed | grep wasm32-unknown-unknown', { stdio: 'ignore' }); console.log('✅ wasm32 target: Installed'); } catch (e) { console.log('❌ wasm32 target: Not installed'); } try { const wasmOptVersion = execSync('wasm-opt --version', { encoding: 'utf8' }); console.log('✅ wasm-opt:', wasmOptVersion.trim()); } catch (e) { console.log('⚠️  wasm-opt: Not installed (optional, but recommended for optimization)'); } console.log('\\n');\""
+  },
+  "keywords": [
+    "wasm",
+    "webassembly",
+    "shell",
+    "bash",
+    "parser"
+  ]
+}

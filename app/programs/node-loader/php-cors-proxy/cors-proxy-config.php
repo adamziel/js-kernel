@@ -1,3 +1,0 @@
-<?php
-
-define('PLAYGROUND_CORS_PROXY_DISABLE_RATE_LIMIT', true);

@@ -1,19 +1,53 @@
 {
-  "name": "app",
-  "version": "1.0.0",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "author": "",
-  "license": "ISC",
-  "description": "",
-  "dependencies": {
-    "@php-wasm/node": "^3.0.12",
-    "@php-wasm/web": "^3.0.12",
-    "vite": "^7.1.9"
-  },
-  "devDependencies": {
-    "@types/node": "^22.0.0"
-  }
+	"name": "app",
+	"version": "1.0.0",
+	"main": "index.js",
+	"scripts": {
+		"test": "vitest run",
+		"dev": "vite & (cd app/programs/node-loader && node build.js --watch) & wait"
+	},
+	"type": "module",
+	"author": "",
+	"license": "ISC",
+	"description": "",
+	"dependencies": {
+		"@codemirror/autocomplete": "^6.19.1",
+		"@codemirror/commands": "^6.10.0",
+		"@codemirror/lang-css": "^6.3.1",
+		"@codemirror/lang-html": "^6.4.11",
+		"@codemirror/lang-javascript": "^6.2.4",
+		"@codemirror/lang-json": "^6.0.2",
+		"@codemirror/lang-markdown": "^6.5.0",
+		"@codemirror/language": "^6.11.3",
+		"@codemirror/search": "^6.5.11",
+		"@codemirror/state": "^6.5.2",
+		"@codemirror/view": "^6.38.6",
+		"@php-wasm/logger": "^3.0.20",
+		"@php-wasm/node": "^3.0.12",
+		"@php-wasm/util": "^3.0.20",
+		"@php-wasm/web": "^3.0.12",
+		"@wordpress/block-editor": "^15.7.0",
+		"@wordpress/components": "^30.7.0",
+		"@wordpress/i18n": "^6.7.0",
+		"@wordpress/icons": "^11.1.0",
+		"@zip.js/zip.js": "^2.8.8",
+		"classnames": "^2.5.1",
+		"esbuild-node-externals": "^1.18.0",
+		"fflate": "^0.8.2",
+		"react": "^18.3.1",
+		"react-dom": "^18.3.1",
+		"vite": "^7.1.11",
+		"xterm": "^5.3.0",
+		"xterm-addon-fit": "^0.8.0"
+	},
+	"devDependencies": {
+		"@types/node": "^22.0.0",
+		"@vitest/browser": "^1.6.1",
+		"playwright": "^1.40.0",
+		"vitest": "^1.6.1"
+	},
+	"overrides": {
+		"react": "^18.3.1",
+		"react-dom": "^18.3.1"
+	}
 }

@@ -156,3 +156,10 @@ export function isParentOf(parent: string, child: string) {
 	child = normalizePath(child);
 	return child.startsWith(parent + '/') || child === parent;
 }
+
+export function resolvePath(pathExpression: string, root: string) {
+	if (pathExpression.startsWith('/')) {
+		return pathExpression;
+	}
+	return joinPaths(root, pathExpression);
+}

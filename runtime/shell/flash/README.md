@@ -11,60 +11,130 @@ This demo compiles the Flash shell parser to WebAssembly, allowing you to parse 
 - **Example Code**: Click on examples to quickly test different shell constructs
 - **Error Handling**: Clear error messages for invalid syntax
 
-## Building and Running
+## Building the Package
 
 ### Prerequisites
 
-- Rust toolchain
-- `wasm-pack` (will be installed automatically by Makefile)
-- `cargo-server` (will be installed automatically by Makefile)
-- Git LFS (for committing WebAssembly files)
+**Required:**
 
-### Build and Serve
+1. **Rust toolchain** - Install from [rustup.rs](https://rustup.rs/)
+   ```bash
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   ```
 
-From the project root directory:
+**Auto-installed by `npm run build`:**
+
+2. **wasm-pack** - WebAssembly build tool (auto-installed if missing)
+   ```bash
+   cargo install wasm-pack
+   ```
+
+3. **wasm32-unknown-unknown target** (auto-installed if missing)
+   ```bash
+   rustup target add wasm32-unknown-unknown
+   ```
+
+**Optional:**
+
+4. **wasm-opt** - For optimal binary size (recommended)
+   ```bash
+   # macOS
+   brew install binaryen
+
+   # Linux
+   apt-get install binaryen
+   ```
+
+### Build Commands
+
+#### Using NPM (Recommended)
+
+From this directory:
 
 ```bash
-# Build and serve the demo
-make wasm-demo-serve
+# Check if all dependencies are installed
+npm run check-deps
 
-# Or just build without serving
-make wasm-demo-build
+# Build the package (auto-installs wasm-pack if needed)
+npm run build
 
-# Build and prepare files for git commit
-make wasm-demo-commit
+# Clean and rebuild
+npm run rebuild
 
 # Clean build artifacts
-make wasm-demo-clean
+npm run clean
 ```
 
-The demo will be available at `http://localhost:8000`
+The `npm run build` command will:
+- ✅ Check if Rust is installed (exits with helpful message if not)
+- ✅ Auto-install `wasm-pack` if missing
+- ✅ Auto-install `wasm32-unknown-unknown` target if missing
+- ✅ Build the WebAssembly package
 
-### Git LFS Setup
-
-WebAssembly files (`.wasm`) are tracked using Git LFS to avoid bloating the repository:
-
-- `.wasm` files are automatically tracked by Git LFS
-- The `docs/pkg/` directory can be committed to the repository
-- Use `make wasm-demo-commit` to build and stage files for commit
-
-### Manual Serving
-
-If you prefer to serve manually after building:
+#### Using wasm-pack directly
 
 ```bash
-# Build first
-make wasm-demo-build
+# Build the WebAssembly package
+wasm-pack build --target web --out-dir pkg
 
-# Then serve with cargo-server
-cd docs
-cargo server --port 8000
-
-# Or use other methods
-python3 -m http.server 8000
-# or
-npx serve . -p 8000
+# Clean before rebuilding
+cargo clean && wasm-pack build --target web --out-dir pkg
 ```
+
+**Build output:**
+```
+Compiling flash v0.0.6 (playground-projects/shell-parser/flash)
+Compiling flash-wasm-demo v0.1.0
+Finished `release` profile [optimized] target(s) in 5.99s
+✨ Done in 6.43s
+```
+
+### Generated Files
+
+After building, the `pkg/` directory contains:
+
+- `flash_wasm_demo.js` - JavaScript bindings (~9.4KB)
+- `flash_wasm_demo_bg.wasm` - Compiled WebAssembly binary (~140KB optimized)
+- `flash_wasm_demo.d.ts` - TypeScript type definitions
+- `flash_wasm_demo_bg.wasm.d.ts` - TypeScript types for WASM module
+- `package.json` - NPM package metadata
+- `README.md` - Package usage documentation
+
+### Dependencies
+
+This package uses:
+- **`flash`** - Local source from `../../../../../../../playground-projects/shell-parser/flash`
+  - Shell parser library with Bash support
+  - Built with `default-features = false` for minimal WASM size (no interpreter/formatter)
+- `wasm-bindgen = "0.2"` - Rust/JavaScript interop layer
+- `serde` + `serde-wasm-bindgen` - Serialization for ParseResult struct
+- `web-sys` - Web API bindings (console logging)
+
+### Available NPM Scripts
+
+- `npm run check-deps` - Check if all required dependencies are installed
+- `npm run build` - Build the WASM package (auto-installs missing tools)
+- `npm run build:release` - Build with release optimizations
+- `npm run rebuild` - Clean and rebuild from scratch
+- `npm run clean` - Remove build artifacts
+
+### Troubleshooting
+
+**"Rust is not installed" error:**
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source $HOME/.cargo/env
+npm run build
+```
+
+**Build is slow or times out:**
+- First build takes longer as it downloads and compiles dependencies
+- Subsequent builds are much faster due to caching
+- Consider using `npm run build:release` for production builds
+
+**WASM file is larger than expected:**
+- Install wasm-opt for better optimization: `brew install binaryen`
+- The auto-installed wasm-pack will use wasm-opt if available
 
 ## Supported Shell Constructs
 

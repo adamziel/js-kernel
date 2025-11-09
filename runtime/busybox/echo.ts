@@ -12,7 +12,7 @@ const createProgramSource = (): string => {
 			getArgv,
 			writeStdout,
 			writeStderr,
-		} = await import( /* @vite-ignore */urls.utilsModuleUrl)
+		} = await import(/* @vite-ignore */ urls.utilsModuleUrl)
 
 		try {
 			const argv = getArgv()
